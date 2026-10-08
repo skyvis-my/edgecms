@@ -1,0 +1,13 @@
+# High-risk ownership gates.
+#
+/.github/workflows/ @NanFengCheong
+/scripts/ @NanFengCheong
+/apps/api/wrangler.toml @NanFengCheong
+/apps/api/drizzle/ @NanFengCheong
+/apps/api/src/auth/ @NanFengCheong
+/apps/api/src/tenants/ @NanFengCheong
+/apps/api/src/database/schema/ @NanFengCheong
+/apps/api/src/public/ @NanFengCheong
+/apps/api/src/plugins/ @NanFengCheong
+/apps/api/src/commands/ @NanFengCheong
+/apps/api/src/webhooks/ @NanFengCheong

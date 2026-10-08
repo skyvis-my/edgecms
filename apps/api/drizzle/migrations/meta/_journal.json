@@ -1,0 +1,97 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1770388118733,
+      "tag": "0000_nebulous_moonstone",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1770388764812,
+      "tag": "0001_stiff_ultimatum",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1770391408452,
+      "tag": "0002_certain_captain_midlands",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1770392959337,
+      "tag": "0003_sparkling_thunderbolts",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1770393762651,
+      "tag": "0004_bright_stingray",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1770394482259,
+      "tag": "0005_supreme_black_panther",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1770436191770,
+      "tag": "0006_blue_manta",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1771322400000,
+      "tag": "0016_add_schema_snapshots",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1771322460000,
+      "tag": "0017_extend_assets_metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1771499400000,
+      "tag": "0018_assets_soft_delete",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1771503000000,
+      "tag": "0019_assets_created_by",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1771506600000,
+      "tag": "0020_add_collection_display_metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1771510200000,
+      "tag": "0021_add_rbac_tables",
+      "breakpoints": true
+    }
+  ]
+}

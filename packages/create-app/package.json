@@ -1,0 +1,24 @@
+{
+  "name": "create-edgecms-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "create-edgecms-app": "./src/index.ts"
+  },
+  "files": [
+    "README.md",
+    "scripts/prepare-pack.ts",
+    "src/index.ts",
+    "templates/starter"
+  ],
+  "scripts": {
+    "check:package": "bun scripts/check-package.ts",
+    "prepack": "bun scripts/prepare-pack.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

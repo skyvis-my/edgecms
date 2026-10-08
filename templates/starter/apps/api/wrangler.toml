@@ -1,0 +1,21 @@
+name = "edgecms-starter-api"
+main = "src/index.ts"
+compatibility_date = "2025-06-02"
+compatibility_flags = ["nodejs_compat"]
+
+# Safe binding placeholders for Cloudflare Workers deployment.
+# Replace placeholder IDs with your actual Cloudflare resource IDs.
+
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "edgecms-starter-db"
+# database_id = "placeholder-d1-database-id"
+# migrations_dir = "migrations"
+
+# [[kv_namespaces]]
+# binding = "CACHE"
+# id = "placeholder-kv-namespace-id"
+
+# [[r2_buckets]]
+# binding = "MEDIA"
+# bucket_name = "edgecms-starter-media"

@@ -1,0 +1,470 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@plugin "@tailwindcss/typography";
+@import "./theme.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@layer base {
+  :root {
+    --edge-luxury-ease: cubic-bezier(0.22, 1, 0.36, 1);
+    --edge-luxury-page-duration: 220ms;
+    --edge-luxury-surface-duration: 300ms;
+    --edge-luxury-interaction-duration: 180ms;
+  }
+
+  * {
+    @apply border-border outline-ring/50;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  html {
+    @apply overflow-x-hidden;
+  }
+  body {
+    @apply min-h-svh w-full bg-background text-foreground has-[div[data-variant='inset']]:bg-sidebar;
+  }
+
+  /* Override Radix scroll locking for sticky headers */
+  body[data-scroll-locked] {
+    overflow: unset;
+  }
+
+  /* Cursor pointer for buttons */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  /* Prevent focus zoom on mobile devices */
+  @media screen and (max-width: 767px) {
+    input,
+    select,
+    textarea {
+      font-size: 16px;
+    }
+  }
+}
+
+@utility container {
+  margin-inline: auto;
+  padding-inline: 2rem;
+}
+
+@utility no-scrollbar {
+  /* Hide scrollbar for Chrome, Safari and Opera */
+  &::-webkit-scrollbar {
+    display: none;
+  }
+  /* Hide scrollbar for IE, Edge and Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+
+@utility faded-bottom {
+  @apply after:pointer-events-none after:absolute after:start-0 after:bottom-0 after:hidden after:h-32 after:w-full after:rounded-b-2xl after:bg-[linear-gradient(180deg,transparent_10%,var(--background)_70%)] md:after:block;
+}
+
+@layer utilities {
+  .edge-luxury-shell {
+    isolation: isolate;
+    position: relative;
+  }
+
+  .edge-luxury-shell::before {
+    content: "";
+    pointer-events: none;
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+      radial-gradient(80rem 52rem at 10% -8%, oklch(0.86 0.045 85 / 0.2), transparent 72%),
+      radial-gradient(70rem 50rem at 108% 8%, oklch(0.8 0.03 230 / 0.14), transparent 76%);
+    animation: edgeLuxuryAmbient 22s ease-in-out infinite alternate;
+  }
+
+  .edge-luxury-header {
+    animation: edgeLuxuryHeaderIn var(--edge-luxury-page-duration) var(--edge-luxury-ease) both;
+  }
+
+  .edge-luxury-page {
+    animation: edgeLuxuryPageIn var(--edge-luxury-page-duration) var(--edge-luxury-ease) both;
+    contain: paint;
+  }
+
+  .edge-luxury-surface {
+    animation: edgeLuxurySurfaceIn var(--edge-luxury-surface-duration) var(--edge-luxury-ease) both;
+    transition:
+      transform var(--edge-luxury-interaction-duration) var(--edge-luxury-ease),
+      box-shadow var(--edge-luxury-interaction-duration) var(--edge-luxury-ease),
+      border-color var(--edge-luxury-interaction-duration) var(--edge-luxury-ease);
+  }
+
+  .edge-luxury-surface:hover {
+    transform: translateY(-2px);
+    box-shadow:
+      var(--shadow-lg),
+      0 10px 30px -20px oklch(0.72 0.08 82 / 0.55);
+  }
+
+  .edge-luxury-interactive {
+    transition:
+      transform var(--edge-luxury-interaction-duration) var(--edge-luxury-ease),
+      box-shadow var(--edge-luxury-interaction-duration) var(--edge-luxury-ease),
+      filter var(--edge-luxury-interaction-duration) var(--edge-luxury-ease);
+  }
+
+  .edge-luxury-interactive:hover:not(:disabled) {
+    transform: translateY(-1px) scale(1.01);
+    box-shadow:
+      var(--shadow-md),
+      0 0 0 1px oklch(0.77 0.05 88 / 0.3);
+    filter: saturate(1.06);
+  }
+
+  .edge-luxury-interactive:active:not(:disabled) {
+    transform: translateY(0) scale(0.99);
+  }
+
+  :where(
+      [data-slot="dialog-content"],
+      [data-slot="sheet-content"],
+      [data-slot="alert-dialog-content"],
+      [data-slot="popover-content"],
+      [data-slot="dropdown-menu-content"],
+      [data-slot="dropdown-menu-sub-content"],
+      [data-slot="select-content"],
+      [data-slot="tooltip-content"],
+      [data-slot="command"],
+      [data-slot="calendar"],
+      [data-slot="tabs-content"],
+      [data-slot="alert"]
+    ) {
+    animation: edgeLuxurySurfaceIn var(--edge-luxury-surface-duration) var(--edge-luxury-ease) both;
+  }
+
+  :where(
+      [data-slot="dialog-content"],
+      [data-slot="sheet-content"],
+      [data-slot="alert-dialog-content"],
+      [data-slot="popover-content"],
+      [data-slot="dropdown-menu-content"],
+      [data-slot="dropdown-menu-sub-content"],
+      [data-slot="select-content"],
+      [data-slot="tooltip-content"]
+    )[data-state="open"] {
+    animation-duration: 220ms;
+    animation-timing-function: var(--edge-luxury-ease);
+  }
+
+  :where(
+      [data-slot="dialog-content"],
+      [data-slot="sheet-content"],
+      [data-slot="alert-dialog-content"],
+      [data-slot="popover-content"],
+      [data-slot="dropdown-menu-content"],
+      [data-slot="dropdown-menu-sub-content"],
+      [data-slot="select-content"],
+      [data-slot="tooltip-content"]
+    )[data-state="closed"] {
+    animation-duration: 180ms;
+    animation-timing-function: var(--edge-luxury-ease);
+  }
+
+  :where(
+      [data-slot="input"],
+      [data-slot="textarea"],
+      [data-slot="select-trigger"],
+      [data-slot="select-item"],
+      [data-slot="tabs-trigger"],
+      [data-slot="switch"],
+      [data-slot="checkbox"],
+      [data-slot="radio-group-item"],
+      [data-slot="sidebar-menu-button"],
+      [data-slot="sidebar-menu-sub-button"],
+      [data-slot="sidebar-menu-action"],
+      [data-slot="dropdown-menu-item"],
+      [data-slot="dropdown-menu-checkbox-item"],
+      [data-slot="dropdown-menu-radio-item"],
+      [data-slot="dropdown-menu-sub-trigger"],
+      [data-slot="command-item"],
+      [data-slot="table-row"],
+      [data-slot="input-otp-slot"],
+      [data-slot="badge"],
+      [data-slot="avatar"],
+      [data-slot="avatar-fallback"],
+      [data-slot="sidebar-trigger"]
+    ) {
+    transition:
+      transform var(--edge-luxury-interaction-duration) var(--edge-luxury-ease),
+      box-shadow var(--edge-luxury-interaction-duration) var(--edge-luxury-ease),
+      background-color var(--edge-luxury-interaction-duration) var(--edge-luxury-ease),
+      border-color var(--edge-luxury-interaction-duration) var(--edge-luxury-ease),
+      color var(--edge-luxury-interaction-duration) var(--edge-luxury-ease),
+      filter var(--edge-luxury-interaction-duration) var(--edge-luxury-ease);
+  }
+
+  :where(
+      [data-slot="input"],
+      [data-slot="textarea"],
+      [data-slot="select-trigger"],
+      [data-slot="tabs-trigger"],
+      [data-slot="switch"],
+      [data-slot="checkbox"],
+      [data-slot="radio-group-item"],
+      [data-slot="sidebar-menu-button"],
+      [data-slot="sidebar-menu-sub-button"],
+      [data-slot="sidebar-menu-action"],
+      [data-slot="dropdown-menu-item"],
+      [data-slot="dropdown-menu-checkbox-item"],
+      [data-slot="dropdown-menu-radio-item"],
+      [data-slot="dropdown-menu-sub-trigger"],
+      [data-slot="command-item"],
+      [data-slot="input-otp-slot"],
+      [data-slot="badge"],
+      [data-slot="avatar"],
+      [data-slot="avatar-fallback"],
+      [data-slot="sidebar-trigger"]
+    ):hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow:
+      var(--shadow-sm),
+      0 0 0 1px oklch(0.77 0.05 88 / 0.22);
+    filter: saturate(1.05);
+  }
+
+  :where([data-slot="table-row"]):hover {
+    transform: translateX(2px);
+    box-shadow: inset 3px 0 0 oklch(0.77 0.05 88 / 0.35);
+  }
+
+  :where(
+      [data-slot="sidebar-menu-button"],
+      [data-slot="sidebar-menu-sub-button"]
+    )[data-active="true"] {
+    box-shadow: inset 0 0 0 1px oklch(0.77 0.05 88 / 0.35);
+  }
+
+  :where(
+      [data-slot="command-item"],
+      [data-slot="dropdown-menu-item"],
+      [data-slot="select-item"]
+    ) {
+    opacity: 0;
+    animation: edgeLuxuryListItemIn 360ms var(--edge-luxury-ease) both;
+  }
+
+  :where(
+      [data-slot="command-item"],
+      [data-slot="dropdown-menu-item"],
+      [data-slot="select-item"]
+    ):nth-child(2) {
+    animation-delay: 25ms;
+  }
+
+  :where(
+      [data-slot="command-item"],
+      [data-slot="dropdown-menu-item"],
+      [data-slot="select-item"]
+    ):nth-child(3) {
+    animation-delay: 50ms;
+  }
+
+  :where(
+      [data-slot="command-item"],
+      [data-slot="dropdown-menu-item"],
+      [data-slot="select-item"]
+    ):nth-child(4) {
+    animation-delay: 75ms;
+  }
+
+  :where(
+      [data-slot="command-item"],
+      [data-slot="dropdown-menu-item"],
+      [data-slot="select-item"]
+    ):nth-child(5) {
+    animation-delay: 100ms;
+  }
+}
+
+/* styles.css */
+.CollapsibleContent {
+  overflow: hidden;
+}
+.CollapsibleContent[data-state="open"] {
+  animation: slideDown 300ms ease-out;
+}
+.CollapsibleContent[data-state="closed"] {
+  animation: slideUp 300ms ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+  }
+}
+
+@keyframes slideUp {
+  from {
+    height: var(--radix-collapsible-content-height);
+  }
+  to {
+    height: 0;
+  }
+}
+
+@keyframes edgeLuxuryAmbient {
+  from {
+    opacity: 0.65;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    opacity: 0.9;
+    transform: translate3d(0, -1.5%, 0) scale(1.03);
+  }
+}
+
+@keyframes edgeLuxuryHeaderIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes edgeLuxuryPageIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes edgeLuxurySurfaceIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes edgeLuxuryListItemIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.edge-history-item {
+  opacity: 0;
+  animation: edgeHistoryItemIn 420ms var(--edge-luxury-ease) both;
+  animation-delay: calc(var(--edge-history-order, 0) * 35ms);
+}
+
+@keyframes edgeHistoryItemIn {
+  from {
+    opacity: 0;
+    transform: translate3d(-6px, 4px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .edge-luxury-shell::before {
+    animation: none;
+  }
+
+  .edge-luxury-header,
+  .edge-luxury-page,
+  .edge-luxury-surface,
+  .edge-history-item,
+  [data-slot="dialog-content"],
+  [data-slot="sheet-content"],
+  [data-slot="alert-dialog-content"],
+  [data-slot="popover-content"],
+  [data-slot="dropdown-menu-content"],
+  [data-slot="dropdown-menu-sub-content"],
+  [data-slot="select-content"],
+  [data-slot="tooltip-content"],
+  [data-slot="command"],
+  [data-slot="calendar"],
+  [data-slot="sidebar-container"],
+  [data-slot="table-container"],
+  [data-slot="tabs-content"],
+  [data-slot="alert"] {
+    animation: none;
+    filter: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  .edge-luxury-surface,
+  .edge-luxury-interactive,
+  [data-slot="input"],
+  [data-slot="textarea"],
+  [data-slot="select-trigger"],
+  [data-slot="select-item"],
+  [data-slot="tabs-trigger"],
+  [data-slot="switch"],
+  [data-slot="checkbox"],
+  [data-slot="radio-group-item"],
+  [data-slot="sidebar-menu-button"],
+  [data-slot="sidebar-menu-sub-button"],
+  [data-slot="sidebar-menu-action"],
+  [data-slot="dropdown-menu-item"],
+  [data-slot="dropdown-menu-checkbox-item"],
+  [data-slot="dropdown-menu-radio-item"],
+  [data-slot="dropdown-menu-sub-trigger"],
+  [data-slot="command-item"],
+  [data-slot="table-row"],
+  [data-slot="input-otp-slot"],
+  [data-slot="badge"],
+  [data-slot="avatar"],
+  [data-slot="avatar-fallback"],
+  [data-slot="table-row"],
+  [data-slot="sidebar-menu-item"],
+  [data-slot="command-item"],
+  [data-slot="dropdown-menu-item"],
+  [data-slot="select-item"],
+  [data-slot="sidebar-trigger"] {
+    transition: none;
+  }
+
+  :where(
+      [data-slot="table-row"],
+      [data-slot="sidebar-menu-item"],
+      [data-slot="command-item"],
+      [data-slot="dropdown-menu-item"],
+      [data-slot="select-item"]
+    ) {
+    animation: none;
+    opacity: 1;
+  }
+
+  .edge-history-item {
+    animation: none;
+    opacity: 1;
+    filter: none;
+    transform: none;
+  }
+
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+  }
+}

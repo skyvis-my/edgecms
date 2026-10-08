@@ -1,0 +1,32 @@
+{
+  "tenant": {
+    "name": "Smoke Tenant",
+    "slug": "smoke"
+  },
+  "collection": {
+    "name": "Smoke Posts",
+    "slug": "smoke-posts",
+    "tenantSlug": "smoke"
+  },
+  "entry": {
+    "title": "Hello EdgeCMS",
+    "slug": "hello-edgecms",
+    "status": "published",
+    "collectionSlug": "smoke-posts"
+  },
+  "media": {
+    "filename": "smoke-hero.txt",
+    "contentType": "text/plain",
+    "alt": "Smoke media fixture"
+  },
+  "trustedPluginStatus": {
+    "pluginId": "trusted-sample-status",
+    "status": "loaded",
+    "source": "trusted-sample"
+  },
+  "webhook": {
+    "event": "entry.published",
+    "destination": "https://frontend.example.test/api/revalidate",
+    "dryRun": true
+  }
+}

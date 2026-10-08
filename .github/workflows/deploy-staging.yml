@@ -1,0 +1,86 @@
+name: Deploy Staging
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-staging.yml"
+      - ".github/workflows/ci.yml"
+      - "apps/**"
+      - "packages/**"
+      - "scripts/**"
+      - "bun.lock"
+      - "package.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: true
+
+env:
+  DEPLOY_URL: ${{ vars.STAGING_URL }}
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: ci
+    if: ${{ vars.STAGING_URL != '' }}
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Check release readiness
+        run: bun run check:release
+
+      - name: Build deploy artifacts
+        run: bun run build
+
+      - name: Apply D1 migrations
+        working-directory: apps/api
+        run: bunx wrangler d1 migrations apply edgecms-db-staging --remote --env staging
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy Worker and admin assets
+        working-directory: apps/api
+        run: bun run deploy:staging
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Smoke health endpoint
+        run: |
+          node <<'NODE'
+          const url = `${process.env.DEPLOY_URL}/api/health`
+          const res = await fetch(url)
+          if (!res.ok) throw new Error(`Health check failed: ${res.status}`)
+          const body = await res.json()
+          if (!['ok', 'degraded'].includes(body.status)) {
+            throw new Error(`Unexpected health status: ${body.status}`)
+          }
+          console.log(`Health check passed: ${body.status}`)
+          NODE
+
+      - name: Install Playwright browsers
+        run: bunx playwright install --with-deps chromium
+
+      - name: Smoke deployed admin
+        run: bun run smoke:e2e:staging

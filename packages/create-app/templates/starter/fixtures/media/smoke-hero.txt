@@ -1,0 +1,1 @@
+EdgeCMS smoke media fixture.

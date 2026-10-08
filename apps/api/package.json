@@ -1,0 +1,64 @@
+{
+  "name": "edgecms-api",
+  "description": "EdgeCMS API Worker - Content Management System powered by ElysiaJS on Cloudflare Workers",
+  "version": "0.1.0",
+  "module": "src/main.ts",
+  "type": "module",
+  "exports": {
+    ".": "./src/main.ts",
+    "./contract": "./src/contract.ts",
+    "./app": "./src/app.ts",
+    "./env": "./src/env.ts",
+    "./runtime/bootstrap": "./src/runtime/bootstrap.ts",
+    "./plugins/plugin-loader": "./src/plugins/plugin-loader.ts",
+    "./plugins/plugin-registry": "./src/plugins/plugin-registry.ts",
+    "./observability/metrics": "./src/observability/metrics.ts"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "tsc --noEmit",
+    "test": "bun test --isolate",
+    "test:coverage": "bun test --isolate --coverage",
+    "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf node_modules .wrangler",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "format": "oxlint --fix .",
+    "format:check": "oxlint .",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "db:seed:smoke": "bun ../../scripts/seed-smoke-db.ts",
+    "db:studio": "drizzle-kit studio",
+    "db:studio:local": "drizzle-kit studio --config=drizzle.local.config.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^3.0.130",
+    "@ai-sdk/openai": "^3.0.124",
+    "@casl/ability": "^6.8.1",
+    "@edgecms/plugin-sdk": "workspace:*",
+    "@edgecms/schemas": "workspace:*",
+    "@elysiajs/openapi": "1.4.14",
+    "ai": "^6.0.301",
+    "arktype": "^2.2.7",
+    "better-auth": "^1.7.7",
+    "drizzle-orm": "^0.45.3",
+    "elysia": "1.4.29",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "@libsql/client": "^0.17.4",
+    "@types/node": "25.1.0",
+    "drizzle-kit": "1.0.0-beta.15-859cf75",
+    "oxlint": "^1.87.0",
+    "typescript": "5.9.3",
+    "wrangler": "^4.148.0"
+  },
+  "trustedDependencies": [
+    "oxlint"
+  ]
+}

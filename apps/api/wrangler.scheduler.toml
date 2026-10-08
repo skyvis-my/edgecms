@@ -1,0 +1,19 @@
+name = "edgecms-scheduler"
+main = "src/scheduler/worker.ts"
+compatibility_date = "2025-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Cron Triggers
+[triggers]
+crons = ["*/1 * * * *"]
+
+# D1 Database (shared with CMS Worker)
+[[d1_databases]]
+binding = "DB"
+database_name = "edgecms-db"
+database_id = "LOCAL_DATABASE_ID"
+
+# KV Namespace (shared with CMS Worker)
+[[kv_namespaces]]
+binding = "CACHE"
+id = "LOCAL_KV_NAMESPACE_ID"

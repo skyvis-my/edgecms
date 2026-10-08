@@ -1,0 +1,23 @@
+{
+  "name": "edgecms-starter",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "bun run --filter '*' dev",
+    "dev:api": "bun run --filter edgecms-starter-api dev",
+    "dev:admin": "bun run --filter edgecms-starter-admin dev",
+    "typecheck": "bun run --filter '*' typecheck",
+    "seed:smoke": "bun scripts/seed.ts",
+    "smoke": "bun scripts/smoke.ts",
+    "validate": "bun run typecheck && bun run smoke"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "@types/node": "25.1.0",
+    "typescript": "5.9.3"
+  }
+}

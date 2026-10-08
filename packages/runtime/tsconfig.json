@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "declaration": true,
+    "declarationMap": false,
+    "emitDeclarationOnly": true,
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "newLine": "lf",
+    "outDir": "dist",
+    "rootDir": "src",
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2022",
+    "verbatimModuleSyntax": true,
+    "types": ["@cloudflare/workers-types"],
+    "noEmit": false,
+    "paths": {
+      "edgecms-api": ["../../apps/api/src/main.ts"],
+      "edgecms-api/app": ["../../apps/api/src/app.ts"],
+      "edgecms-api/env": ["../../apps/api/src/env.ts"],
+      "edgecms-api/runtime/bootstrap": ["../../apps/api/src/runtime/bootstrap.ts"],
+      "edgecms-api/plugins/plugin-loader": ["../../apps/api/src/plugins/plugin-loader.ts"],
+      "edgecms-api/plugins/plugin-registry": ["../../apps/api/src/plugins/plugin-registry.ts"],
+      "edgecms-api/observability/metrics": ["../../apps/api/src/observability/metrics.ts"],
+      "@edgecms/plugin-sdk": ["../../packages/plugin-sdk/src/index.ts"],
+      "@edgecms/plugin-sdk/*": ["../../packages/plugin-sdk/src/*"],
+      "@edgecms/schemas": ["../../packages/schemas/src/index.ts"],
+      "@edgecms/schemas/*": ["../../packages/schemas/src/*"],
+      "@/*": ["../../apps/api/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/__tests__/**"]
+}
+

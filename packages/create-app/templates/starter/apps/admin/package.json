@@ -1,0 +1,15 @@
+{
+  "name": "edgecms-starter-admin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "@types/node": "25.1.0",
+    "typescript": "5.9.3"
+  }
+}

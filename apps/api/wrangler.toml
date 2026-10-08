@@ -1,0 +1,146 @@
+name = "edgecms-api"
+main = "src/main.ts"
+compatibility_date = "2025-06-02"
+compatibility_flags = ["nodejs_compat"]
+
+# Optional AI Gateway policy controls
+# Set these via `wrangler secret put` or environment variables at deploy time.
+# AI_GATEWAY_URL=https://gateway.ai.cloudflare.com/v1/<account>/<gateway>
+# AI_GATEWAY_ROUTE_ID=<dynamic-routing-policy-id>
+# AI_GATEWAY_GUARDRAILS_PROFILE_ID=<guardrails-profile-id>
+# ENTRA_CLIENT_ID=<entra-app-client-id>
+# ENTRA_CLIENT_SECRET=<entra-app-client-secret>
+# ENTRA_TENANT_ID=<entra-tenant-id-or-common>
+# GOOGLE_CLIENT_ID=<google-oauth-client-id>
+# GOOGLE_CLIENT_SECRET=<google-oauth-client-secret>
+
+# Assets - serve admin SPA static files from Worker
+# Cloudflare Workers Static Assets: non-API routes serve from admin dist/
+[assets]
+directory = "../admin/dist"
+binding = "ASSETS"
+# SPA fallback: serve index.html for any path not matching a static file
+# This enables client-side routing (TanStack Router)
+not_found_handling = "single-page-application"
+# Route /api and /api/* requests to the Worker (ElysiaJS) first;
+# all other routes are served from static assets with SPA fallback
+run_worker_first = ["/api", "/api/*"]
+
+# D1 Database
+[[d1_databases]]
+binding = "DB"
+database_name = "edgecms-db"
+database_id = "LOCAL_DATABASE_ID"
+migrations_dir = "drizzle/migrations"
+
+# KV Namespace
+[[kv_namespaces]]
+binding = "CACHE"
+id = "LOCAL_KV_NAMESPACE_ID"
+
+# R2 Bucket
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "edgecms-media"
+
+# Vectorize Index (semantic media search)
+[[vectorize]]
+binding = "ASSET_VECTORS"
+index_name = "edgecms-assets-vectors"
+
+# Durable Objects — Publish Scheduler
+[[durable_objects.bindings]]
+name = "PUBLISH_SCHEDULER"
+class_name = "PublishScheduler"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["PublishScheduler"]
+
+# Webhook Delivery Queue
+[[queues.producers]]
+queue = "edgecms-webhook-queue"
+binding = "WEBHOOK_QUEUE"
+
+[[queues.consumers]]
+queue = "edgecms-webhook-queue"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+
+# --- Environment Overrides ---
+
+[env.staging]
+name = "edgecms-api-staging"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "edgecms-db-staging"
+database_id = "STAGING_DATABASE_ID"
+migrations_dir = "drizzle/migrations"
+
+[[env.staging.kv_namespaces]]
+binding = "CACHE"
+id = "STAGING_KV_NAMESPACE_ID"
+
+[[env.staging.r2_buckets]]
+binding = "MEDIA"
+bucket_name = "edgecms-media-staging"
+
+[[env.staging.vectorize]]
+binding = "ASSET_VECTORS"
+index_name = "edgecms-assets-vectors-staging"
+
+[[env.staging.durable_objects.bindings]]
+name = "PUBLISH_SCHEDULER"
+class_name = "PublishScheduler"
+
+# New Cloudflare accounts only allow SQLite-backed Durable Objects
+[[env.staging.migrations]]
+tag = "v1"
+new_sqlite_classes = ["PublishScheduler"]
+
+[[env.staging.queues.producers]]
+queue = "edgecms-webhook-queue-staging"
+binding = "WEBHOOK_QUEUE"
+
+[[env.staging.queues.consumers]]
+queue = "edgecms-webhook-queue-staging"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+
+[env.production]
+name = "edgecms-api-production"
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "edgecms-db-production"
+database_id = "PRODUCTION_DATABASE_ID"
+migrations_dir = "drizzle/migrations"
+
+[[env.production.kv_namespaces]]
+binding = "CACHE"
+id = "PRODUCTION_KV_NAMESPACE_ID"
+
+[[env.production.r2_buckets]]
+binding = "MEDIA"
+bucket_name = "edgecms-media-production"
+
+[[env.production.vectorize]]
+binding = "ASSET_VECTORS"
+index_name = "edgecms-assets-vectors-production"
+
+[[env.production.durable_objects.bindings]]
+name = "PUBLISH_SCHEDULER"
+class_name = "PublishScheduler"
+
+[[env.production.queues.producers]]
+queue = "edgecms-webhook-queue-production"
+binding = "WEBHOOK_QUEUE"
+
+[[env.production.queues.consumers]]
+queue = "edgecms-webhook-queue-production"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5

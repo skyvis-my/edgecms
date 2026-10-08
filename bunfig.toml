@@ -1,0 +1,5 @@
+[test]
+preload = ["./apps/admin/test-utils/setup.ts"]
+pathIgnorePatterns = ["apps/admin/e2e/**"]
+isolate = true
+

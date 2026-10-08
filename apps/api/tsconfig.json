@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2021"],
+    "types": ["@cloudflare/workers-types"],
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["./src/*"],
+      "@edgecms/plugin-sdk": ["../../packages/plugin-sdk/src/index.ts"],
+      "@edgecms/schemas": ["../../packages/schemas/src/index.ts"],
+      "@edgecms/schemas/*": ["../../packages/schemas/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules"]
+}
