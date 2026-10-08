@@ -22,6 +22,7 @@ concurrency:
 
 env:
   DEPLOY_URL: ${{ vars.STAGING_URL }}
+  STAGING_URL: ${{ vars.STAGING_URL }}
 
 jobs:
   ci:
