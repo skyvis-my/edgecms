@@ -117,7 +117,7 @@ const runSmoke = async (options: SmokeOptions) => {
       'install',
       ...(process.env.CI ? ['--with-deps'] : []),
       'chromium',
-    ])
+    ], { cwd: adminDir })
   }
 
   const fetchHealth = async (url: string): Promise<HealthStatus> => {

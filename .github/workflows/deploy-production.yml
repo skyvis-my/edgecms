@@ -74,6 +74,7 @@ jobs:
           NODE
 
       - name: Install Playwright browsers
+        working-directory: apps/admin
         run: bunx playwright install --with-deps chromium
 
       - name: Smoke deployed admin
