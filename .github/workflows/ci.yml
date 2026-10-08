@@ -118,6 +118,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Install Playwright browsers
+        working-directory: apps/admin
         run: bunx playwright install --with-deps chromium
 
       - name: Run remote PRD smoke
