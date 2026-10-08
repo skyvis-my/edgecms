@@ -15,6 +15,7 @@ concurrency:
 
 env:
   DEPLOY_URL: ${{ vars.PRODUCTION_URL }}
+  PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
 
 jobs:
   ci:
