@@ -25,6 +25,7 @@
   },
   "scripts": {
     "clean": "rm -rf dist",
+    "postinstall": "node scripts/build.mjs",
     "build": "node scripts/build.mjs",
     "typecheck": "node scripts/build.mjs --noEmit",
     "check": "node scripts/build.mjs && node scripts/check-package.mjs",
