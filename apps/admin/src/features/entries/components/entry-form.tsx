@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Controller, useForm, useWatch } from 'react-hook-form'
 import { toast } from 'sonner'
 import type { z } from 'zod'
@@ -15,7 +15,17 @@ import { RollbackDialog } from '@/features/versioning/components/rollback-dialog
 import { VersionDiff } from '@/features/versioning/components/version-diff'
 import { VersionHistory } from '@/features/versioning/components/version-history'
 import { slugify } from '@/lib/slugify'
-import { Calendar, Clock } from 'lucide-react'
+import { useTenantStore } from '@/stores/tenant-store'
+import {
+  EDGECMS_PREVIEW_READY_TYPE,
+  sendDraftPreviewUpdate,
+} from '@edgecms/client'
+import {
+  Calendar,
+  Eye,
+} from 'lucide-react'
+import { EntrySchedulingPanel } from './entry-scheduling-panel'
+import { EntryPreviewPanel } from './entry-preview-panel'
 import type { Entry, EntryStatus } from '../api/entries-api'
 import {
   useCancelSchedule,
@@ -128,8 +138,108 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
         },
   })
 
-  const { control, handleSubmit, watch, setValue, formState } = form
+  const { control, handleSubmit, watch, setValue, getValues, formState } = form
   const { errors, isSubmitting } = formState
+
+  // Live Draft Preview & Real-Time PostMessage Streaming State
+  const tenantSlug = useTenantStore((s) => s.tenantSlug) || 'default'
+  const [showLivePreview, setShowLivePreview] = useState(false)
+  const [previewTargetUrl, setPreviewTargetUrl] = useState('http://localhost:3000/preview')
+  const [previewToken, setPreviewToken] = useState<string | null>(null)
+  const [previewDevice, setPreviewDevice] = useState<'desktop' | 'tablet' | 'mobile'>('desktop')
+  const [previewView, setPreviewView] = useState<'iframe' | 'inspector'>('iframe')
+  const [iframeReady, setIframeReady] = useState(false)
+  const iframeRef = useRef<HTMLIFrameElement>(null)
+  const watchedFormValues = useWatch({ control })
+
+  const fetchPreviewToken = useCallback(async () => {
+    if (!tenantSlug) return
+    try {
+      const res = await fetch(`/api/tenants/${encodeURIComponent(tenantSlug)}/public/preview-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenantSlug,
+          entrySlug: getValues('slug') || entry?.slug || 'draft-entry',
+          entryId: entry?.id,
+          collectionSlug: collection.slug,
+          previewUrl: previewTargetUrl,
+          ttlSeconds: 3600,
+        }),
+      })
+      if (res.ok) {
+        const data = (await res.json()) as { token: string }
+        setPreviewToken(data.token)
+      }
+    } catch (err) {
+      logger.warn('Failed to fetch preview token', err)
+    }
+  }, [tenantSlug, getValues, entry?.slug, entry?.id, collection.slug, previewTargetUrl])
+
+  const toggleLivePreview = () => {
+    setShowLivePreview((prev) => {
+      const next = !prev
+      if (next && !previewToken) {
+        void fetchPreviewToken()
+      }
+      return next
+    })
+  }
+
+  const computedPreviewUrl = useMemo(() => {
+    if (!previewTargetUrl) return ''
+    try {
+      const url = new URL(
+        previewTargetUrl,
+        typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000'
+      )
+      if (previewToken) url.searchParams.set('previewToken', previewToken)
+      if (tenantSlug) url.searchParams.set('tenant', tenantSlug)
+      const currentSlugVal = (watchedFormValues as { slug?: string } | undefined)?.slug || entry?.slug
+      if (currentSlugVal) url.searchParams.set('slug', currentSlugVal)
+      return url.toString()
+    } catch {
+      return previewTargetUrl
+    }
+  }, [previewTargetUrl, previewToken, tenantSlug, watchedFormValues, entry?.slug])
+
+  const streamDraftUpdate = useCallback(() => {
+    if (!iframeRef.current?.contentWindow) return
+
+    const currentValues = getValues()
+    const payload = {
+      slug: currentValues.slug,
+      status: currentValues.status,
+      data: currentValues.data,
+      locale: activeLocale,
+      collectionSlug: collection.slug,
+      updatedAt: new Date().toISOString(),
+    }
+
+    sendDraftPreviewUpdate(iframeRef.current.contentWindow, payload, {
+      token: previewToken ?? undefined,
+      targetOrigin: '*',
+    })
+  }, [getValues, activeLocale, collection.slug, previewToken])
+
+  // Stream draft JSON AST immediately whenever form inputs or TipTap rich text change
+  useEffect(() => {
+    if (showLivePreview) {
+      streamDraftUpdate()
+    }
+  }, [watchedFormValues, showLivePreview, streamDraftUpdate])
+
+  // Bi-directional postMessage listener for iframe handshake
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === EDGECMS_PREVIEW_READY_TYPE) {
+        setIframeReady(true)
+        streamDraftUpdate()
+      }
+    }
+    window.addEventListener('message', handleMessage)
+    return () => window.removeEventListener('message', handleMessage)
+  }, [streamDraftUpdate])
 
   const collectionFields = useMemo(() => collection.fields, [collection.fields])
   const data = useWatch({ control, name: 'data' })
@@ -395,6 +505,17 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
           <div className='ml-auto flex items-center gap-2'>
             <Button
               type='button'
+              variant={showLivePreview ? 'secondary' : 'outline'}
+              size='sm'
+              className='h-8 px-2.5 text-xs'
+              onClick={toggleLivePreview}
+              data-testid='live-preview-toggle'
+            >
+              <Eye className='mr-1.5 size-3.5' />
+              {showLivePreview ? 'Hide Preview' : 'Live Preview'}
+            </Button>
+            <Button
+              type='button'
               variant='outline'
               size='sm'
               className='h-8 px-2.5 text-xs'
@@ -431,88 +552,40 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
             </Button>
           </div>
         ) : (
-          <Button type='submit' disabled={isSubmitting} size='sm' className='ml-auto h-8 px-3'>
-            {isSubmitting ? 'Saving...' : 'Save'}
-          </Button>
+          <div className='ml-auto flex items-center gap-2'>
+            <Button
+              type='button'
+              variant={showLivePreview ? 'secondary' : 'outline'}
+              size='sm'
+              className='h-8 px-2.5 text-xs'
+              onClick={toggleLivePreview}
+              data-testid='live-preview-toggle'
+            >
+              <Eye className='mr-1.5 size-3.5' />
+              {showLivePreview ? 'Hide Preview' : 'Live Preview'}
+            </Button>
+            <Button type='submit' disabled={isSubmitting} size='sm' className='h-8 px-3'>
+              {isSubmitting ? 'Saving...' : 'Save'}
+            </Button>
+          </div>
         )}
       </div>
 
       {/* Scheduled Publishing Panel (C-07) */}
       {showScheduleControls && mode === 'edit' && entry && (
-        <Card data-testid='scheduling-panel' className='border-primary/20 bg-muted/40'>
-          <CardContent className='space-y-4 p-4'>
-            <div className='flex items-center justify-between'>
-              <h4 className='text-sm font-semibold flex items-center gap-2'>
-                <Clock className='size-4 text-primary' />
-                Scheduled Publishing & Unpublishing
-              </h4>
-              {entry.status === 'scheduled' && (
-                <Button
-                  type='button'
-                  variant='destructive'
-                  size='sm'
-                  className='h-7 text-xs'
-                  disabled={cancelScheduleMutation.isPending}
-                  onClick={handleCancelSchedule}
-                >
-                  Cancel Active Schedule
-                </Button>
-              )}
-            </div>
-
-            <div className='grid grid-cols-1 gap-4 sm:grid-cols-2'>
-              <div className='space-y-1.5'>
-                <Label htmlFor='schedule-publish-at' className='text-xs'>
-                  Publish Date & Time
-                </Label>
-                <div className='flex gap-2'>
-                  <Input
-                    id='schedule-publish-at'
-                    type='datetime-local'
-                    value={scheduledPublishAt}
-                    onChange={(e) => setScheduledPublishAt(e.target.value)}
-                    className='h-8 text-xs'
-                  />
-                  <Button
-                    type='button'
-                    size='sm'
-                    className='h-8 text-xs'
-                    disabled={!scheduledPublishAt || schedulePublishMutation.isPending}
-                    onClick={handleSchedulePublish}
-                  >
-                    Schedule
-                  </Button>
-                </div>
-              </div>
-
-              {entry.status === 'published' && (
-                <div className='space-y-1.5'>
-                  <Label htmlFor='schedule-unpublish-at' className='text-xs'>
-                    Unpublish Date & Time
-                  </Label>
-                  <div className='flex gap-2'>
-                    <Input
-                      id='schedule-unpublish-at'
-                      type='datetime-local'
-                      value={scheduledUnpublishAt}
-                      onChange={(e) => setScheduledUnpublishAt(e.target.value)}
-                      className='h-8 text-xs'
-                    />
-                    <Button
-                      type='button'
-                      size='sm'
-                      className='h-8 text-xs'
-                      disabled={!scheduledUnpublishAt || scheduleUnpublishMutation.isPending}
-                      onClick={handleScheduleUnpublish}
-                    >
-                      Schedule
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+        <EntrySchedulingPanel
+          entry={entry}
+          scheduledPublishAt={scheduledPublishAt}
+          setScheduledPublishAt={setScheduledPublishAt}
+          scheduledUnpublishAt={scheduledUnpublishAt}
+          setScheduledUnpublishAt={setScheduledUnpublishAt}
+          onSchedulePublish={handleSchedulePublish}
+          onScheduleUnpublish={handleScheduleUnpublish}
+          onCancelSchedule={handleCancelSchedule}
+          isPublishPending={schedulePublishMutation.isPending}
+          isUnpublishPending={scheduleUnpublishMutation.isPending}
+          isCancelPending={cancelScheduleMutation.isPending}
+        />
       )}
       {autosaveConflictWarning && (
         <p className='rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900'>
@@ -520,162 +593,192 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
         </p>
       )}
 
-      <div className='space-y-4'>
-        <Tabs
-          value={activeTab}
-          onValueChange={(value) => setActiveTab(value as typeof activeTab)}
-          className='gap-3'
-        >
-          <TabsList className='w-fit'>
-            <TabsTrigger value='content'>Content</TabsTrigger>
-            {mode === 'edit' && entry && <TabsTrigger value='history'>History</TabsTrigger>}
-            {mode === 'edit' && entry && selectedDiffPair && <TabsTrigger value='diff'>Diff</TabsTrigger>}
-          </TabsList>
+      <div className={showLivePreview ? 'grid grid-cols-1 xl:grid-cols-2 gap-6 items-start' : 'space-y-4'}>
+        <div className='space-y-4'>
+          <Tabs
+            value={activeTab}
+            onValueChange={(value) => setActiveTab(value as typeof activeTab)}
+            className='gap-3'
+          >
+            <TabsList className='w-fit'>
+              <TabsTrigger value='content'>Content</TabsTrigger>
+              {mode === 'edit' && entry && <TabsTrigger value='history'>History</TabsTrigger>}
+              {mode === 'edit' && entry && selectedDiffPair && <TabsTrigger value='diff'>Diff</TabsTrigger>}
+            </TabsList>
 
-          <TabsContent value='content' className='space-y-4'>
-            <Card>
-              <CardContent className='space-y-6 p-5 sm:p-6'>
-                {hasLocalizableFields && (
-                  <LocaleSwitcher
-                    locales={collection.supportedLocales}
-                    defaultLocale={collection.defaultLocale}
-                    activeLocale={activeLocale}
-                    onLocaleChange={setActiveLocale}
-                    missingLocales={missingLocales}
-                  />
-                )}
-
-                <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
-                  <div className='space-y-2'>
-                    <Label htmlFor='entry-slug'>Slug</Label>
-                    <Controller
-                      name='slug'
-                      control={control}
-                      render={({ field: controllerField }) => (
-                        <Input
-                          id='entry-slug'
-                          value={controllerField.value}
-                          onChange={controllerField.onChange}
-                          placeholder='entry-slug'
-                          disabled={isSubmitting}
-                        />
-                      )}
+            <TabsContent value='content' className='space-y-4'>
+              <Card>
+                <CardContent className='space-y-6 p-5 sm:p-6'>
+                  {hasLocalizableFields && (
+                    <LocaleSwitcher
+                      locales={collection.supportedLocales}
+                      defaultLocale={collection.defaultLocale}
+                      activeLocale={activeLocale}
+                      onLocaleChange={setActiveLocale}
+                      missingLocales={missingLocales}
                     />
+                  )}
+
+                  <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
+                    <div className='space-y-2'>
+                      <Label htmlFor='entry-slug'>Slug</Label>
+                      <Controller
+                        name='slug'
+                        control={control}
+                        render={({ field: controllerField }) => (
+                          <Input
+                            id='entry-slug'
+                            value={controllerField.value}
+                            onChange={controllerField.onChange}
+                            placeholder='entry-slug'
+                            disabled={isSubmitting}
+                          />
+                        )}
+                      />
+                    </div>
+                    <div className='space-y-2'>
+                      <Label htmlFor='entry-status'>Status</Label>
+                      <Controller
+                        name='status'
+                        control={control}
+                        render={({ field: controllerField }) => (
+                          <Select
+                            value={controllerField.value}
+                            onValueChange={controllerField.onChange}
+                            disabled
+                          >
+                            <SelectTrigger id='entry-status' data-testid='entry-status-trigger'>
+                              <SelectValue placeholder='Select status' />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {ENTRY_STATUSES.map((status) => (
+                                <SelectItem key={status} value={status}>
+                                  {ENTRY_STATUS_LABELS[status]}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                      />
+                      <p className='text-xs text-muted-foreground'>
+                        Use publishing actions to change lifecycle status.
+                      </p>
+                    </div>
                   </div>
-                  <div className='space-y-2'>
-                    <Label htmlFor='entry-status'>Status</Label>
-                    <Controller
-                      name='status'
-                      control={control}
-                      render={({ field: controllerField }) => (
-                        <Select
-                          value={controllerField.value}
-                          onValueChange={controllerField.onChange}
-                          disabled
-                        >
-                          <SelectTrigger id='entry-status' data-testid='entry-status-trigger'>
-                            <SelectValue placeholder='Select status' />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {ENTRY_STATUSES.map((status) => (
-                              <SelectItem key={status} value={status}>
-                                {ENTRY_STATUS_LABELS[status]}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      )}
-                    />
-                    <p className='text-xs text-muted-foreground'>
-                      Use publishing actions to change lifecycle status.
+
+                  <div data-testid='entry-content-layout' className='grid grid-cols-1 gap-6 lg:grid-cols-2'>
+                    {collectionFields.map((field) => {
+                      const width = (field.options?.width as string | undefined) ?? 'half'
+                      const widthClass = width === 'full' ? 'md:col-span-2' : 'md:col-span-1'
+
+                      return (
+                        <div key={field.name} className={widthClass}>
+                          <Controller
+                            name={`data.${field.name}` as const}
+                            control={control}
+                            render={({ field: controllerField }) => (
+                              <FieldRenderer
+                                field={field}
+                                value={controllerField.value}
+                                onChange={controllerField.onChange}
+                                error={getFieldErrorMessage(errors.data, field.name, activeLocale)}
+                                disabled={isSubmitting}
+                                entryId={entry?.id}
+                                collectionId={collection.id}
+                                activeLocale={activeLocale}
+                              />
+                            )}
+                          />
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {collection.fields.length === 0 && (
+                    <p className='text-muted-foreground text-center py-8'>
+                      No fields defined for this collection.
                     </p>
-                  </div>
-                </div>
-
-                <div data-testid='entry-content-layout' className='grid grid-cols-1 gap-6 lg:grid-cols-2'>
-                  {collectionFields.map((field) => {
-                    const width = (field.options?.width as string | undefined) ?? 'half'
-                    const widthClass = width === 'full' ? 'md:col-span-2' : 'md:col-span-1'
-
-                    return (
-                      <div key={field.name} className={widthClass}>
-                        <Controller
-                          name={`data.${field.name}` as const}
-                          control={control}
-                          render={({ field: controllerField }) => (
-                            <FieldRenderer
-                              field={field}
-                              value={controllerField.value}
-                              onChange={controllerField.onChange}
-                              error={getFieldErrorMessage(errors.data, field.name, activeLocale)}
-                              disabled={isSubmitting}
-                              entryId={entry?.id}
-                              collectionId={collection.id}
-                              activeLocale={activeLocale}
-                            />
-                          )}
-                        />
-                      </div>
-                    )
-                  })}
-                </div>
-
-                {collection.fields.length === 0 && (
-                  <p className='text-muted-foreground text-center py-8'>
-                    No fields defined for this collection.
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {mode === 'edit' && entry && (
-            <TabsContent value='history'>
-              <Card>
-                <CardContent className='p-0'>
-                  <VersionHistory
-                    entryId={entry.id}
-                    currentVersion={entry.version}
-                    isOpen={true}
-                    onToggle={() => {}}
-                    onDiffRequest={(v1, v2) => {
-                      setSelectedDiffPair({ v1, v2 })
-                      setActiveTab('diff')
-                    }}
-                  />
-                </CardContent>
-              </Card>
-            </TabsContent>
-          )}
-
-          {mode === 'edit' && entry && selectedDiffPair && (
-            <TabsContent value='diff'>
-              <Card>
-                <CardContent className='space-y-4 p-5 sm:p-6'>
-                  <h3 className='text-sm font-medium text-muted-foreground'>Version Diff</h3>
-                  {isLoadingVersionDiff ? (
-                    <p className='text-sm text-muted-foreground'>Loading diff...</p>
-                  ) : (
-                    <VersionDiff
-                      diffs={versionDiffs ?? []}
-                      olderVersion={selectedVersionOne?.version ?? 0}
-                      newerVersion={selectedVersionTwo?.version ?? 0}
-                      onRollback={() => {
-                        if (!selectedVersionOne) return
-                        setRollbackVersion({
-                          id: selectedVersionOne.id,
-                          version: selectedVersionOne.version,
-                          timestamp: selectedVersionOne.createdAt,
-                        })
-                      }}
-                      rollbackDisabled={!selectedVersionOne}
-                    />
                   )}
                 </CardContent>
               </Card>
             </TabsContent>
-          )}
-        </Tabs>
+
+            {mode === 'edit' && entry && (
+              <TabsContent value='history'>
+                <Card>
+                  <CardContent className='p-0'>
+                    <VersionHistory
+                      entryId={entry.id}
+                      currentVersion={entry.version}
+                      isOpen={true}
+                      onToggle={() => {}}
+                      onDiffRequest={(v1, v2) => {
+                        setSelectedDiffPair({ v1, v2 })
+                        setActiveTab('diff')
+                      }}
+                    />
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            )}
+
+            {mode === 'edit' && entry && selectedDiffPair && (
+              <TabsContent value='diff'>
+                <Card>
+                  <CardContent className='space-y-4 p-5 sm:p-6'>
+                    <h3 className='text-sm font-medium text-muted-foreground'>Version Diff</h3>
+                    {isLoadingVersionDiff ? (
+                      <p className='text-sm text-muted-foreground'>Loading diff...</p>
+                    ) : (
+                      <VersionDiff
+                        diffs={versionDiffs ?? []}
+                        olderVersion={selectedVersionOne?.version ?? 0}
+                        newerVersion={selectedVersionTwo?.version ?? 0}
+                        onRollback={() => {
+                          if (!selectedVersionOne) return
+                          setRollbackVersion({
+                            id: selectedVersionOne.id,
+                            version: selectedVersionOne.version,
+                            timestamp: selectedVersionOne.createdAt,
+                          })
+                        }}
+                        rollbackDisabled={!selectedVersionOne}
+                      />
+                    )}
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            )}
+          </Tabs>
+        </div>
+
+        {showLivePreview && (
+          <div data-testid='live-preview-pane' className='sticky top-4 space-y-3'>
+            <EntryPreviewPanel
+              iframeReady={iframeReady}
+              previewView={previewView}
+              setPreviewView={setPreviewView}
+              previewDevice={previewDevice}
+              setPreviewDevice={setPreviewDevice}
+              computedPreviewUrl={computedPreviewUrl}
+              iframeRef={iframeRef}
+              onClosePreview={() => setShowLivePreview(false)}
+              previewTargetUrl={previewTargetUrl}
+              setPreviewTargetUrl={setPreviewTargetUrl}
+              previewToken={previewToken}
+              onFetchPreviewToken={fetchPreviewToken}
+              onIframeLoad={() => {
+                setIframeReady(true)
+                streamDraftUpdate()
+              }}
+              slug={watch('slug') || entry?.slug || ''}
+              status={watch('status') || 'draft'}
+              activeLocale={activeLocale}
+              collection={collection}
+              entryData={watch('data') as Record<string, unknown> | undefined}
+            />
+          </div>
+        )}
       </div>
 
       {mode === 'edit' && entry && (

@@ -91,6 +91,44 @@ describe('relationsRepository', () => {
       )
       expect(result).toBe(false)
     })
+
+    it('scopes the delete to the tenant when tenantId is given (H1)', async () => {
+      const mockDb = createChainableDb({ returningResult: [{ id: 'r1' }] })
+
+      const result = await relationsRepository.unlinkByEntries(
+        mockDb as unknown as Database,
+        'e1',
+        'e2',
+        'author',
+        't1'
+      )
+      expect(result).toBe(true)
+      expect(mockDb.whereArgs).toHaveLength(1)
+      expect(mentionsTenant(mockDb.whereArgs[0])).toBe(true)
+    })
+
+    it('omits the tenant filter when tenantId is absent (backward-compatible)', async () => {
+      const mockDb = createChainableDb({ returningResult: [{ id: 'r1' }] })
+
+      await relationsRepository.unlinkByEntries(
+        mockDb as unknown as Database,
+        'e1',
+        'e2',
+        'author'
+      )
+      expect(mockDb.whereArgs).toHaveLength(1)
+      expect(mentionsTenant(mockDb.whereArgs[0])).toBe(false)
+    })
+  })
+
+  describe('unlink tenant scope', () => {
+    it('scopes delete-by-id to the tenant when tenantId is given', async () => {
+      const mockDb = createChainableDb({ returningResult: [{ id: 'r1' }] })
+
+      await relationsRepository.unlink(mockDb as unknown as Database, 'r1', 't1')
+      expect(mockDb.whereArgs).toHaveLength(1)
+      expect(mentionsTenant(mockDb.whereArgs[0])).toBe(true)
+    })
   })
 
   describe('findBySourceEntry', () => {
@@ -119,6 +157,19 @@ describe('relationsRepository', () => {
       )
       expect(result).toEqual(relations)
     })
+
+    it('scopes to the tenant when tenantId is given', async () => {
+      const mockDb = createChainableDb({ selectResults: [[]] })
+
+      await relationsRepository.findBySourceEntry(
+        mockDb as unknown as Database,
+        'e1',
+        undefined,
+        't1'
+      )
+      expect(mockDb.whereArgs).toHaveLength(1)
+      expect(mentionsTenant(mockDb.whereArgs[0])).toBe(true)
+    })
   })
 
   describe('findByTargetEntry', () => {
@@ -131,6 +182,29 @@ describe('relationsRepository', () => {
         'e2'
       )
       expect(result).toEqual(relations)
+    })
+
+    it('scopes to the tenant when tenantId is given', async () => {
+      const mockDb = createChainableDb({ selectResults: [[]] })
+
+      await relationsRepository.findByTargetEntry(mockDb as unknown as Database, 'e2', 't1')
+      expect(mockDb.whereArgs).toHaveLength(1)
+      expect(mentionsTenant(mockDb.whereArgs[0])).toBe(true)
+    })
+  })
+
+  describe('findBySourceEntries', () => {
+    it('scopes to the tenant when tenantId is given', async () => {
+      const mockDb = createChainableDb({ selectResults: [[]] })
+
+      await relationsRepository.findBySourceEntries(
+        mockDb as unknown as Database,
+        ['e1'],
+        undefined,
+        't1'
+      )
+      expect(mockDb.whereArgs).toHaveLength(1)
+      expect(mentionsTenant(mockDb.whereArgs[0])).toBe(true)
     })
   })
 
@@ -145,6 +219,19 @@ describe('relationsRepository', () => {
         'category'
       )
       expect(result).toEqual(relations)
+    })
+
+    it('scopes to the tenant when tenantId is given', async () => {
+      const mockDb = createChainableDb({ selectResults: [[]] })
+
+      await relationsRepository.findBySourceEntryAndField(
+        mockDb as unknown as Database,
+        'e1',
+        'category',
+        't1'
+      )
+      expect(mockDb.whereArgs).toHaveLength(1)
+      expect(mentionsTenant(mockDb.whereArgs[0])).toBe(true)
     })
   })
 
@@ -170,12 +257,43 @@ describe('relationsRepository', () => {
       )
       expect(result).toBe(0)
     })
+
+    it('scopes the count to the tenant when tenantId is given', async () => {
+      const mockDb = createChainableDb({ selectResults: [[{ count: 1 }]] })
+
+      const result = await relationsRepository.countBySourceEntryAndField(
+        mockDb as unknown as Database,
+        'e1',
+        'tags',
+        't1'
+      )
+      expect(result).toBe(1)
+      expect(mockDb.whereArgs).toHaveLength(1)
+      expect(mentionsTenant(mockDb.whereArgs[0])).toBe(true)
+    })
   })
 })
 
 // ============================================================================
 // Test Helpers
 // ============================================================================
+
+/**
+ * Recursively check whether a drizzle WHERE condition references the
+ * relations tenantId column. Drizzle conditions are SQL objects holding
+ * `queryChunks`; columns carry a `name` and a `table` reference.
+ */
+function mentionsTenant(node: unknown, seen: Set<unknown> = new Set()): boolean {
+  if (!node || typeof node !== 'object' || seen.has(node)) return false
+  seen.add(node)
+  const rec = node as Record<string, unknown>
+  if (rec['name'] === 'tenantId' && 'table' in rec) return true
+  if (Array.isArray(rec['queryChunks'])) {
+    return (rec['queryChunks'] as unknown[]).some((chunk) => mentionsTenant(chunk, seen))
+  }
+  if (Array.isArray(node)) return node.some((item) => mentionsTenant(item, seen))
+  return false
+}
 
 function makeRelationRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -197,25 +315,32 @@ function createChainableDb(opts: { selectResults?: unknown[][]; returningResult?
   const selectResults = opts.selectResults ?? [[]]
   const returningResult = opts.returningResult ?? []
   let selectCallIndex = 0
+  const whereArgs: unknown[] = []
 
   const makeSelectChain = () => {
     const currentResult = selectResults[selectCallIndex] ?? []
     selectCallIndex++
 
-    const chainBase = {
-      from: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnThis(),
-      orderBy: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockReturnThis(),
-    }
-    return Object.assign(Promise.resolve(currentResult), chainBase)
+    const chain = Object.assign(Promise.resolve(currentResult), {
+      from: vi.fn().mockImplementation(() => chain),
+      where: vi.fn().mockImplementation((cond: unknown) => {
+        whereArgs.push(cond)
+        return chain
+      }),
+      orderBy: vi.fn().mockImplementation(() => chain),
+      limit: vi.fn().mockImplementation(() => chain),
+    })
+    return chain
   }
 
   const returningPromise = Object.assign(Promise.resolve(returningResult), {})
   const mutationChain = {
     values: vi.fn().mockReturnThis(),
     set: vi.fn().mockReturnThis(),
-    where: vi.fn().mockReturnThis(),
+    where: vi.fn().mockImplementation((cond: unknown) => {
+      whereArgs.push(cond)
+      return mutationChain
+    }),
     returning: vi.fn().mockReturnValue(returningPromise),
   }
 
@@ -224,5 +349,6 @@ function createChainableDb(opts: { selectResults?: unknown[][]; returningResult?
     insert: vi.fn().mockReturnValue(mutationChain),
     update: vi.fn().mockReturnValue(mutationChain),
     delete: vi.fn().mockReturnValue(mutationChain),
+    whereArgs,
   }
 }

@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   appendListItem,
   filterListItems,
@@ -10,6 +10,7 @@ import {
 } from '@/features/sync/query-cache-optimistic'
 import { type OfflineMutationDescriptor, useOfflineMutation } from '@/features/sync/use-offline-mutation'
 import { edenDelete, edenGet, edenPost, edenPut } from '@/lib/eden-client'
+import { FIELD_TYPES, type AllFieldType } from '@edgecms/schemas'
 
 /**
  * Query key factory for collections
@@ -22,40 +23,8 @@ export const collectionsKeys = {
 /**
  * Type definitions matching the API schemas
  */
-export type FieldType =
-  | 'text'
-  | 'richtext'
-  | 'markdown'
-  | 'number'
-  | 'boolean'
-  | 'date'
-  | 'media'
-  | 'relation'
-  | 'json'
-  | 'array'
-  | 'select'
-  | 'email'
-  | 'url'
-  | 'slug'
-  | 'color'
-
-export const FIELD_TYPES = [
-  'text',
-  'richtext',
-  'markdown',
-  'number',
-  'boolean',
-  'date',
-  'media',
-  'relation',
-  'json',
-  'array',
-  'select',
-  'email',
-  'url',
-  'slug',
-  'color',
-] as const satisfies readonly FieldType[]
+export type FieldType = AllFieldType
+export { FIELD_TYPES }
 
 export type FieldComponentType = 'input' | 'textarea'
 export type RelationType = 'one-to-one' | 'one-to-many' | 'many-to-many'
@@ -167,13 +136,21 @@ export function useCollection(id: string) {
  * Hook to fetch a collection by identifier (ID or slug)
  */
 export function useCollectionByIdentifier(identifier: string) {
+  const queryClient = useQueryClient()
   return useQuery({
     queryKey: [...collectionsKeys.detail(identifier), 'by-identifier'],
     queryFn: async () => {
+      // Reuse the already-fetched collections list before hitting the network.
+      const cachedList = queryClient.getQueryData<CollectionDefinition[]>(collectionsKeys.all)
+      const cachedMatch = cachedList?.find(
+        (collection) => collection.id === identifier || collection.slug === identifier
+      )
+      if (cachedMatch) return cachedMatch
       try {
         return await edenGet<CollectionDefinition>(`/admin/collections/${identifier}`)
       } catch (error) {
-        const collections = await edenGet<CollectionDefinition[]>('/admin/collections')
+        const collections =
+          cachedList ?? (await edenGet<CollectionDefinition[]>('/admin/collections'))
         const matched = collections.find((collection) => collection.slug === identifier)
         if (matched) return matched
         throw error

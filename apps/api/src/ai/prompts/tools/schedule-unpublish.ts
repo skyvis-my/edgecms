@@ -1,4 +1,4 @@
-import { type } from 'arktype'
+import { Type, createSchema } from '@/shared/schemas/typebox'
 import { id, timestamp } from '@/shared/schemas'
 
 /**
@@ -12,10 +12,12 @@ export const scheduleUnpublishTool = {
   name: 'scheduleUnpublish',
   description:
     'Schedule an entry to be unpublished at a specific future date and time. Use this when the user wants to take content offline later (e.g., "unpublish this post tomorrow", "take this down on Friday", "hide this promotion after the sale ends").',
-  parameters: type({
-    entryId: id,
-    unpublishAt: timestamp,
-  }),
+  parameters: createSchema(
+    Type.Object({
+      entryId: id,
+      unpublishAt: timestamp,
+    })
+  ),
 }
 
 export type ScheduleUnpublishToolParams = typeof scheduleUnpublishTool.parameters.infer

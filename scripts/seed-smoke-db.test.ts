@@ -39,6 +39,11 @@ describe('seed-smoke-db options', () => {
   it('rejects unsupported environments', () => {
     expect(() => parseSeedOptions(['--env', 'preview'], {})).toThrow('Unsupported seed env: preview')
   })
+
+  it('parses skip-migrations flag', () => {
+    expect(parseSeedOptions(['--skip-migrations'], {}).skipMigrations).toBe(true)
+    expect(parseSeedOptions(['--no-migrate'], {}).skipMigrations).toBe(true)
+  })
 })
 
 describe('seed-smoke-db SQL', () => {
@@ -87,5 +92,17 @@ describe('seed-smoke-db SQL', () => {
     const sql = buildSeedSql(options, 'hash:value', new Date('2026-06-04T00:00:00.000Z'))
 
     expect(sql).toContain("Smoke''s Tenant")
+  })
+})
+
+describe('applyLocalMigrations', () => {
+  it('resolves cleanly when runner exits with 0', async () => {
+    const { applyLocalMigrations } = await import('./seed-smoke-db')
+    await expect(applyLocalMigrations(async () => 0)).resolves.toBeUndefined()
+  })
+
+  it('rejects with error when runner exits with non-zero code', async () => {
+    const { applyLocalMigrations } = await import('./seed-smoke-db')
+    await expect(applyLocalMigrations(async () => 1)).rejects.toThrow('cf d1 migrations apply failed')
   })
 })

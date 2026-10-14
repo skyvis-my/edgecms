@@ -10,7 +10,7 @@
  *   - cloudflare:workers   → Worker runtime
  *   - node:*               → nodejs_compat compatibility flag
  */
-import { existsSync, rmSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs'
+import { existsSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -47,6 +47,7 @@ if (!noEmit) {
     target: 'browser',
     format: 'esm',
     splitting: false,
+    minify: true,
     naming: 'app.js',
     outdir: distDir,
     external: [
@@ -104,70 +105,33 @@ if (!noEmit) {
     process.exit(1)
   }
 
-  // Bundle bootstrap separately
-  const bootstrapResult = await Bun.build({
-    entrypoints: [join(apiSrc, 'runtime', 'bootstrap.ts')],
-    target: 'browser',
-    format: 'esm',
-    naming: 'bootstrap.js',
-    outdir: distDir,
-    external: [
-      'cloudflare:workers',
-      'cloudflare:sockets',
-      'node:*',
-      '__STATIC_CONTENT_MANIFEST',
-    ],
-    plugins: [
-      {
-        name: 'cf-workers-shim',
-        setup(build) {
-          build.onResolve({ filter: /^cloudflare:workers$/ }, () => ({
-            path: 'cloudflare:workers',
-            namespace: 'cf-workers-shim',
-          }))
-          build.onLoad({ filter: /.*/, namespace: 'cf-workers-shim' }, () => ({
-            contents: `
-              export const env = globalThis?.process?.env ?? {}
-              export default { env }
-            `,
-            loader: 'js',
-          }))
-        },
-      },
-      {
-        name: 'workspace-package-resolver',
-        setup(build) {
-          build.onResolve({ filter: /^@edgecms\/schemas/ }, (args) => {
-            const schemasDir = join(repoRoot, 'packages', 'schemas', 'src')
-            const suffix = args.path.replace('@edgecms/schemas', '')
-            return { path: suffix ? join(schemasDir, suffix.replace(/^\//, '') + '.ts') : join(schemasDir, 'index.ts') }
-          })
-          build.onResolve({ filter: /^@edgecms\/plugin-sdk/ }, (args) => {
-            const pluginSdkDir = join(repoRoot, 'packages', 'plugin-sdk', 'src')
-            const suffix = args.path.replace('@edgecms/plugin-sdk', '')
-            return { path: suffix ? join(pluginSdkDir, suffix.replace(/^\//, '') + '.ts') : join(pluginSdkDir, 'index.ts') }
-          })
-        },
-      },
-    ],
-  })
-
-  if (!bootstrapResult.success) {
-    console.error('Bootstrap bundle failed:')
-    for (const log of bootstrapResult.logs) console.error(log)
-    process.exit(1)
-  }
+  // Write bootstrap.js re-export entry sharing the app.js bundle to eliminate duplication
+  writeFileSync(
+    join(distDir, 'bootstrap.js'),
+    `// @edgecms/runtime - bootstrap re-export entry
+export {
+  bootstrapApp,
+  parsePluginHookTimeoutMs,
+  ensureWorkerBootstrapped,
+  resetWorkerBootstrapStateForTests,
+} from './app.js'
+`,
+  )
 
   // Write the index.js re-export entry
   writeFileSync(
     join(distDir, 'index.js'),
     `// @edgecms/runtime - bundled entry point
 export * from './app.js'
-export * from './bootstrap.js'
 `,
   )
 
-  console.log(`Built: ${relative(repoRoot, distDir)}/index.js, app.js, bootstrap.js`)
+  // Write the index.d.ts declarations from src/index.ts
+  const srcDeclarations = readFileSync(join(packageRoot, 'src', 'index.ts'), 'utf8')
+  writeFileSync(join(distDir, 'index.d.ts'), srcDeclarations)
+
+  console.log(`Built: ${relative(repoRoot, distDir)}/index.js, app.js, bootstrap.js, index.d.ts`)
+  process.exit(0)
 }
 
 // --- Step 2: Emit type declarations ---

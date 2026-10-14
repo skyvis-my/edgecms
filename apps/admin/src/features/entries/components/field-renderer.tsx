@@ -56,8 +56,11 @@ export function FieldRenderer({
     (field.options?.itemFields as ArrayItemSubfield[] | undefined) ??
     []
 
+  const componentOption = typeof field.options?.component === 'string' ? field.options.component : undefined
   const Renderer =
-    FIELD_RENDERERS[type] ?? FIELD_RENDERERS.default
+    (componentOption ? FIELD_RENDERERS[componentOption] : undefined) ??
+    FIELD_RENDERERS[type] ??
+    FIELD_RENDERERS.default
 
   return (
     <div className='space-y-2'>

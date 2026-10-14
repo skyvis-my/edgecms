@@ -22,8 +22,10 @@ describe('webhooksRepository', () => {
       updatedAt: '2024-01-01T00:00:00.000Z',
     }
 
+    // Select queue: findAll, findById, findDeliveries (update/deleteById are
+    // single-statement tenant-scoped writes with no guard select).
     const db = createDbMock({
-      selectResults: [[webhook], [webhook], [webhook], [webhook], [{ id: 'd1' }], [{ id: 'd1' }]],
+      selectResults: [[webhook], [webhook], [{ id: 'd1' }], [{ id: 'd1' }]],
       returningResults: [[webhook], [webhook], [{ id: 'w1' }], [{ id: 'd1' }], [{ id: 'd1' }]],
     })
 
@@ -80,6 +82,18 @@ describe('webhooksRepository', () => {
     expect(await webhooksRepository.findDeliveries(db as unknown as Database, 'missing')).toEqual(
       []
     )
+  })
+
+  it('countByTenant counts scoped and unscoped webhooks', async () => {
+    const scoped = createDbMock({ selectResults: [[{ value: 3 }]], returningResults: [] })
+    expect(await webhooksRepository.countByTenant(scoped as unknown as Database, 't1')).toBe(3)
+
+    const unscopedSelect = vi.fn().mockImplementation(() => ({
+      from: vi.fn().mockReturnValue(Promise.resolve([{ value: 9 }])),
+    }))
+    expect(
+      await webhooksRepository.countByTenant({ select: unscopedSelect } as unknown as Database)
+    ).toBe(9)
   })
 })
 

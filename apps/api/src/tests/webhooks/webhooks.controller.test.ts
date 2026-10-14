@@ -19,7 +19,7 @@ vi.mock('cloudflare:workers', () => ({
 vi.mock('@/auth/auth.middleware', () => ({
   betterAuthPlugin: new Elysia().macro({
     auth: {
-      resolve() {
+      derive() {
         return { user: { id: 'u1' } }
       },
     },

@@ -1,11 +1,12 @@
-import { env } from 'cloudflare:workers'
 import { Elysia } from 'elysia'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
 import { createAuth } from '@/auth/auth'
 import { getSessionForRequest } from '@/auth/session-cache'
 import type { CommandContext } from '@/commands/engine'
+import type { Database } from '@/database/db'
 import type { Env } from '@/env'
-import { hasTenantContext, resolveTenantBindings } from '@/tenants/tenant-context'
+import { withTenantBindings } from '@/tenants/with-tenant-bindings'
+import type { TenantContext } from '@/tenants/tenant-context'
 import { getRequestPathname, getRequestUrl } from '@/shared/utils/request-url'
 import { processMcpMessage, type McpJsonRpcRequest } from './mcp-server'
 
@@ -65,117 +66,89 @@ async function resolveMcpAuth(
   return { authenticated: false }
 }
 
+interface McpRequestContext {
+  body: unknown
+  request: Request
+  headers: Record<string, string | undefined>
+  set: { status?: unknown; headers: Record<string, string> }
+  user?: { id: string }
+  db: Database
+  kv: KVNamespace
+  workerEnv: Env
+  tenantCtx?: TenantContext
+  requestId?: string
+}
+
+async function handleMcpRequest(ctx: McpRequestContext) {
+  const { body, set, user, workerEnv, db, kv, tenantCtx, request } = ctx
+  const requestPathname = getRequestPathname(request)
+
+  const auth = await resolveMcpAuth(
+    request,
+    ctx.headers,
+    workerEnv,
+    user
+  )
+
+  if (!auth.authenticated || !auth.actorId) {
+    set.status = 401
+    set.headers['content-type'] = 'application/json'
+    return {
+      jsonrpc: '2.0',
+      id: Array.isArray(body) ? (body[0]?.id ?? null) : ((body as McpJsonRpcRequest)?.id ?? null),
+      error: {
+        code: -32001,
+        message: 'Unauthorized: MCP endpoint requires an active session or a valid X-EdgeCMS-API-Key header',
+      },
+    }
+  }
+
+  const commandContext: CommandContext = {
+    db,
+    kv,
+    env: workerEnv,
+    actor: {
+      userId: auth.actorId,
+      source: 'ai',
+    },
+    tenantScope: tenantCtx?.tenant.id,
+    requestMeta: {
+      requestId: ctx.requestId ?? crypto.randomUUID(),
+      pathname: requestPathname,
+      method: request.method,
+    },
+  }
+
+  set.headers['content-type'] = 'application/json'
+
+  if (Array.isArray(body)) {
+    if (body.length > 25) {
+      set.status = 400
+      return {
+        jsonrpc: '2.0',
+        id: (body[0] as McpJsonRpcRequest)?.id ?? null,
+        error: {
+          code: -32600,
+          message: 'Batch request exceeds maximum of 25 messages',
+        },
+      }
+    }
+    const results: unknown[] = []
+    for (let i = 0; i < body.length; i += 5) {
+      const chunk = body.slice(i, i + 5)
+      const settled = await Promise.all(
+        chunk.map((req) => processMcpMessage(commandContext, req as McpJsonRpcRequest))
+      )
+      results.push(...settled)
+    }
+    return results
+  }
+
+  return processMcpMessage(commandContext, body as McpJsonRpcRequest)
+}
+
 export const mcpController = new Elysia()
   .use(betterAuthPlugin)
-  .post('/api/mcp', async (elysiaCtx) => {
-    const { body, set } = elysiaCtx
-    const user = (elysiaCtx as { user?: { id: string } }).user
-    const workerEnv = env as unknown as Env
-    const requestPathname = getRequestPathname(elysiaCtx.request)
-
-    const auth = await resolveMcpAuth(
-      elysiaCtx.request,
-      elysiaCtx.headers as Record<string, string | undefined>,
-      workerEnv,
-      user
-    )
-
-    if (!auth.authenticated || !auth.actorId) {
-      set.status = 401
-      set.headers['content-type'] = 'application/json'
-      return {
-        jsonrpc: '2.0',
-        id: Array.isArray(body) ? (body[0]?.id ?? null) : ((body as McpJsonRpcRequest)?.id ?? null),
-        error: {
-          code: -32001,
-          message: 'Unauthorized: MCP endpoint requires an active session or a valid X-EdgeCMS-API-Key header',
-        },
-      }
-    }
-
-    const tenantCtx = hasTenantContext(elysiaCtx) ? elysiaCtx.tenant : undefined
-    const { db, kv } = resolveTenantBindings(tenantCtx, workerEnv)
-
-    const commandContext: CommandContext = {
-      db,
-      kv,
-      env: workerEnv,
-      actor: {
-        userId: auth.actorId,
-        source: 'ai',
-      },
-      tenantScope: tenantCtx?.tenant.id,
-      requestMeta: {
-        requestId: (elysiaCtx as unknown as { requestId?: string }).requestId ?? crypto.randomUUID(),
-        pathname: requestPathname,
-        method: elysiaCtx.request.method,
-      },
-    }
-
-    set.headers['content-type'] = 'application/json'
-
-    if (Array.isArray(body)) {
-      const results = await Promise.all(
-        body.map((req) => processMcpMessage(commandContext, req as McpJsonRpcRequest))
-      )
-      return results
-    }
-
-    return await processMcpMessage(commandContext, body as McpJsonRpcRequest)
-  })
-  .post('/api/admin/mcp', async (elysiaCtx) => {
-    const { body, set } = elysiaCtx
-    const user = (elysiaCtx as { user?: { id: string } }).user
-    const workerEnv = env as unknown as Env
-    const requestPathname = getRequestPathname(elysiaCtx.request)
-
-    const auth = await resolveMcpAuth(
-      elysiaCtx.request,
-      elysiaCtx.headers as Record<string, string | undefined>,
-      workerEnv,
-      user
-    )
-
-    if (!auth.authenticated || !auth.actorId) {
-      set.status = 401
-      set.headers['content-type'] = 'application/json'
-      return {
-        jsonrpc: '2.0',
-        id: Array.isArray(body) ? (body[0]?.id ?? null) : ((body as McpJsonRpcRequest)?.id ?? null),
-        error: {
-          code: -32001,
-          message: 'Unauthorized: MCP endpoint requires an active session or a valid X-EdgeCMS-API-Key header',
-        },
-      }
-    }
-
-    const tenantCtx = hasTenantContext(elysiaCtx) ? elysiaCtx.tenant : undefined
-    const { db, kv } = resolveTenantBindings(tenantCtx, workerEnv)
-
-    const commandContext: CommandContext = {
-      db,
-      kv,
-      env: workerEnv,
-      actor: {
-        userId: auth.actorId,
-        source: 'ai',
-      },
-      tenantScope: tenantCtx?.tenant.id,
-      requestMeta: {
-        requestId: (elysiaCtx as unknown as { requestId?: string }).requestId ?? crypto.randomUUID(),
-        pathname: requestPathname,
-        method: elysiaCtx.request.method,
-      },
-    }
-
-    set.headers['content-type'] = 'application/json'
-
-    if (Array.isArray(body)) {
-      const results = await Promise.all(
-        body.map((req) => processMcpMessage(commandContext, req as McpJsonRpcRequest))
-      )
-      return results
-    }
-
-    return await processMcpMessage(commandContext, body as McpJsonRpcRequest)
-  })
+  .use(withTenantBindings)
+  .post('/api/mcp', (ctx) => handleMcpRequest(ctx as unknown as McpRequestContext))
+  .post('/api/admin/mcp', (ctx) => handleMcpRequest(ctx as unknown as McpRequestContext))

@@ -43,7 +43,7 @@ mock.module('@/auth/auth.middleware', () => ({
   betterAuthPlugin: new Elysia()
     .macro({
       auth: {
-        resolve() {
+        derive() {
           return { user: mockUser }
         },
       },

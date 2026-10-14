@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it, mock, vi } from 'bun:test'
-import { type } from 'arktype'
 
 vi.mock('cloudflare:workers', () => ({
   env: {},
@@ -113,6 +112,8 @@ describe('plugin field type extension', () => {
 
     expect(field).toBeDefined()
     expect(FIELD_TYPES).not.toContain(field?.type as (typeof FIELD_TYPES)[number])
-    expect(field?.validator(field.defaultValue) instanceof type.errors).toBe(false)
+    const validated = field?.validator(field.defaultValue)
+    expect(validated).not.toHaveProperty('issues')
+    expect(validated).toEqual(field?.defaultValue)
   })
 })

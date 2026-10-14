@@ -1,4 +1,3 @@
-import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { createOpenAI } from '@ai-sdk/openai'
 import type { LanguageModel } from 'ai'
 import { incrementMetric } from '@/observability/metrics'
@@ -121,23 +120,12 @@ export function createGatewayGeminiProvider(
   gatewayUrl?: string,
   headers?: Record<string, string>
 ) {
-  // Note: Google AI SDK v4 uses baseURL for the provider
-  // For gateway routing, we need to use the gateway URL as baseURL
-  if (gatewayUrl) {
-    // Construct gateway URL for Google Gemini
-    const baseURL = `${gatewayUrl.replace(/\/$/, '')}/generativelanguage.googleapis.com`
-
-    return createGoogleGenerativeAI({
-      apiKey,
-      baseURL,
-      headers,
-    })
-  }
-
-  return createGoogleGenerativeAI({
+  return createGatewayOpenAIProvider(
     apiKey,
-    headers,
-  })
+    'https://generativelanguage.googleapis.com/v1beta/openai',
+    gatewayUrl,
+    headers
+  )
 }
 
 /**

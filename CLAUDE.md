@@ -51,7 +51,7 @@ Both apps are served from a single Cloudflare Worker. The Worker handles `/api/*
 
 ### API (apps/api/)
 
-**Stack:** ElysiaJS + CloudflareAdapter, Drizzle ORM on D1, better-auth, ArkType validation
+**Stack:** ElysiaJS + CloudflareAdapter, Drizzle ORM on D1, better-auth, TypeBox validation
 
 **Cloudflare Bindings** (defined in `wrangler.toml`, typed in `src/main.ts` as `Env`):
 - `DB` — D1 database
@@ -79,7 +79,7 @@ const auth = createAuth(env.DB, { secret: env.BETTER_AUTH_SECRET })
 ```
 Routes requiring auth use the `{ auth: true }` macro which resolves `user` and `session` on the context.
 
-**Shared schemas** (`src/shared/schemas/`) use ArkType for API validation contracts. Path alias: `@edgecms/schemas`.
+**Shared schemas** (`packages/schemas/` and `src/shared/schemas/`) use TypeBox for API validation contracts. Path alias: `@edgecms/schemas`.
 
 **Database:** Schema files in `src/database/schema/`, migrations in `drizzle/migrations/`. Tables: user, session, account, verification (auth), collections, entries, entry_versions (CMS).
 
@@ -110,7 +110,7 @@ Routes requiring auth use the `{ auth: true }` macro which resolves `user` and `
 - **Cloudflare Workers compatibility:** `compatibility_date >= 2025-06-01` required for ElysiaJS CloudflareAdapter. Use `nodejs_compat` flag.
 - **Elysia redirect on Workers:** `redirect()` doesn't work — use `Response.redirect()` with absolute URLs.
 - **D1 is SQLite:** Drizzle config uses `dialect: 'sqlite'` with `d1-http` driver. No Postgres types.
-- **ArkType v2 patterns:** Use `type()` for schema definitions, `type.infer` for TS type extraction, string-based constraints like `"1 <= number.integer <= 100"`.
+- **TypeBox schema patterns:** Use `createSchema(Type.Object(...))` for callable compiled schemas, `typeof schema.infer` for TS type extraction.
 - **better-auth base path:** Server mounts at `/api/auth`, client uses relative base URL `/`.
 
 ## Testing
@@ -126,7 +126,7 @@ Routes requiring auth use the `{ auth: true }` macro which resolves `user` and `
 ## AI Prompt Organization
 
 - AI system prompts and tool definitions stored as separate files in `apps/api/src/ai/prompts/`
-- Tool definitions use ArkType schemas (not Zod) for unified schema consistency across UI, API, and AI
+- Tool definitions use TypeBox schemas for unified schema consistency across UI, API, and AI
 - Prompt files named by purpose: `system.ts`, `tools/{command-type}.ts`
 
 ## Multi-Tenant Routing

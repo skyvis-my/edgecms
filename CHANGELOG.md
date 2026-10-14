@@ -7,6 +7,25 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+- Added `@edgecms/client` SDK featuring TipTap ProseMirror AST serializer, React rendering component, live draft preview bridge, and Section Builder.
+- Added dynamic zero-config GraphQL endpoint with D1 execution guardrails and GraphiQL playground (`/api/graphql`).
+- Added on-demand Cloudflare CDN edge cache purge service triggered on entry/collection mutations.
+- Added Model Context Protocol (MCP) server tools and endpoints (`/api/mcp`) for authorized AI agent interactions.
+- Added x402 paywall protocol middleware and WordPress WXR XML import parser with preview receipts.
+- Added package release automation and pack validation scripts (`scripts/publish-packages.ts`).
+
+### Changed
+- Upgraded Elysia ecosystem to 2.0 (`elysia@2.0.0-beta.30`, `@elysia/eden@2.0.0-beta.6`, `@elysia/openapi@2.0.0-beta.4`) and standardized all API and schema validation on `@sinclair/typebox`.
+- Removed ArkType and Zod runtime dependencies across backend and shared schema packages.
+- Optimized `@edgecms/runtime` bundle, reducing unpacked package size from 7.6 MB to 2.4 MB (-68.4%).
+- Consolidated admin dashboard vendor chunking into cohesive domain chunks, reducing asset requests by 26%.
+
+### Fixed
+- Configured Elysia 2 AOT precompilation explicitly for Cloudflare Workers isolates.
+- Hardened GraphQL identifier validation, revalidation dispatch, and route authorization.
+- Enforced strict test isolation across API and admin suites.
+
 ## [0.1.0] - 2026-03-12
 
 ### Added

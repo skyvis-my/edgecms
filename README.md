@@ -34,9 +34,10 @@ bun run dev:api    # API on http://localhost:8787
 bun run dev:admin  # Admin on http://localhost:5173
 ```
 
-Seed and verify smoke path:
+Apply local database migrations and seed smoke data:
 
 ```bash
+bun run db:migrate:local
 bun run db:seed:smoke
 bun run smoke:e2e:local
 ```

@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import { integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 /**
  * Collections table — defines content types (collections) in the CMS.
@@ -48,7 +48,8 @@ export const collections = sqliteTable(
     defaultSortOrder: text('defaultSortOrder'),
   },
   (table) => [
+    // (tenantId) is the leftmost prefix of the unique index above; a
+    // single-column index would only add D1 write amplification.
     uniqueIndex('collections_tenant_slug_unique').on(table.tenantId, table.slug),
-    index('collections_tenantId_idx').on(table.tenantId),
   ]
 )

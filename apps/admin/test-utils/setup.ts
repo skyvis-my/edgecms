@@ -23,6 +23,7 @@ if (typeof document === 'undefined') {
   globalThis.Node = dom.window.Node
   globalThis.Event = dom.window.Event
   globalThis.CustomEvent = dom.window.CustomEvent
+  globalThis.MessageEvent = dom.window.MessageEvent as unknown as typeof MessageEvent
   globalThis.NodeFilter = dom.window.NodeFilter
   globalThis.MutationObserver = dom.window.MutationObserver
 
@@ -61,6 +62,7 @@ const htmlElementPrototype = globalThis.window.HTMLElement.prototype as HTMLElem
 
 htmlElementPrototype.attachEvent ??= () => {}
 htmlElementPrototype.detachEvent ??= () => {}
+htmlElementPrototype.scrollIntoView ??= () => {}
 
 const matchers = await import('@testing-library/jest-dom/matchers')
 expect.extend(matchers)

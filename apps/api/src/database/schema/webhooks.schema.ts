@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 /**
  * Webhooks table — stores webhook endpoint registrations.
@@ -33,11 +33,9 @@ export const webhooks = sqliteTable(
     updatedAt: text('updated_at').notNull(),
   },
   (table) => [
-    // Index for querying enabled webhooks by event type
+    index('webhooks_tenant_enabled_idx').on(table.tenantId, table.enabled),
+    index('webhooks_tenant_created_idx').on(table.tenantId, table.createdAt),
     index('webhooks_enabled_idx').on(table.enabled),
-    index('webhooks_tenant_id_idx').on(table.tenantId),
-    // Composite index helps active-subscription scans.
-    index('webhooks_tenant_enabled_events_idx').on(table.tenantId, table.enabled, table.events),
   ]
 )
 
@@ -78,13 +76,51 @@ export const webhookDeliveries = sqliteTable(
     createdAt: text('created_at').notNull(),
   },
   (table) => [
-    // Index for querying deliveries by webhook
-    index('webhook_deliveries_webhook_id_idx').on(table.webhookId),
-    // Index for querying deliveries by status (to find pending/failed deliveries)
-    index('webhook_deliveries_status_idx').on(table.status),
+    // Composite index for querying and paginating deliveries by webhook
+    index('webhook_deliveries_webhook_created_idx').on(table.webhookId, table.createdAt),
+    // Composite index for retry polling (status + next retry time)
+    index('webhook_deliveries_status_retry_idx').on(table.status, table.nextRetryAt),
     // Index for querying deliveries by event ID
     index('webhook_deliveries_event_id_idx').on(table.eventId),
-    // Index for querying deliveries due for retry
-    index('webhook_deliveries_next_retry_at_idx').on(table.nextRetryAt),
+    // Dedup guard: one delivery row per (event, webhook) — absorbs queue
+    // at-least-once redelivery without inflating retry accounting.
+    uniqueIndex('webhook_deliveries_event_webhook_unique').on(table.eventId, table.webhookId),
+  ]
+)
+
+/**
+ * Webhook outbox table — transactional intent log for webhook events.
+ *
+ * H1 durability: command engine writes one row here in the SAME db.batch()
+ * as the processed command + audit rows, so a crash between DB commit and
+ * queue.sendBatch never loses the webhook — a sweeper (see outbox-relay.ts)
+ * replays still-pending rows. eventId is UNIQUE so double-enqueue is a no-op.
+ */
+export const webhookOutbox = sqliteTable(
+  'webhook_outbox',
+  {
+    id: text('id').primaryKey(),
+    /** Unique event ID — doubles as idempotency key for enqueue. */
+    eventId: text('event_id').notNull().unique(),
+    /** Dot-notation event type (e.g., "entry.created"). */
+    eventType: text('event_type').notNull(),
+    /** JSON-serialised WebhookEvent data: { event, metadata, after, before }. */
+    payload: text('payload', { mode: 'json' }).notNull().$type<Record<string, unknown>>(),
+    /** Tenant scope: 'global' or tenant ID. */
+    tenantScope: text('tenant_scope').notNull().default('global'),
+    /** Command that produced the event (nullable for non-command events). */
+    commandId: text('command_id'),
+    /** Outbox status: pending, sent, or failed. */
+    status: text('status').notNull().default('pending'),
+    /** Number of relay attempts made so far. */
+    attempts: integer('attempts').notNull().default(0),
+    /** ISO 8601 timestamp of when the next relay attempt should occur. */
+    nextAttemptAt: text('next_attempt_at'),
+    /** ISO 8601 timestamp. */
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('webhook_outbox_event_id_unique').on(table.eventId),
+    index('webhook_outbox_status_next_attempt_idx').on(table.status, table.nextAttemptAt),
   ]
 )

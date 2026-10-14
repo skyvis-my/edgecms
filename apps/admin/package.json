@@ -2,6 +2,7 @@
   "name": "edgecms-admin",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,6 +16,7 @@
     "test": "bun test --isolate src",
     "test:coverage": "bun test --isolate --coverage src",
     "test:watch": "bun test --isolate --watch src",
+    "playwright": "playwright",
     "test:e2e": "playwright test",
     "test:e2e:live": "E2E_LIVE_API=1 E2E_LIVE_PERSISTED=1 playwright test",
     "test:e2e:integration-live": "E2E_LIVE_API=1 playwright test e2e/live-api.integration.spec.ts",
@@ -22,10 +24,12 @@
     "test:e2e:prd-smoke": "playwright test e2e/prd-smoke.spec.ts",
     "test:e2e:visual": "playwright test e2e/visual-chrome.spec.ts",
     "preview": "vite preview",
-    "knip": "knip --include dependencies,unlisted,binaries --no-config-hints"
+    "knip": "knip --include files,unresolved,duplicates,dependencies,unlisted,binaries --no-config-hints"
   },
   "dependencies": {
-    "@elysiajs/eden": "1.4.6",
+    "@edgecms/client": "workspace:*",
+    "@edgecms/schemas": "workspace:*",
+    "@elysia/eden": "^2.0.0-beta.6",
     "@floating-ui/dom": "^1.8.0",
     "@hookform/resolvers": "^5.9.1",
     "@jsquash/avif": "^2.1.1",
@@ -35,7 +39,7 @@
     "@radix-ui/react-avatar": "^1.2.7",
     "@radix-ui/react-checkbox": "^1.3.12",
     "@radix-ui/react-collapsible": "^1.1.21",
-    "@radix-ui/react-dialog": "^1.2.0",
+    "@radix-ui/react-dialog": "^1.3.1",
     "@radix-ui/react-direction": "^1.1.5",
     "@radix-ui/react-dropdown-menu": "^2.1.25",
     "@radix-ui/react-icons": "^1.3.2",
@@ -45,7 +49,7 @@
     "@radix-ui/react-scroll-area": "^1.3.0",
     "@radix-ui/react-select": "^2.3.8",
     "@radix-ui/react-separator": "^1.1.16",
-    "@radix-ui/react-slot": "^1.4.0",
+    "@radix-ui/react-slot": "^1.5.0",
     "@radix-ui/react-switch": "^1.3.8",
     "@radix-ui/react-tabs": "^1.1.22",
     "@radix-ui/react-tooltip": "^1.3.0",
@@ -78,7 +82,7 @@
     "tailwind-merge": "^3.7.0",
     "tailwindcss": "^4.3.3",
     "tw-animate-css": "^1.4.0",
-    "zod": "^4.6.5",
+    "zod": "^4.6.7",
     "zustand": "^5.0.15"
   },
   "devDependencies": {
@@ -96,7 +100,7 @@
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^28.1.0",
     "knip": "^6.40.0",
-    "oxlint": "^1.87.0",
+    "oxlint": "^1.88.0",
     "typescript": "~5.9.3",
     "vite": "^7.3.7",
     "vitest": "^4.1.11"

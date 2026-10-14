@@ -24,14 +24,14 @@ export const commandsRepository = {
     db: Database
     commandId: string
     envelope: CommandEnvelope
-    status: 'success' | 'failed' | 'dry_run'
+    status: 'success' | 'failed' | 'dry_run' | 'pending'
     tenantScope: string | null
     result?: Record<string, unknown> | null
     executedAt: string
   }) {
     const { db, commandId, envelope, status, tenantScope, result, executedAt } = params
 
-    await db.insert(processedCommands).values({
+    const insertBuilder = db.insert(processedCommands).values({
       id: commandId,
       commandType: envelope.type,
       payload: envelope.payload,
@@ -41,6 +41,27 @@ export const commandsRepository = {
       tenantScope,
       executedAt,
     })
+
+    if (typeof (insertBuilder as unknown as { onConflictDoUpdate?: unknown }).onConflictDoUpdate === 'function') {
+      // Pending->terminal guard: only allow overwriting a 'pending' reservation.
+      // Drizzle sqlite onConflictDoUpdate has no WHERE support, so enforce in code:
+      // never overwrite a terminal (success/failed/dry_run) outcome with another terminal state.
+      const existing = await this.findById(db, commandId).catch(() => null)
+      if (existing && existing.status !== 'pending' && status !== existing.status) {
+        // Keep the first terminal outcome (idempotent replay returns it via checkIdempotency).
+        return
+      }
+      await (insertBuilder as unknown as { onConflictDoUpdate: (args: unknown) => Promise<unknown> }).onConflictDoUpdate({
+        target: processedCommands.id,
+        set: {
+          status,
+          result: result ?? null,
+          executedAt,
+        },
+      })
+    } else {
+      await insertBuilder
+    }
   },
 
   async insertAuditEntries(params: {

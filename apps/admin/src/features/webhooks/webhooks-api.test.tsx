@@ -64,9 +64,7 @@ describe('webhooks api hooks', () => {
   })
 
   it('fetches webhooks, detail, and deliveries', async () => {
-    const { useWebhooks, useWebhook, useWebhookDeliveries } = await import(
-      `./api?bypass=${Date.now()}`
-    )
+    const { useWebhooks, useWebhook, useWebhookDeliveries } = await import('./api')
 
     edenGet
       .mockResolvedValueOnce([{ id: 'w1' }])
@@ -90,7 +88,7 @@ describe('webhooks api hooks', () => {
 
   it('create/update/delete/test mutations call API and invalidate keys', async () => {
     const { webhooksKeys, useCreateWebhook, useUpdateWebhook, useDeleteWebhook, useTestWebhook } =
-      await import(`./api?bypass=${Date.now()}`)
+      await import('./api')
 
     edenPost
       .mockResolvedValueOnce({ id: 'w1', url: 'https://example.com' })
@@ -128,7 +126,7 @@ describe('webhooks api hooks', () => {
   })
 
   it('queues update mutation offline for sync replay', async () => {
-    const { useUpdateWebhook } = await import(`./api?bypass=${Date.now()}`)
+    const { useUpdateWebhook } = await import('./api')
     const { wrapper } = createWrapper()
     const { result } = renderHook(() => useUpdateWebhook(), { wrapper })
 

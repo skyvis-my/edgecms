@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, mock, vi } from 'bun:test'
 import type { Database } from '@/database/db'
+import {
+  DEFAULT_ASSET_ALLOWED_MIME_TYPES,
+  normalizeAllowedAssetMimeTypes,
+} from '../../assets/file-policy'
 
 // Mock dependencies before importing the service
 const mockAssetsService = {
@@ -23,7 +27,13 @@ const mockPublicRepository = {
 }
 const mockComputeDynamicTTL = mock()
 
-mock.module('../../assets/assets.service', () => ({ assetsService: mockAssetsService }))
+mock.module('../../assets/assets.service', () => ({
+  assetsService: mockAssetsService,
+  DEFAULT_ASSET_UPLOAD_MAX_BYTES: 5 * 1024 * 1024,
+  DEFAULT_ASSET_UPLOAD_MAX_DIMENSION: 2048,
+  DEFAULT_ASSET_ALLOWED_MIME_TYPES,
+  normalizeAllowedAssetMimeTypes,
+}))
 mock.module('../../cache/kv.service', () => ({ kvService: mockKvService }))
 mock.module('../../cache/snapshot.service', () => ({ snapshotService: mockSnapshotService }))
 mock.module('../../public/public.repository', () => ({ publicRepository: mockPublicRepository }))
@@ -130,17 +140,15 @@ describe('publicService', () => {
     })
 
     it('falls back to original when optimized variant object is missing', async () => {
-      mockAssetsService.resolvePublicVariant.mockResolvedValue({
-        success: true,
-        data: { key: 'assets/a1/variants/md.webp', contentType: 'image/webp' },
-      })
+      // Single-DB-call fallback: the first resolve carries fallbackKey/ContentType.
       mockAssetsService.resolvePublicVariant.mockResolvedValueOnce({
         success: true,
-        data: { key: 'assets/a1/variants/md.webp', contentType: 'image/webp' },
-      })
-      mockAssetsService.resolvePublicVariant.mockResolvedValueOnce({
-        success: true,
-        data: { key: 'assets/a1/original/logo.png', contentType: 'image/png' },
+        data: {
+          key: 'assets/a1/variants/md.webp',
+          contentType: 'image/webp',
+          fallbackKey: 'assets/a1/original/logo.png',
+          fallbackContentType: 'image/png',
+        },
       })
       ;(r2 as unknown as { get: ReturnType<typeof mock> }).get.mockResolvedValueOnce(null)
       ;(r2 as unknown as { get: ReturnType<typeof mock> }).get.mockResolvedValueOnce({
@@ -156,14 +164,8 @@ describe('publicService', () => {
       })
 
       expect(result.success).toBe(true)
-      expect(mockAssetsService.resolvePublicVariant).toHaveBeenNthCalledWith(
-        2,
-        db,
-        'a1',
-        'md',
-        null,
-        undefined
-      )
+      // Single resolve: fallback reuses fallbackKey without a second DB call.
+      expect(mockAssetsService.resolvePublicVariant).toHaveBeenCalledTimes(1)
       expect((r2 as unknown as { get: ReturnType<typeof mock> }).get).toHaveBeenNthCalledWith(
         2,
         'assets/a1/original/logo.png'
@@ -272,6 +274,56 @@ describe('publicService', () => {
       )
       expect(mockKvService.putSnapshot).toHaveBeenCalled()
       expect(mockSnapshotService.storeCacheTags).toHaveBeenCalled()
+    })
+
+    it('returns 400 when contains targets a non-searchable field', async () => {
+      mockKvService.getSnapshot.mockResolvedValue(null)
+      mockPublicRepository.findCollectionBySlug.mockResolvedValue({
+        id: 'c1',
+        slug: 'posts',
+        searchFields: ['title'],
+      })
+
+      const result = await publicService.getCollectionList({
+        db,
+        kv,
+        collectionSlug: 'posts',
+        locale: 'en',
+        page: 1,
+        perPage: 25,
+        filters: [{ field: 'data.body', operator: 'contains', value: 'hello' }],
+      })
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.status).toBe(400)
+      }
+      expect(mockSnapshotService.generateListSnapshot).not.toHaveBeenCalled()
+    })
+
+    it('allows contains on allowlisted search fields', async () => {
+      const generatedSnapshot = { entries: [{ id: 'e1' }], total: 1 }
+      mockKvService.getSnapshot.mockResolvedValue(null)
+      mockPublicRepository.findCollectionBySlug.mockResolvedValue({
+        id: 'c1',
+        slug: 'posts',
+        searchFields: ['title'],
+      })
+      mockSnapshotService.generateListSnapshot.mockResolvedValue(generatedSnapshot)
+      mockSnapshotService.generateCacheTags.mockReturnValue(['collection:c1', 'locale:en'])
+
+      const result = await publicService.getCollectionList({
+        db,
+        kv,
+        collectionSlug: 'posts',
+        locale: 'en',
+        page: 1,
+        perPage: 25,
+        filters: [{ field: 'data.title', operator: 'contains', value: 'hello' }],
+      })
+
+      expect(result.success).toBe(true)
+      expect(mockSnapshotService.generateListSnapshot).toHaveBeenCalled()
     })
 
     it('returns 404 when snapshot generation returns null', async () => {

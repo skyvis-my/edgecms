@@ -189,7 +189,7 @@ fi
 
 if [ -f "$API_PACKAGE_JSON" ]; then
   DEPLOY_PRODUCTION_SCRIPT="$(json_script "$API_PACKAGE_JSON" "deploy:production")"
-  if [[ "$DEPLOY_PRODUCTION_SCRIPT" == *"--env ${PRODUCTION_ENV}"* ]]; then
+  if [[ "$DEPLOY_PRODUCTION_SCRIPT" == *"--mode ${PRODUCTION_ENV}"* || "$DEPLOY_PRODUCTION_SCRIPT" == *"--env ${PRODUCTION_ENV}"* ]]; then
     pass "apps/api deploy:production targets env: $PRODUCTION_ENV"
   else
     fail "apps/api deploy:production targets env: $PRODUCTION_ENV" "got ${DEPLOY_PRODUCTION_SCRIPT:-<missing>}"

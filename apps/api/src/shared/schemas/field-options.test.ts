@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { type } from 'arktype'
+import { SchemaError } from './typebox'
 import {
   arrayFieldOptions,
   colorFieldOptions,
@@ -23,7 +23,7 @@ describe('field options schemas', () => {
       minLength: 1,
       maxLength: 200,
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('validates number field options', () => {
@@ -33,7 +33,7 @@ describe('field options schemas', () => {
       step: 1,
       placeholder: 'Enter count',
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('validates select field options', () => {
@@ -43,14 +43,14 @@ describe('field options schemas', () => {
         { value: 'published', label: 'Published' },
       ],
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('validates reference field options', () => {
     const result = referenceFieldOptions({
       referencedCollections: ['blog_posts', 'pages'],
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('validates reference field relation metadata', () => {
@@ -59,35 +59,35 @@ describe('field options schemas', () => {
       targetCollectionId: 'collection-id',
       targetCollectionSlug: 'posts',
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('validates markdown field options', () => {
     const result = markdownFieldOptions({
       placeholder: 'Markdown body',
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('validates email field options', () => {
     const result = emailFieldOptions({
       helpText: 'Contact email',
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('validates url field options', () => {
     const result = urlFieldOptions({
       placeholder: 'https://example.com',
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('validates slug field options', () => {
     const result = slugFieldOptions({
       generateFrom: 'title',
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('validates color field options', () => {
@@ -95,7 +95,7 @@ describe('field options schemas', () => {
       format: 'hex',
       default: '#123456',
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('validates media field options', () => {
@@ -103,14 +103,14 @@ describe('field options schemas', () => {
       accept: ['image/*', 'application/pdf'],
       maxSizeBytes: 5242880,
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('rejects invalid media max size options', () => {
     const result = mediaFieldOptions({
       maxSizeBytes: 0,
     })
-    expect(result instanceof type.errors).toBe(true)
+    expect(result instanceof SchemaError).toBe(true)
   })
 
   it('accepts allowed array item field types', () => {
@@ -121,7 +121,7 @@ describe('field options schemas', () => {
         { name: 'flag', type: 'boolean' },
       ],
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('rejects relation or nested array item types', () => {
@@ -131,7 +131,7 @@ describe('field options schemas', () => {
         { name: 'nested', type: 'array' },
       ],
     })
-    expect(result instanceof type.errors).toBe(true)
+    expect(result instanceof SchemaError).toBe(true)
   })
 })
 
@@ -141,7 +141,7 @@ describe('baseFieldOptions with conditional display', () => {
       dependsOn: 'category',
       showWhen: { operator: 'eq', value: 'blog' },
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('accepts showWhen with in operator', () => {
@@ -149,7 +149,7 @@ describe('baseFieldOptions with conditional display', () => {
       dependsOn: 'type',
       showWhen: { operator: 'in', value: ['blog', 'article'] },
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('accepts showWhen with exists operator', () => {
@@ -157,7 +157,7 @@ describe('baseFieldOptions with conditional display', () => {
       dependsOn: 'featured',
       showWhen: { operator: 'exists' },
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 
   it('accepts showWhen without dependsOn (schema level)', () => {
@@ -166,6 +166,6 @@ describe('baseFieldOptions with conditional display', () => {
     const result = baseFieldOptions({
       showWhen: { operator: 'eq', value: 'test' },
     })
-    expect(result instanceof type.errors).toBe(false)
+    expect(result instanceof SchemaError).toBe(false)
   })
 })

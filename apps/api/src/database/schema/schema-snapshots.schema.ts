@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { sqliteTable, text, integer, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 export const schemaSnapshots = sqliteTable(
   'schema_snapshots',
@@ -9,5 +9,7 @@ export const schemaSnapshots = sqliteTable(
     payload: text('payload', { mode: 'json' }).$type<Record<string, unknown> | null>(),
     createdAt: text('created_at').notNull(),
   },
-  (table) => [index('schema_snapshots_tenant_created_at_idx').on(table.tenantId, table.createdAt)]
+  (table) => [
+    uniqueIndex('schema_snapshots_tenant_version_unique').on(table.tenantId, table.schemaVersion),
+  ]
 )

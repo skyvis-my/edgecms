@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, type QueryClient } from '@tanstack/react-query'
 import { type OfflineMutationDescriptor, useOfflineMutation } from '@/features/sync/use-offline-mutation'
 import { edenGet, edenPost } from '@/lib/eden-client'
 
@@ -14,9 +14,6 @@ export const versionsKeys = {
     [...versionsKeys.details(), entryId, versionId] as const,
   diff: (entryId: string, v1: string, v2: string) => ['diff', entryId, v1, v2] as const,
 }
-
-/** @deprecated Use versionsKeys */
-export const versionKeys = versionsKeys
 
 /**
  * Type definitions for version history
@@ -98,6 +95,21 @@ export function useVersionDiff(entryId: string, v1: string, v2: string) {
       return response.diffs
     },
     enabled: !!entryId && !!v1 && !!v2,
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
+/**
+ * Prefetch a single version detail (call on row hover via `onMouseEnter` to
+ * warm the cache before the user opens the diff/rollback dialog).
+ */
+export function prefetchVersion(queryClient: QueryClient, entryId: string, versionId: string) {
+  if (!entryId || !versionId) return Promise.resolve()
+  return queryClient.prefetchQuery({
+    queryKey: versionsKeys.detail(entryId, versionId),
+    queryFn: async () => {
+      return edenGet<EntryVersion>(`/admin/entries/${entryId}/versions/${versionId}`)
+    },
     staleTime: 5 * 60 * 1000,
   })
 }

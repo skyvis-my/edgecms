@@ -81,7 +81,7 @@ describe('retentionService', () => {
       // Keeping 50 means deleting 9 oldest (59 - 50 = 9)
       expect(result.deleted).toBe(9)
       expect(result.kept).toBe(60 - 9)
-      expect(mockDelete).toHaveBeenCalledTimes(9)
+      expect(mockDelete).toHaveBeenCalledTimes(1)
     })
 
     it('deletes versions older than 90 days', async () => {

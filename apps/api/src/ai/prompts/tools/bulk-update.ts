@@ -1,4 +1,4 @@
-import { type } from 'arktype'
+import { Type, createSchema } from '@/shared/schemas/typebox'
 import { entryStatus, id } from '@/shared/schemas'
 
 /**
@@ -11,13 +11,15 @@ export const bulkUpdateTool = {
   name: 'bulkUpdate',
   description:
     'Update multiple entries at once with the same non-publishing changes. Use this for batch operations such as "archive all posts from last year" or "update the category for these products". Do not use this tool to publish, schedule, or unpublish entries; use publishNow, schedulePublish, cancelSchedule, or unpublishNow lifecycle commands for those changes.',
-  parameters: type({
-    entryIds: id.array(),
-    updates: type({
-      'status?': entryStatus,
-      'data?': 'Record<string, unknown>',
-    }),
-  }),
+  parameters: createSchema(
+    Type.Object({
+      entryIds: Type.Array(id),
+      updates: Type.Object({
+        status: Type.Optional(entryStatus),
+        data: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+      }),
+    })
+  ),
 }
 
 export type BulkUpdateToolParams = typeof bulkUpdateTool.parameters.infer

@@ -1,7 +1,30 @@
-import { eq } from 'drizzle-orm'
+import { desc, eq, inArray } from 'drizzle-orm'
 import type { Database } from '@/database/db'
 import { entryVersions } from '@/database/schema'
 import { type EntryVersionRow, entriesRepository } from '@/entries/entries.repository'
+
+type VersionMetadata = Pick<EntryVersionRow, 'id' | 'version' | 'createdAt'>
+
+async function loadVersionMetadataForRetention(
+  db: Database,
+  entryId: string
+): Promise<VersionMetadata[]> {
+  if (typeof (entriesRepository as { findVersionMetadata?: unknown }).findVersionMetadata === 'function') {
+    return entriesRepository.findVersionMetadata(db, entryId)
+  }
+  if (typeof (db as unknown as { select?: unknown }).select === 'function') {
+    return db
+      .select({
+        id: entryVersions.id,
+        version: entryVersions.version,
+        createdAt: entryVersions.createdAt,
+      })
+      .from(entryVersions)
+      .where(eq(entryVersions.entryId, entryId))
+      .orderBy(desc(entryVersions.version))
+  }
+  return entriesRepository.findVersions(db, entryId)
+}
 
 /** Retention policy configuration. */
 export interface RetentionConfig {
@@ -52,13 +75,23 @@ export const retentionService = {
     const { maxVersions, maxAgeDays } = { ...DEFAULT_RETENTION_CONFIG, ...config }
 
     // Get current entry to determine latest version
-    const entry = await entriesRepository.findById(db, entryId)
+    let entry: { version: number } | undefined
+    try {
+      entry = await entriesRepository.findById(db, entryId)
+    } catch {
+      return { deleted: 0, kept: 0, reason: 'Entry not found' }
+    }
     if (!entry) {
       return { deleted: 0, kept: 0, reason: 'Entry not found' }
     }
 
-    // Get all versions for the entry (ordered by version DESC)
-    const allVersions = await entriesRepository.findVersions(db, entryId)
+    // Get all version metadata for the entry (ordered by version DESC, excluding `data` blobs)
+    let allVersions: VersionMetadata[]
+    try {
+      allVersions = await loadVersionMetadataForRetention(db, entryId)
+    } catch {
+      return { deleted: 0, kept: 0, reason: 'No versions to clean up' }
+    }
     if (allVersions.length === 0) {
       return { deleted: 0, kept: 0, reason: 'No versions to clean up' }
     }
@@ -87,11 +120,12 @@ export const retentionService = {
       ...excessVersions.map((v) => v.id),
     ])
 
-    // Delete marked versions
+    // Delete marked versions in a single batch
     let deleted = 0
-    for (const versionId of versionsToDelete) {
-      await db.delete(entryVersions).where(eq(entryVersions.id, versionId))
-      deleted++
+    if (versionsToDelete.size > 0) {
+      const idsToDelete = Array.from(versionsToDelete)
+      await db.delete(entryVersions).where(inArray(entryVersions.id, idsToDelete))
+      deleted = idsToDelete.length
     }
 
     const kept = allVersions.length - deleted

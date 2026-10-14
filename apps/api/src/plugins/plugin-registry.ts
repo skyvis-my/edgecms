@@ -87,5 +87,5 @@ export function createPluginRegistry(initialTimeoutMs?: number): PluginRegistry 
 }
 
 export const pluginRegistry = createPluginRegistry()
-;(pluginRegistry as any).createRegistry = createPluginRegistry
+;(pluginRegistry as unknown as { createRegistry?: unknown }).createRegistry = createPluginRegistry
 

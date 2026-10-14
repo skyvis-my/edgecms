@@ -25,15 +25,26 @@ export const handleLinkRelation: CommandHandler = async (ctx, payload) => {
     sortOrder?: number
   }
 
-  const result = await relationsService.link(ctx.db, {
-    sourceEntryId,
-    targetEntryId,
-    sourceCollectionId,
-    targetCollectionId,
-    relationType,
-    fieldName,
-    sortOrder,
-  })
+  // Tenant scope: prefer explicit scope, fall back to a non-global sync
+  // channel (mirrors engine tenantScope derivation). Spread conditionally so
+  // unscoped calls keep their existing 2-arg shape.
+  const tenantId =
+    ctx.tenantScope ??
+    (ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : undefined)
+
+  const result = await relationsService.link(
+    ctx.db,
+    {
+      sourceEntryId,
+      targetEntryId,
+      sourceCollectionId,
+      targetCollectionId,
+      relationType,
+      fieldName,
+      sortOrder,
+    },
+    ...(tenantId ? [tenantId] : [])
+  )
 
   if (!result.success) {
     return { success: false, error: result.error }
@@ -73,11 +84,20 @@ export const handleUnlinkRelation: CommandHandler = async (ctx, payload) => {
     fieldName: string
   }
 
-  const result = await relationsService.unlink(ctx.db, {
-    sourceEntryId,
-    targetEntryId,
-    fieldName,
-  })
+  // Tenant scope (mirrors handleLinkRelation above).
+  const tenantId =
+    ctx.tenantScope ??
+    (ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : undefined)
+
+  const result = await relationsService.unlink(
+    ctx.db,
+    {
+      sourceEntryId,
+      targetEntryId,
+      fieldName,
+    },
+    ...(tenantId ? [tenantId] : [])
+  )
 
   if (!result.success) {
     return { success: false, error: result.error }

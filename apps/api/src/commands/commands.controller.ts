@@ -1,14 +1,41 @@
-import { env } from 'cloudflare:workers'
 import { Elysia, t } from 'elysia'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
 import type { CommandEnvelope, CommandResult } from '@edgecms/schemas/commands'
-import { hasTenantContext, resolveTenantBindings } from '@/tenants/tenant-context'
+import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import { eventBus } from '@/webhooks/event-bus'
 import { initWebhookProducer } from '@/webhooks/queue-producer'
 import { type CommandContext, executeCommand } from './engine'
+import type { WaitUntilContext } from './deferred-work'
 import { getRequestPathname } from '@/shared/utils/request-url'
+import { createErrorEnvelope } from '@/shared/utils/service-response'
+
+/**
+ * Resolve the Cloudflare execution context from the Elysia request context.
+ * Mirrors the assets controller `getDeferredWorkScheduler` pattern: Elysia
+ * exposes `waitUntil` on the request context on Workers; absent in tests and
+ * non-worker runtimes (engine falls back to detached execution).
+ */
+function getCommandExecutionCtx(elysiaCtx: unknown): WaitUntilContext | undefined {
+  const waitUntil = (elysiaCtx as { waitUntil?: unknown }).waitUntil
+  if (typeof waitUntil !== 'function') return undefined
+  const fn = waitUntil as (promise: Promise<unknown>) => void
+  return { waitUntil: (promise) => fn.call(elysiaCtx, promise) }
+}
+
+const COMMAND_ERROR_STATUS_MAP: Record<string, number> = {
+  VERSION_CONFLICT: 409,
+  NOT_FOUND: 404,
+  BAD_REQUEST: 400,
+  VALIDATION_ERROR: 400,
+  INVALID_COMMAND_TYPE: 400,
+  UNKNOWN_COMMAND: 400,
+  INVALID_TRANSITION: 400,
+  INVALID_STATUS_TRANSITION: 400,
+  INVALID_PREVIEW_RECEIPT: 400,
+  UNAUTHORIZED: 403,
+}
 
 export function initializeWebhookProducerIfNeeded(
   workerEnv: Env,
@@ -34,6 +61,7 @@ export function initializeWebhookProducerIfNeeded(
  */
 export const commandsController = new Elysia({ prefix: '/api/admin/commands', normalize: 'typebox' })
   .use(betterAuthPlugin)
+  .use(withTenantBindings)
 
   /**
    * POST / — Execute a command through the command engine.
@@ -52,143 +80,119 @@ export const commandsController = new Elysia({ prefix: '/api/admin/commands', no
    * - UNAUTHORIZED → 403
    * - Other errors → 500
    */
-  .post(
-    '/',
-    async (elysiaCtx) => {
-      const { body, user, set } = elysiaCtx
-      const requestPathname = getRequestPathname(elysiaCtx.request)
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(elysiaCtx) ? elysiaCtx.tenant : undefined
-      const { db, kv } = resolveTenantBindings(tenantCtx, workerEnv)
-      const syncChannel = tenantCtx?.tenant.id ?? 'global'
-
-      const idempotencyKey =
-        (elysiaCtx.headers as Record<string, string | undefined>)['idempotency-key'] ||
-        elysiaCtx.request.headers.get('idempotency-key') ||
-        (body as { idempotencyKey?: string }).idempotencyKey
-
-      // Build command envelope — override actor.userId with authenticated user for security
-      const envelope: CommandEnvelope = {
-        type: body.type as CommandEnvelope['type'],
-        payload: body.payload,
-        actor: {
-          userId: user.id,
-          source: body.actor.source as 'admin' | 'ai' | 'sync' | 'scheduler',
-        },
-        optimisticVersion: body.optimisticVersion,
-        transactionId: body.transactionId,
-        dryRun: body.dryRun,
-        previewReceipt: body.previewReceipt,
-        idempotencyKey: idempotencyKey || undefined,
-        timestamp: body.timestamp,
-      }
-
-      // Construct command context with KV namespace for cache invalidation
-      const ctx: CommandContext = {
-        db,
-        actor: envelope.actor,
-        tenantScope: tenantCtx?.tenant.id,
-        kv,
-        env: workerEnv,
-        syncChannel,
-        idempotencyKey: idempotencyKey || undefined,
-        requestMeta: {
-          requestId:
-            (elysiaCtx as unknown as { requestId?: string }).requestId ?? crypto.randomUUID(),
-          pathname: requestPathname,
-          method: elysiaCtx.request.method,
-        },
-      }
-
-      // Execute command through engine
-      const result: CommandResult = await executeCommand(ctx, envelope)
-
-      // Map result status to HTTP status code
-      if (result.status === 'success') {
-        // Special case: createEntry returns 201 Created
-        if (result.type === 'createEntry') {
-          set.status = 201
-        } else {
-          set.status = 200
-        }
-        return { success: true as const, data: result }
-      }
-
-      if (result.status === 'dry_run') {
-        set.status = 200
-        return { success: true as const, data: result }
-      }
-
-      // Error handling — map error codes to HTTP status
-      if (result.error) {
-        switch (result.error.code) {
-          case 'VERSION_CONFLICT':
-            set.status = 409
-            break
-          case 'NOT_FOUND':
-            set.status = 404
-            break
-          case 'VALIDATION_ERROR':
-          case 'INVALID_COMMAND_TYPE':
-          case 'UNKNOWN_COMMAND':
-          case 'INVALID_TRANSITION':
-          case 'INVALID_STATUS_TRANSITION':
-          case 'INVALID_PREVIEW_RECEIPT':
-            set.status = 400
-            break
-          case 'UNAUTHORIZED':
-            set.status = 403
-            break
-          default:
-            set.status = 500
-        }
-        return { success: false as const, error: result.error }
-      }
-
-      // Fallback error for unexpected states
-      set.status = 500
-      return {
-        success: false as const,
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: 'Command execution failed with unknown error',
-        },
-      }
-    },
-    {
-      auth: true,
-      body: t.Object({
-        type: t.Union([
-          t.Literal('createEntry'),
-          t.Literal('updateEntry'),
-          t.Literal('deleteEntry'),
-          t.Literal('bulkUpdate'),
-          t.Literal('updateSingleton'),
-          t.Literal('linkRelation'),
-          t.Literal('unlinkRelation'),
-          t.Literal('publishNow'),
-          t.Literal('unpublishNow'),
-          t.Literal('schedulePublish'),
-          t.Literal('scheduleUnpublish'),
-          t.Literal('cancelSchedule'),
-          t.Literal('transaction'),
+  .post('/', {
+    auth: true,
+    body: t.Object({
+      type: t.Union([
+        t.Literal('createEntry'),
+        t.Literal('updateEntry'),
+        t.Literal('deleteEntry'),
+        t.Literal('bulkUpdate'),
+        t.Literal('updateSingleton'),
+        t.Literal('linkRelation'),
+        t.Literal('unlinkRelation'),
+        t.Literal('publishNow'),
+        t.Literal('unpublishNow'),
+        t.Literal('schedulePublish'),
+        t.Literal('scheduleUnpublish'),
+        t.Literal('cancelSchedule'),
+        t.Literal('transaction'),
+      ]),
+      payload: t.Record(t.String(), t.Unknown()),
+      actor: t.Object({
+        userId: t.String({ minLength: 1 }),
+        source: t.Union([
+          t.Literal('admin'),
+          t.Literal('ai'),
+          t.Literal('sync'),
+          t.Literal('scheduler'),
         ]),
-        payload: t.Record(t.String(), t.Unknown()),
-        actor: t.Object({
-          userId: t.String({ minLength: 1 }),
-          source: t.Union([
-            t.Literal('admin'),
-            t.Literal('ai'),
-            t.Literal('sync'),
-            t.Literal('scheduler'),
-          ]),
-        }),
-        optimisticVersion: t.Optional(t.Integer({ minimum: 1 })),
-        transactionId: t.Optional(t.String({ minLength: 1 })),
-        dryRun: t.Optional(t.Boolean()),
-        previewReceipt: t.Optional(t.String({ minLength: 1 })),
-        idempotencyKey: t.Optional(t.String({ minLength: 1 })),
-        timestamp: t.String(),
       }),
+      optimisticVersion: t.Optional(t.Integer({ minimum: 1 })),
+      transactionId: t.Optional(t.String({ minLength: 1 })),
+      dryRun: t.Optional(t.Boolean()),
+      previewReceipt: t.Optional(t.String({ minLength: 1 })),
+      idempotencyKey: t.Optional(t.String({ minLength: 1 })),
+      timestamp: t.String(),
+    }),
+  }, async (elysiaCtx) => {
+    const { body, user, set, db, kv, workerEnv, tenantCtx } = elysiaCtx
+    const requestPathname = getRequestPathname(elysiaCtx.request)
+    const syncChannel = tenantCtx?.tenant.id ?? 'global'
+  
+    const idempotencyKey =
+      (elysiaCtx.headers as Record<string, string | undefined>)['idempotency-key'] ||
+      elysiaCtx.request.headers.get('idempotency-key') ||
+      (body as { idempotencyKey?: string }).idempotencyKey
+  
+    // Build command envelope — override actor.userId with authenticated user for security
+    const envelope: CommandEnvelope = {
+      type: body.type as CommandEnvelope['type'],
+      payload: body.payload,
+      actor: {
+        userId: user.id,
+        source: body.actor.source as 'admin' | 'ai' | 'sync' | 'scheduler',
+      },
+      optimisticVersion: body.optimisticVersion,
+      transactionId: body.transactionId,
+      dryRun: body.dryRun,
+      previewReceipt: body.previewReceipt,
+      idempotencyKey: idempotencyKey || undefined,
+      timestamp: body.timestamp,
     }
-  )
+  
+    // Construct command context with KV namespace for cache invalidation
+    const ctx: CommandContext = {
+      db,
+      actor: envelope.actor,
+      tenantScope: tenantCtx?.tenant.id,
+      kv,
+      env: workerEnv,
+      executionCtx: getCommandExecutionCtx(elysiaCtx),
+      syncChannel,
+      idempotencyKey: idempotencyKey || undefined,
+      requestMeta: {
+        requestId:
+          (elysiaCtx as unknown as { requestId?: string }).requestId ?? crypto.randomUUID(),
+        pathname: requestPathname,
+        method: elysiaCtx.request.method,
+      },
+    }
+  
+    // Execute command through engine
+    const result: CommandResult = await executeCommand(ctx, envelope)
+  
+    // Map result status to HTTP status code
+    if (result.status === 'success') {
+      // Set CDN Cache-Tag purge headers if cache invalidation was triggered
+      if (ctx.invalidatedCacheTags && ctx.invalidatedCacheTags.length > 0) {
+        const purgeHeaderValue = ctx.invalidatedCacheTags.join(',')
+        set.headers['Cache-Tag-Purge'] = purgeHeaderValue
+        set.headers['X-Cache-Tag-Purge'] = purgeHeaderValue
+        set.headers['CF-Cache-Purge'] = purgeHeaderValue
+      }
+  
+      // Special case: createEntry returns 201 Created
+      if (result.type === 'createEntry') {
+        set.status = 201
+      } else {
+        set.status = 200
+      }
+      return { success: true as const, data: result }
+    }
+  
+    if (result.status === 'dry_run') {
+      set.status = 200
+      return { success: true as const, data: result }
+    }
+  
+    // Error handling — map error codes to HTTP status
+    if (result.error) {
+      set.status = COMMAND_ERROR_STATUS_MAP[result.error.code] ?? 500
+      return createErrorEnvelope(result.error.code, result.error.message)
+    }
+  
+    // Fallback error for unexpected states
+    set.status = 500
+    return createErrorEnvelope('INTERNAL_ERROR', 'Command execution failed with unknown error')
+  })

@@ -124,6 +124,60 @@ describe('TenantsService', () => {
       )
     })
 
+    it('creates tenant plus RBAC seed in one batch when supported', async () => {
+      mockRepo.findBySlug.mockResolvedValueOnce(undefined)
+      const created = {
+        id: 'mock-uuid',
+        slug: 'acme-corp',
+        name: 'Acme Corp',
+        status: 'active',
+        localeCatalog: ['en'],
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      }
+      mockRepo.findBySlug.mockResolvedValueOnce(created)
+      const batchedQueries: unknown[] = []
+      const batchDb = {
+        insert: vi.fn(() => ({ values: vi.fn((rows: unknown) => ({ rows })) })),
+        batch: vi.fn(async (queries: unknown[]) => {
+          batchedQueries.push(queries)
+          return []
+        }),
+      }
+
+      const result = await tenantsService.create(batchDb as unknown as Database, {
+        name: 'Acme Corp',
+        slug: 'acme-corp',
+      })
+
+      expect(result).toEqual({ success: true, data: created })
+      expect(batchDb.batch).toHaveBeenCalledTimes(1)
+      // Tenant + roles + permissions in a single atomic batch.
+      expect(batchedQueries[0] as unknown[]).toHaveLength(3)
+      expect(mockRepo.create).not.toHaveBeenCalled()
+      expect(mockRbacService.seedBuiltInRoles).not.toHaveBeenCalled()
+    })
+
+    it('maps batch UNIQUE violations to CONFLICT', async () => {
+      mockRepo.findBySlug.mockResolvedValue(undefined)
+      const batchDb = {
+        insert: vi.fn(() => ({ values: vi.fn(() => ({})) })),
+        batch: vi.fn(async () => {
+          throw new Error('UNIQUE constraint failed: tenants.slug')
+        }),
+      }
+
+      const result = await tenantsService.create(batchDb as unknown as Database, {
+        name: 'Acme Corp',
+        slug: 'acme-corp',
+      })
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.code).toBe('CONFLICT')
+      }
+    })
+
     it('creates tenant with explicit locale catalog', async () => {
       mockRepo.findBySlug.mockResolvedValue(undefined)
       mockRepo.create.mockResolvedValue({
@@ -867,7 +921,7 @@ describe('TenantsService', () => {
   describe('findByIdOrSlug', () => {
     it('finds by ID first', async () => {
       const tenant = {
-        id: 'uuid-123',
+        id: '123e4567-e89b-12d3-a456-426614174000',
         slug: 'acme',
         name: 'Acme',
         status: 'active',
@@ -880,11 +934,11 @@ describe('TenantsService', () => {
 
       mockRepo.findById.mockResolvedValue(tenant)
 
-      const result = await tenantsService.findByIdOrSlug(db, 'uuid-123')
+      const result = await tenantsService.findByIdOrSlug(db, '123e4567-e89b-12d3-a456-426614174000')
 
       expect(result.success).toBe(true)
       if (result.success) {
-        expect(result.data.id).toBe('uuid-123')
+        expect(result.data.id).toBe('123e4567-e89b-12d3-a456-426614174000')
       }
       expect(mockRepo.findBySlug).not.toHaveBeenCalled()
     })

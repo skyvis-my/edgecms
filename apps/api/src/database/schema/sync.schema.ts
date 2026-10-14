@@ -39,8 +39,7 @@ export const changeLog = sqliteTable(
   (table) => [
     // Index for querying changes by entity
     index('change_log_entity_idx').on(table.entityType, table.entityId),
-    index('change_log_tenant_scope_idx').on(table.tenantScope),
     index('change_log_tenant_scope_sequence_idx').on(table.tenantScope, table.sequence),
-    // Index for efficient cursor-based sync queries (sequence is already indexed as PK)
+    index('change_log_command_id_idx').on(table.commandId),
   ]
 )

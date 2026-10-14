@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { edenGet, edenPost, edenPostMultipart, edenPut } from '@/lib/eden-client'
 import { type OfflineMutationDescriptor, useOfflineMutation } from '@/features/sync/use-offline-mutation'
@@ -23,16 +24,32 @@ export type Asset = {
 
 export const assetsKeys = {
   all: ['assets'] as const,
+  list: (params?: { page?: number; perPage?: number }) =>
+    ['assets', 'list', params ?? {}] as const,
   detail: (id: string) => ['assets', id] as const,
   search: (query: string, folder: string, mimeTypePrefix: string) =>
     ['assets', 'search', query, folder, mimeTypePrefix] as const,
   config: ['assets', 'config'] as const,
 }
 
-export function useAssets() {
+export type AssetsListParams = {
+  page?: number
+  perPage?: number
+}
+
+export function useAssets(params: AssetsListParams = {}) {
+  const { page, perPage } = params
   return useQuery({
-    queryKey: assetsKeys.all,
-    queryFn: async () => edenGet<Asset[]>('/admin/assets'),
+    queryKey: assetsKeys.list(params),
+    queryFn: async () => {
+      const queryParams = new URLSearchParams()
+      if (page) queryParams.set('page', String(page))
+      if (perPage) queryParams.set('perPage', String(perPage))
+      const suffix = queryParams.size > 0 ? `?${queryParams.toString()}` : ''
+      return edenGet<Asset[]>(`/admin/assets${suffix}`)
+    },
+    staleTime: 10 * 60 * 1000,
+    gcTime: 5 * 60 * 1000,
   })
 }
 
@@ -59,10 +76,16 @@ export type SearchAssetsInput = {
 
 export function useSemanticAssetSearch(input: SearchAssetsInput, enabled = true) {
   const normalizedQuery = input.query.trim()
+  // Debounce keystrokes (300ms) so a query fires only after typing pauses.
+  const [debouncedQuery, setDebouncedQuery] = useState(normalizedQuery)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(normalizedQuery), 300)
+    return () => clearTimeout(timer)
+  }, [normalizedQuery])
   return useQuery({
-    queryKey: assetsKeys.search(normalizedQuery, input.folder ?? '', input.mimeTypePrefix ?? ''),
+    queryKey: assetsKeys.search(debouncedQuery, input.folder ?? '', input.mimeTypePrefix ?? ''),
     queryFn: async () => edenPost<Asset[]>('/admin/assets/search', input),
-    enabled: enabled && normalizedQuery.length > 1,
+    enabled: enabled && debouncedQuery.length > 2,
     staleTime: 15_000,
   })
 }

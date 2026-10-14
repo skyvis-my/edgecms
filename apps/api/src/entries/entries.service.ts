@@ -1,10 +1,14 @@
+import { and, eq } from 'drizzle-orm'
 import { collectionsRepository } from '@/collections/collections.repository'
+import { scheduleDeferredWork } from '@/commands/deferred-work'
 import type { Database } from '@/database/db'
+import { entries, entryVersions } from '@/database/schema'
 import { relationsResolver } from '@/relations/relations.resolver'
 import { flattenLocaleFields } from '@/shared/locale'
 import type { ServiceResult } from '@/shared/types/result'
 import { entryStatuses, isEntryStatus } from '@/shared/schemas/entry'
 import { slugify } from '@/shared/utils/slugify'
+import { retentionService } from '@/versioning/retention.service'
 import { type EntryFilters, type EntryRow, entriesRepository } from './entries.repository'
 
 /** Valid entry status values. */
@@ -356,8 +360,10 @@ export const entriesService = {
       }
     }
 
-    const page = filters.page ?? 1
-    const perPage = filters.perPage ?? 20
+    const rawPage = Math.floor(filters.page ?? 1)
+    const page = Math.max(1, Number.isFinite(rawPage) ? rawPage : 1)
+    const rawPerPage = filters.perPage ?? 20
+    const perPage = Math.min(100, Math.max(1, Number.isFinite(rawPerPage) ? Math.floor(rawPerPage) : 20))
     const { rows, total } = await entriesRepository.findAll(db, {
       collectionId: effectiveCollectionId,
       tenantId,
@@ -499,17 +505,22 @@ export const entriesService = {
     }
 
     // Flatten entries by locale
-    // Group entries by collection to avoid repeated D1 collection lookups.
+    // Batch collections in a single IN query (avoids N+1 per-collection lookups),
+    // with per-id fallback for mock drivers lacking findByIds.
     const uniqueCollectionIds = Array.from(
       new Set(result.data.entries.map((entry) => entry.collectionId))
     )
-    const collectionPairs = await Promise.all(
-      uniqueCollectionIds.map(async (collectionId) => [
-        collectionId,
-        await collectionsRepository.findById(db, collectionId, tenantId),
-      ] as const)
-    )
-    const collectionCache = new Map(collectionPairs)
+    const batchedCollections =
+      typeof collectionsRepository.findByIds === 'function'
+        ? await collectionsRepository.findByIds(db, uniqueCollectionIds, tenantId)
+        : (
+            await Promise.all(
+              uniqueCollectionIds.map((collectionId) =>
+                collectionsRepository.findById(db, collectionId, tenantId)
+              )
+            )
+          ).filter((c): c is NonNullable<typeof c> => Boolean(c))
+    const collectionCache = new Map(batchedCollections.map((c) => [c.id, c]))
 
     const flattenedEntries = result.data.entries.map((entry) => {
       const collection = collectionCache.get(entry.collectionId)
@@ -557,11 +568,30 @@ export const entriesService = {
     if (!fieldNames || fieldNames.length === 0) {
       return baseResult
     }
-    const populatedEntries = await Promise.all(
-      baseResult.data.entries.map((entry) =>
-        relationsResolver.populate(db, entry, fieldNames, 1, maxDepth, new Set(), tenantId)
-      )
-    )
+    const populatedEntries =
+      typeof relationsResolver.populateMany === 'function'
+        ? await relationsResolver.populateMany(
+            db,
+            baseResult.data.entries,
+            fieldNames,
+            1,
+            maxDepth,
+            new Set(),
+            tenantId
+          )
+        : await Promise.all(
+            baseResult.data.entries.map((entry) =>
+              relationsResolver.populate(
+                db,
+                entry,
+                fieldNames,
+                maxDepth,
+                1,
+                new Set(),
+                tenantId
+              )
+            )
+          )
     return {
       success: true,
       data: {
@@ -632,31 +662,78 @@ export const entriesService = {
       slug = crypto.randomUUID().slice(0, 8)
     }
 
-    // Check for slug conflicts within the collection and append a number if needed
+    // Resolve slug conflicts with a single prefix query; suffix computed in memory (max 100 attempts).
     let finalSlug = slug
-    let suffix = 1
-    while (
-      await entriesRepository.findByCollectionAndSlug(db, input.collectionId, finalSlug, tenantId)
-    ) {
-      finalSlug = `${slug}-${suffix}`
-      suffix++
+    try {
+      const existingSlugs = new Set(
+        await entriesRepository.findSlugsByPrefix(db, input.collectionId, slug, tenantId)
+      )
+      if (existingSlugs.has(slug)) {
+        let suffix = 1
+        let candidate = `${slug}-${suffix}`
+        let attempts = 0
+        while (existingSlugs.has(candidate) && attempts < 100) {
+          suffix++
+          candidate = `${slug}-${suffix}`
+          attempts++
+        }
+        finalSlug = candidate
+      }
+    } catch {
+      // Fallback for mock drivers without findSlugsByPrefix: bounded sequential probe.
+      let suffix = 1
+      let attempts = 0
+      while (
+        attempts < 100 &&
+        (await entriesRepository.findByCollectionAndSlug(db, input.collectionId, finalSlug, tenantId))
+      ) {
+        finalSlug = `${slug}-${suffix}`
+        suffix++
+        attempts++
+      }
     }
 
     const now = new Date().toISOString()
     const id = crypto.randomUUID()
 
-    const row = await entriesRepository.create(db, {
-      id,
-      collectionId: input.collectionId,
-      slug: finalSlug,
-      status,
-      data: input.data,
-      version: 1,
-      createdAt: now,
-      updatedAt: now,
-    })
-
-    return { success: true, data: row }
+    try {
+      const row = await entriesRepository.create(db, {
+        id,
+        collectionId: input.collectionId,
+        slug: finalSlug,
+        status,
+        data: input.data,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+      })
+      return { success: true, data: row }
+    } catch (err) {
+      // UNIQUE race: slug claimed concurrently — retry once with a fresh suffix.
+      if (err instanceof Error && /unique|UNIQUE/i.test(err.message)) {
+        const retrySlug = `${slug}-${crypto.randomUUID().slice(0, 6)}`
+        try {
+          const row = await entriesRepository.create(db, {
+            id,
+            collectionId: input.collectionId,
+            slug: retrySlug,
+            status,
+            data: input.data,
+            version: 1,
+            createdAt: now,
+            updatedAt: now,
+          })
+          return { success: true, data: row }
+        } catch {
+          // fall through to DUPLICATE_SLUG below
+        }
+        return {
+          success: false,
+          error: { code: 'DUPLICATE_SLUG', message: `Slug '${slug}' already exists in this collection` },
+        }
+      }
+      throw err
+    }
   },
 
   /** Update an existing entry by ID. Increments version and creates a snapshot. */
@@ -743,19 +820,107 @@ export const entriesService = {
     const now = new Date().toISOString()
     const newVersion = existing.version + 1
 
-    // Update the entry with incremented version
-    const updated =
-      optimisticVersion !== undefined
-        ? await entriesRepository.updateWithVersion(db, id, optimisticVersion, {
-            ...input,
-            version: newVersion,
-            updatedAt: now,
+    // ATM-06: D1 has no interactive transactions. When db.batch() is
+    // available, persist the entry update + version snapshot atomically.
+    const hasBatch = typeof (db as unknown as { batch?: unknown }).batch === 'function'
+    if (hasBatch) {
+      try {
+        const setPayload = {
+          ...input,
+          version: newVersion,
+          updatedAt: now,
+        }
+        const updateBuilder =
+          optimisticVersion !== undefined
+            ? db
+                .update(entries)
+                .set(setPayload)
+                .where(and(eq(entries.id, id), eq(entries.version, optimisticVersion)))
+                .returning()
+            : db.update(entries).set(setPayload).where(eq(entries.id, id)).returning()
+        const versionBuilder = db
+          .insert(entryVersions)
+          .values({
+            id: crypto.randomUUID(),
+            entryId: id,
+            version: existing.version,
+            data: existing.data,
+            createdBy: userId ?? null,
+            createdAt: now,
           })
-        : await entriesRepository.update(db, id, {
-            ...input,
-            version: newVersion,
-            updatedAt: now,
-          })
+          .returning()
+        const [updatedRows] = (await db.batch([updateBuilder, versionBuilder])) as unknown as [
+          EntryRow[],
+        ]
+        const updated = updatedRows[0]
+        if (!updated) {
+          if (optimisticVersion !== undefined) {
+            return {
+              success: false,
+              error: {
+                code: 'VERSION_CONFLICT',
+                message: `Expected version ${optimisticVersion} but found ${existing.version}`,
+              },
+            }
+          }
+          return {
+            success: false,
+            error: { code: 'NOT_FOUND', message: `Entry '${id}' not found` },
+          }
+        }
+        scheduleDeferredWork(
+          undefined,
+          retentionService.enforceRetention(db, id),
+          'version_retention'
+        )
+        return { success: true, data: updated }
+      } catch (err) {
+        // UNIQUE race on slug change: map constraint violation to DUPLICATE_SLUG, not 500.
+        if (err instanceof Error && /unique|UNIQUE/i.test(err.message)) {
+          return {
+            success: false,
+            error: {
+              code: 'DUPLICATE_SLUG',
+              message: 'Slug already exists in this collection',
+            },
+          }
+        }
+        // Fall through to sequential path only for mock drivers whose batch
+        // stub does not support returning payloads (no batch on real D1 fallback needed).
+        const isRealD1 = typeof (db as unknown as { batch?: unknown }).batch === 'function'
+        if (isRealD1 && !(err instanceof Error && /batch/i.test(err.message))) {
+          throw err
+        }
+      }
+    }
+
+    // Sequential fallback (mock drivers without batch only).
+    let updated
+    try {
+      updated =
+        optimisticVersion !== undefined
+          ? await entriesRepository.updateWithVersion(db, id, optimisticVersion, {
+              ...input,
+              version: newVersion,
+              updatedAt: now,
+            }, tenantId)
+          : await entriesRepository.update(db, id, {
+              ...input,
+              version: newVersion,
+              updatedAt: now,
+            }, tenantId)
+    } catch (err) {
+      if (err instanceof Error && /unique|UNIQUE/i.test(err.message)) {
+        return {
+          success: false,
+          error: {
+            code: 'DUPLICATE_SLUG',
+            message: 'Slug already exists in this collection',
+          },
+        }
+      }
+      throw err
+    }
 
     if (!updated) {
       if (optimisticVersion !== undefined) {
@@ -783,6 +948,12 @@ export const entriesService = {
       createdAt: now,
     })
 
+    scheduleDeferredWork(
+      undefined,
+      retentionService.enforceRetention(db, id),
+      'version_retention'
+    )
+
     return { success: true, data: updated }
   },
 
@@ -795,7 +966,7 @@ export const entriesService = {
         error: { code: 'NOT_FOUND', message: `Entry '${id}' not found` },
       }
     }
-    const deleted = await entriesRepository.deleteById(db, id)
+    const deleted = await entriesRepository.deleteById(db, id, tenantId)
     if (!deleted) {
       return {
         success: false,
@@ -820,29 +991,60 @@ export const entriesService = {
       }
     }
 
-    // Generate unique slug with -copy suffix
+    // Generate unique slug with -copy suffix via single prefix query (bounded in-memory suffix).
     const baseSlug = `${existing.slug}-copy`
     let slug = baseSlug
-    let suffix = 1
-    while (await entriesRepository.findByCollectionAndSlug(db, existing.collectionId, slug, tenantId)) {
-      slug = `${baseSlug}-${suffix}`
-      suffix++
+    try {
+      const existingSlugs = new Set(
+        await entriesRepository.findSlugsByPrefix(db, existing.collectionId, baseSlug, tenantId)
+      )
+      if (existingSlugs.has(baseSlug)) {
+        let suffix = 1
+        let attempts = 0
+        let candidate = `${baseSlug}-${suffix}`
+        while (existingSlugs.has(candidate) && attempts < 100) {
+          suffix++
+          candidate = `${baseSlug}-${suffix}`
+          attempts++
+        }
+        slug = candidate
+      }
+    } catch {
+      let suffix = 1
+      let attempts = 0
+      while (
+        attempts < 100 &&
+        (await entriesRepository.findByCollectionAndSlug(db, existing.collectionId, slug, tenantId))
+      ) {
+        slug = `${baseSlug}-${suffix}`
+        suffix++
+        attempts++
+      }
     }
 
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
 
-    const newEntry = await entriesRepository.create(db, {
-      id,
-      collectionId: existing.collectionId,
-      slug,
-      status: 'draft',
-      data: existing.data,
-      version: 1,
-      createdAt: now,
-      updatedAt: now,
-    })
-
-    return { success: true, data: newEntry }
+    try {
+      const newEntry = await entriesRepository.create(db, {
+        id,
+        collectionId: existing.collectionId,
+        slug,
+        status: 'draft',
+        data: existing.data,
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+      })
+      return { success: true, data: newEntry }
+    } catch (err) {
+      if (err instanceof Error && /unique|UNIQUE/i.test(err.message)) {
+        return {
+          success: false,
+          error: { code: 'DUPLICATE_SLUG', message: `Slug '${slug}' already exists in this collection` },
+        }
+      }
+      throw err
+    }
   },
 }

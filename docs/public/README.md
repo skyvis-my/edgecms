@@ -13,6 +13,7 @@ Use these docs when evaluating or adopting EdgeCMS outside the internal release 
 - `examples/public-fetch/plain-fetch.ts`: minimal tenant-scoped public fetch helper.
 - `docs/public/plugin-sdk.md`: trusted plugin authoring contract.
 - `docs/public/sample-plugins.md`: sample plugin acceptance specs.
+- `docs/public/mcp-server.md`: Model Context Protocol (MCP) server tools, endpoints, and client setup.
 - `templates/starter/README.md`: acceptance checklist for a future starter template.
 
 ## Proof Index

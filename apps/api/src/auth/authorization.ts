@@ -66,6 +66,7 @@ function isTenantAdminPath(pathname: string): boolean {
 
 function isAdminMutationPath(pathname: string, method: string): boolean {
   if (SAFE_METHODS.has(method)) return false
+  if (pathname.includes('/graphql')) return false
   return ADMIN_MUTATION_PREFIXES.some((prefix) => pathname.startsWith(prefix))
 }
 

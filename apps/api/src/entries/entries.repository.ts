@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, isNull, like, lte, or, sql } from 'drizzle-orm'
 import type { SQL } from 'drizzle-orm'
 import type { Database } from '@/database/db'
 import { publicEntryStatuses } from '@/shared/schemas/entry'
@@ -26,6 +26,7 @@ export interface EntryFilters {
   perPage?: number
   extraConditions?: SQL[]
   orderByClause?: SQL
+  skipCount?: boolean
 }
 
 /** Filters for listing publicly visible entries at request time. */
@@ -36,6 +37,7 @@ export interface PublicVisibilityFilters {
   now?: string
   extraConditions?: SQL[]
   orderByClause?: SQL
+  skipCount?: boolean
 }
 
 function buildPublicVisibilityConditions(now: string): SQL[] {
@@ -63,8 +65,21 @@ export const entriesRepository = {
     db: Database,
     filters: EntryFilters = {}
   ): Promise<{ rows: EntryRow[]; total: number }> {
-    const { collectionId, status, tenantId, page = 1, perPage = 20, extraConditions = [], orderByClause } = filters
-    const conditions = []
+    const {
+      collectionId,
+      status,
+      tenantId,
+      page = 1,
+      perPage = 20,
+      extraConditions = [],
+      orderByClause,
+    } = filters
+    const safePage = Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1)
+    const safePerPage = Math.min(100, Math.max(1, Number.isFinite(perPage) ? Math.floor(perPage) : 20))
+    // Always tenant-scope admin reads. Missing tenantId falls back to the
+    // 'global' scope (never an unscoped cross-tenant read).
+    const tenantScope = resolveTenantScope(tenantId)
+    const conditions = [eq(collections.tenantId, tenantScope)]
 
     if (collectionId) {
       conditions.push(eq(entries.collectionId, collectionId))
@@ -72,44 +87,39 @@ export const entriesRepository = {
     if (status) {
       conditions.push(eq(entries.status, status))
     }
-    if (tenantId) {
-      conditions.push(eq(collections.tenantId, tenantId))
-    }
 
     // Add extra conditions from query filters
     conditions.push(...extraConditions)
 
-    const where = conditions.length > 0 ? and(...conditions) : undefined
-    const offset = (page - 1) * perPage
+    const where = and(...conditions)
+    const offset = (safePage - 1) * safePerPage
 
-    // Get total count
-    const countResult = tenantId
-      ? await db
-          .select({ count: sql<number>`count(*)` })
-          .from(entries)
-          .innerJoin(collections, eq(collections.id, entries.collectionId))
-          .where(where)
-      : await db.select({ count: sql<number>`count(*)` }).from(entries).where(where)
-    const total = countResult[0]?.count ?? 0
+    const runRows = async (): Promise<EntryRow[]> => {
+      const baseQuery = db
+        .select({ entry: entries })
+        .from(entries)
+        .innerJoin(collections, eq(collections.id, entries.collectionId))
+        .where(where)
+      const orderedQuery = orderByClause
+        ? baseQuery.orderBy(orderByClause)
+        : baseQuery.orderBy(desc(entries.createdAt))
+      return (await orderedQuery.limit(safePerPage).offset(offset)).map(
+        (row) => (row as unknown as { entry: EntryRow }).entry
+      )
+    }
 
-    // Build base query for rows
-    const baseQuery = tenantId
-      ? db
-          .select({ entry: entries })
-          .from(entries)
-          .innerJoin(collections, eq(collections.id, entries.collectionId))
-          .where(where)
-      : db.select().from(entries).where(where)
-
-    // Apply order by clause
-    const orderedQuery = orderByClause
-      ? baseQuery.orderBy(orderByClause)
-      : baseQuery.orderBy(desc(entries.createdAt))
-
-    // Get paginated rows
-    const rows = tenantId
-      ? (await orderedQuery.limit(perPage).offset(offset)).map((row) => (row as unknown as { entry: EntryRow }).entry)
-      : (await orderedQuery.limit(perPage).offset(offset)) as EntryRow[]
+    // Count + rows in parallel (count skipped when caller sets skipCount).
+    const [countRows, rows] = await Promise.all([
+      filters.skipCount
+        ? Promise.resolve(null)
+        : db
+            .select({ count: sql<number>`count(*)` })
+            .from(entries)
+            .innerJoin(collections, eq(collections.id, entries.collectionId))
+            .where(where),
+      runRows(),
+    ])
+    const total = filters.skipCount ? -1 : (countRows?.[0]?.count ?? 0)
 
     return { rows, total }
   },
@@ -128,30 +138,36 @@ export const entriesRepository = {
       orderByClause,
     } = filters
 
+    const safePage = Math.max(1, Number.isFinite(page) ? Math.floor(page) : 1)
+    const safePerPage = Math.min(100, Math.max(1, Number.isFinite(perPage) ? Math.floor(perPage) : 20))
+
     const baseConditions = [
       eq(entries.collectionId, collectionId),
       ...buildPublicVisibilityConditions(now),
     ]
 
     const where = and(...baseConditions, ...extraConditions)
-    const offset = (page - 1) * perPage
+    const offset = (safePage - 1) * safePerPage
 
-    const countResult = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(entries)
-      .where(where)
-    const total = countResult[0]?.count ?? 0
+    const runRows = async (): Promise<EntryRow[]> => {
+      const query = db
+        .select()
+        .from(entries)
+        .where(where)
+        .limit(safePerPage)
+        .offset(offset)
+      return orderByClause
+        ? await query.orderBy(orderByClause)
+        : await query.orderBy(desc(entries.createdAt))
+    }
 
-    const query = db
-      .select()
-      .from(entries)
-      .where(where)
-      .limit(perPage)
-      .offset(offset)
-
-    const rows = orderByClause
-      ? await query.orderBy(orderByClause)
-      : await query.orderBy(desc(entries.createdAt))
+    const [countResult, rows] = await Promise.all([
+      filters.skipCount
+        ? Promise.resolve(null)
+        : db.select({ count: sql<number>`count(*)` }).from(entries).where(where),
+      runRows(),
+    ])
+    const total = filters.skipCount ? -1 : (countResult?.[0]?.count ?? 0)
 
     return { rows, total }
   },
@@ -193,17 +209,23 @@ export const entriesRepository = {
 
   /** Find multiple entries by ID using a single query, scoped to a tenant. */
   async findByIds(db: Database, ids: string[], tenantId?: string): Promise<EntryRow[]> {
-    if (ids.length === 0) {
+    const uniqueIds = [...new Set(ids)]
+    if (uniqueIds.length === 0) {
       return []
     }
-    if (!tenantId) {
-      return db.select().from(entries).where(inArray(entries.id, ids))
+    // Cap both paths to avoid unbounded IN scans (matches MAX_IN_VALUES=50 convention).
+    if (uniqueIds.length > 100) {
+      throw new Error('Maximum 100 IDs per batch request')
     }
+    // Always tenant-scope batch reads. Missing tenantId falls back to the
+    // 'global' scope (never an unscoped cross-tenant read).
+    const tenantScope = resolveTenantScope(tenantId)
     const rows = await db
       .select({ entry: entries })
       .from(entries)
       .innerJoin(collections, eq(entries.collectionId, collections.id))
-      .where(and(inArray(entries.id, ids), eq(collections.tenantId, tenantId)))
+      .where(and(inArray(entries.id, uniqueIds), eq(collections.tenantId, tenantScope)))
+      .limit(100)
     return rows.map((r) => r.entry)
   },
 
@@ -221,8 +243,23 @@ export const entriesRepository = {
   async update(
     db: Database,
     id: string,
-    data: Partial<Omit<EntryInsert, 'id'>>
+    data: Partial<Omit<EntryInsert, 'id'>>,
+    tenantId?: string
   ): Promise<EntryRow | undefined> {
+    // Single-statement tenant-scoped update (no read-then-write round-trip).
+    if (tenantId) {
+      const rows = await db
+        .update(entries)
+        .set(data)
+        .where(
+          and(
+            eq(entries.id, id),
+            sql`EXISTS (SELECT 1 FROM ${collections} WHERE ${collections.id} = ${entries.collectionId} AND ${collections.tenantId} = ${tenantId})`
+          )
+        )
+        .returning()
+      return rows[0]
+    }
     const rows = await db.update(entries).set(data).where(eq(entries.id, id)).returning()
     return rows[0]
   },
@@ -235,8 +272,23 @@ export const entriesRepository = {
     db: Database,
     id: string,
     expectedVersion: number,
-    data: Partial<Omit<EntryInsert, 'id'>>
+    data: Partial<Omit<EntryInsert, 'id'>>,
+    tenantId?: string
   ): Promise<EntryRow | undefined> {
+    if (tenantId) {
+      const rows = await db
+        .update(entries)
+        .set(data)
+        .where(
+          and(
+            eq(entries.id, id),
+            eq(entries.version, expectedVersion),
+            sql`EXISTS (SELECT 1 FROM ${collections} WHERE ${collections.id} = ${entries.collectionId} AND ${collections.tenantId} = ${tenantId})`
+          )
+        )
+        .returning()
+      return rows[0]
+    }
     const rows = await db
       .update(entries)
       .set(data)
@@ -246,7 +298,19 @@ export const entriesRepository = {
   },
 
   /** Delete an entry by ID. Returns true if a row was deleted. */
-  async deleteById(db: Database, id: string): Promise<boolean> {
+  async deleteById(db: Database, id: string, tenantId?: string): Promise<boolean> {
+    if (tenantId) {
+      const rows = await db
+        .delete(entries)
+        .where(
+          and(
+            eq(entries.id, id),
+            sql`EXISTS (SELECT 1 FROM ${collections} WHERE ${collections.id} = ${entries.collectionId} AND ${collections.tenantId} = ${tenantId})`
+          )
+        )
+        .returning({ id: entries.id })
+      return rows.length > 0
+    }
     const rows = await db.delete(entries).where(eq(entries.id, id)).returning({ id: entries.id })
     return rows.length > 0
   },
@@ -262,11 +326,76 @@ export const entriesRepository = {
   },
 
   /** List version history for an entry. */
-  async findVersions(db: Database, entryId: string): Promise<EntryVersionRow[]> {
+  async findVersions(
+    db: Database,
+    entryId: string,
+    options: { limit?: number; offset?: number } = {}
+  ): Promise<EntryVersionRow[]> {
+    const limit = Math.min(100, Math.max(1, options.limit ?? 50))
+    const offset = Math.max(0, options.offset ?? 0)
     return db
       .select()
       .from(entryVersions)
       .where(eq(entryVersions.entryId, entryId))
       .orderBy(desc(entryVersions.version))
+      .limit(limit)
+      .offset(offset)
+  },
+
+  /** List version metadata (excluding `data` JSON payloads) for retention pruning. */
+  async findVersionMetadata(
+    db: Database,
+    entryId: string,
+    options: { limit?: number } = {}
+  ): Promise<Array<Pick<EntryVersionRow, 'id' | 'entryId' | 'version' | 'createdBy' | 'createdAt'>>> {
+    const limit = Math.min(500, Math.max(1, options.limit ?? 200))
+    return db
+      .select({
+        id: entryVersions.id,
+        entryId: entryVersions.entryId,
+        version: entryVersions.version,
+        createdBy: entryVersions.createdBy,
+        createdAt: entryVersions.createdAt,
+      })
+      .from(entryVersions)
+      .where(eq(entryVersions.entryId, entryId))
+      .orderBy(desc(entryVersions.version))
+      .limit(limit)
+  },
+
+  /** Find existing entry slugs with a prefix (single LIKE query; suffix resolved in memory). */
+  async findSlugsByPrefix(
+    db: Database,
+    collectionId: string,
+    slugPrefix: string,
+    tenantId?: string
+  ): Promise<string[]> {
+    const escaped = slugPrefix.replace(/[%_\\]/g, (c) => `\\${c}`)
+    const conds = [eq(entries.collectionId, collectionId), like(entries.slug, `${escaped}%`)]
+    if (tenantId) {
+      const rows = await db
+        .select({ slug: entries.slug })
+        .from(entries)
+        .innerJoin(collections, eq(collections.id, entries.collectionId))
+        .where(and(...conds, eq(collections.tenantId, tenantId)))
+        .limit(100)
+      return rows.map((r) => r.slug)
+    }
+    const rows = await db
+      .select({ slug: entries.slug })
+      .from(entries)
+      .where(and(...conds))
+      .limit(100)
+    return rows.map((r) => r.slug)
+  },
+
+  /** Find a specific version by its version ID. */
+  async findVersionById(db: Database, versionId: string): Promise<EntryVersionRow | undefined> {
+    const rows = await db
+      .select()
+      .from(entryVersions)
+      .where(eq(entryVersions.id, versionId))
+      .limit(1)
+    return rows[0]
   },
 }

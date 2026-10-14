@@ -37,33 +37,41 @@ export async function warmPublicCache(params: WarmCacheParams): Promise<WarmCach
   let warmed = 0
   let failed = 0
 
-  for (const collection of collections) {
-    try {
-      if (collection.singleton) {
-        await getSingletonEntry({
-          db,
-          kv,
-          collectionSlug: collection.slug,
-          locale: collection.defaultLocale,
-        })
+  // Chunked parallel warming (concurrency 5) — avoids serial per-collection latency
+  // while bounding simultaneous D1/KV pressure.
+  const CHUNK = 5
+  for (let i = 0; i < collections.length; i += CHUNK) {
+    const chunk = collections.slice(i, i + CHUNK)
+    const results = await Promise.allSettled(
+      chunk.map((collection) =>
+        collection.singleton
+          ? getSingletonEntry({
+              db,
+              kv,
+              collectionSlug: collection.slug,
+              locale: collection.defaultLocale,
+            })
+          : getCollectionList({
+              db,
+              kv,
+              collectionSlug: collection.slug,
+              locale: collection.defaultLocale,
+              page: 1,
+              perPage: 20,
+            })
+      )
+    )
+    results.forEach((result, idx) => {
+      if (result.status === 'fulfilled') {
+        warmed++
       } else {
-        await getCollectionList({
-          db,
-          kv,
-          collectionSlug: collection.slug,
-          locale: collection.defaultLocale,
-          page: 1,
-          perPage: 20,
+        failed++
+        logger.warn('cache_warm_failed', {
+          collection: chunk[idx]?.slug,
+          error: result.reason instanceof Error ? result.reason.message : String(result.reason),
         })
       }
-      warmed++
-    } catch (err) {
-      failed++
-      logger.warn('cache_warm_failed', {
-        collection: collection.slug,
-        error: err instanceof Error ? err.message : String(err),
-      })
-    }
+    })
   }
 
   logger.info('cache_warming_complete', { warmed, failed, total: collections.length })

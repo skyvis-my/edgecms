@@ -13,7 +13,6 @@ const mockRbacRepository = {
   deleteRole: vi.fn(),
   deletePermission: vi.fn(),
 }
-
 vi.mock('../../auth/rbac.repository', () => ({
   rbacRepository: mockRbacRepository,
 }))
@@ -84,6 +83,47 @@ describe('rbacService', () => {
         expect.anything(),
         expect.objectContaining({ name: 'viewer' })
       )
+    })
+
+    it('seeds via a single db.batch when fresh and batch is supported', async () => {
+      mockRbacRepository.findRolesByTenant.mockResolvedValue([])
+      const batchedQueries: unknown[] = []
+      const values = vi.fn((rows: unknown) => ({ rows }))
+      const batchDb = {
+        insert: vi.fn(() => ({ values })),
+        batch: vi.fn(async (queries: unknown[]) => {
+          batchedQueries.push(queries)
+          return []
+        }),
+      }
+
+      await rbacService.seedBuiltInRoles(batchDb as unknown as Database, 't1')
+
+      expect(batchDb.batch).toHaveBeenCalledTimes(1)
+      expect(mockRbacRepository.createRole).not.toHaveBeenCalled()
+      const queries = batchedQueries[0] as Array<{ rows: unknown[] }>
+      expect(queries).toHaveLength(2)
+      if (!queries[0] || !queries[1]) throw new Error('expected two batched statements')
+      expect(queries[0].rows).toHaveLength(4)
+      expect((queries[1].rows as unknown[]).length).toBeGreaterThan(20)
+    })
+
+    it('returns early via batch path when all roles already exist', async () => {
+      mockRbacRepository.findRolesByTenant.mockResolvedValue([
+        { id: 'r1', name: 'viewer' },
+        { id: 'r2', name: 'editor' },
+        { id: 'r3', name: 'admin' },
+        { id: 'r4', name: 'owner' },
+      ])
+      const batchDb = {
+        insert: vi.fn(),
+        batch: vi.fn(async () => []),
+      }
+
+      await rbacService.seedBuiltInRoles(batchDb as unknown as Database, 't1')
+
+      expect(batchDb.batch).not.toHaveBeenCalled()
+      expect(mockRbacRepository.createRole).not.toHaveBeenCalled()
     })
   })
 

@@ -1,52 +1,76 @@
-import { type } from 'arktype'
+import { Type, createSchema } from './typebox'
 
-export const remotePerfReceipt = type({
-  url: 'string > 0',
-  path: 'string > 0',
-  measuredAt: 'string > 0',
-  p95Ms: 'number >= 0',
-  proof: "'deployed'",
-})
+export const remotePerfReceipt = createSchema(
+  Type.Object({
+    url: Type.String({ minLength: 1 }),
+    path: Type.String({ minLength: 1 }),
+    measuredAt: Type.String({ minLength: 1 }),
+    p95Ms: Type.Number({ minimum: 0 }),
+    proof: Type.Literal('deployed'),
+  })
+)
 
-export const trustedPluginManifest = type({
-  name: 'string > 0',
-  enabled: 'boolean',
-  source: "'trusted_catalog'",
-})
+export const trustedPluginManifest = createSchema(
+  Type.Object({
+    name: Type.String({ minLength: 1 }),
+    enabled: Type.Boolean(),
+    source: Type.Literal('trusted_catalog'),
+  })
+)
 
-export const trustedPluginManifestSafety = type({
-  name: 'string > 0',
-  enabled: 'boolean',
-  source: "'trusted_catalog'",
-  permissions: type('string > 0').array(),
-  hookTimeoutMs: 'number >= 1',
-})
+export const trustedPluginManifestSafety = createSchema(
+  Type.Object({
+    name: Type.String({ minLength: 1 }),
+    enabled: Type.Boolean(),
+    source: Type.Literal('trusted_catalog'),
+    permissions: Type.Array(Type.String({ minLength: 1 })),
+    hookTimeoutMs: Type.Integer({ minimum: 1 }),
+  })
+)
 
-export const pluginHookTimeoutPolicy = type({
-  hook: "'beforeCommand' | 'afterCommand' | 'beforeAiCommand'",
-  timeoutMs: 'number >= 1',
-})
+export const pluginHookTimeoutPolicy = createSchema(
+  Type.Object({
+    hook: Type.Union([
+      Type.Literal('beforeCommand'),
+      Type.Literal('afterCommand'),
+      Type.Literal('beforeAiCommand'),
+    ]),
+    timeoutMs: Type.Integer({ minimum: 1 }),
+  })
+)
 
-export const pluginHealthRoute = type({
-  pluginName: 'string > 0',
-  kind: "'admin'",
-  path: 'string > 0',
-})
+export const pluginHealthRoute = createSchema(
+  Type.Object({
+    pluginName: Type.String({ minLength: 1 }),
+    kind: Type.Literal('admin'),
+    path: Type.String({ minLength: 1 }),
+  })
+)
 
-export const examplePluginContract = type({
-  name: 'string > 0',
-  category: 'string > 0',
-  adminOnly: 'boolean',
-  publicRoutes: 'number >= 0',
-})
+export const examplePluginContract = createSchema(
+  Type.Object({
+    name: Type.String({ minLength: 1 }),
+    category: Type.String({ minLength: 1 }),
+    adminOnly: Type.Boolean(),
+    publicRoutes: Type.Integer({ minimum: 0 }),
+  })
+)
 
-export const pluginSdkReleaseGate = type({
-  packageName: "'@edgecms/plugin-sdk'",
-  private: 'boolean',
-  checkScript: 'string > 0',
-})
+export const pluginSdkReleaseGate = createSchema(
+  Type.Object({
+    packageName: Type.Literal('@edgecms/plugin-sdk'),
+    private: Type.Boolean(),
+    checkScript: Type.String({ minLength: 1 }),
+  })
+)
 
-export const adminPluginPanelState = type("'loaded' | 'disabled' | 'blocked'")
+export const adminPluginPanelState = createSchema(
+  Type.Union([
+    Type.Literal('loaded'),
+    Type.Literal('disabled'),
+    Type.Literal('blocked'),
+  ])
+)
 
 export function isRemotePerfReceiptComplete(receipt: typeof remotePerfReceipt.infer): boolean {
   return receipt.proof === 'deployed' && receipt.url.startsWith('https://') && receipt.path.startsWith('/')

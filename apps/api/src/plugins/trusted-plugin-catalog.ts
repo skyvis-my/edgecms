@@ -1,7 +1,6 @@
-import type { Type } from 'arktype'
-import { type } from 'arktype'
 import { Elysia } from 'elysia'
 import { id } from '@/shared/schemas'
+import { Type, createSchema, type TSchema } from '@/shared/schemas/typebox'
 import type { EventType } from '@/webhooks/event-bus'
 import { signPayload } from '@/webhooks/webhook-delivery.service'
 import { validateWebhookDestination } from '@/webhooks/webhook-destination-policy'
@@ -21,27 +20,29 @@ export type PluginAiGeneratedCommand = PluginGeneratedCommand<CommandEnvelope['t
 
 export type AnyElysia = Elysia<any, any, any, any, any, any, any>
 
-export type TrustedPluginAiTool = PluginAiTool<PluginAiGeneratedCommand, Type>
+export type TrustedPluginAiTool = PluginAiTool<PluginAiGeneratedCommand, TSchema>
 
 export type TrustedPluginRouteFactory = PluginRouteFactory<AnyElysia>
 
-export type TrustedPluginFieldType = PluginFieldType<Type>
+export type TrustedPluginFieldType = PluginFieldType<TSchema>
 
 export type TrustedPluginMetadata = PluginMetadata
 
 export type TrustedPluginAdminMenuItem = PluginAdminMenuItem
 
-export type TrustedPluginDefinition = PluginDefinition<AnyElysia, PluginAiGeneratedCommand, Type>
+export type TrustedPluginDefinition = PluginDefinition<AnyElysia, PluginAiGeneratedCommand, TSchema>
 
 
 const noopHook: PluginHook = async () => {}
 const pluginUpdateEntryTool: TrustedPluginAiTool = {
   name: 'pluginUpdateEntry',
   description: 'Update a single entry payload through plugin-extensible AI routing.',
-  parameters: type({
-    id,
-    data: 'Record<string, unknown>',
-  }),
+  parameters: createSchema(
+    Type.Object({
+      id,
+      data: Type.Record(Type.String(), Type.Unknown()),
+    })
+  ),
   toCommands: (args) => [
     {
       type: 'updateEntry',
@@ -53,10 +54,12 @@ const pluginUpdateEntryTool: TrustedPluginAiTool = {
 const pluginGenerateSeoMetadataTool: TrustedPluginAiTool = {
   name: 'pluginGenerateSeoMetadata',
   description: 'Generate SEO title, description, and keywords for an entry',
-  parameters: type({
-    entryId: id,
-    collectionSlug: 'string',
-  }),
+  parameters: createSchema(
+    Type.Object({
+      entryId: id,
+      collectionSlug: Type.String(),
+    })
+  ),
   toCommands: (args) => [
     {
       type: 'updateEntry',
@@ -170,11 +173,13 @@ const trustedPluginCatalog: Record<string, TrustedPluginDefinition> = {
       {
         type: 'seo-preview',
         label: 'SEO Preview',
-        validator: type({
-          title: 'string',
-          description: 'string',
-          url: 'string',
-        }),
+        validator: createSchema(
+          Type.Object({
+            title: Type.String(),
+            description: Type.String(),
+            url: Type.String(),
+          })
+        ),
         defaultValue: { title: '', description: '', url: '' },
       },
     ],

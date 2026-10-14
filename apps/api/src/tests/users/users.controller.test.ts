@@ -13,7 +13,7 @@ mock.module('@/database/db', () => ({ createDb: vi.fn(() => ({ select: vi.fn() }
 mock.module('@/auth/auth.middleware', () => ({
   betterAuthPlugin: new Elysia().macro({
     auth: {
-      resolve() {
+      derive() {
         return { user: { id: 'user-1', email: 'user@example.com', name: 'User' } }
       },
     },
@@ -21,6 +21,7 @@ mock.module('@/auth/auth.middleware', () => ({
 }))
 mock.module('@/tenants/tenant-context', () => ({
   hasTenantContext: mockHasTenantContext,
+  resolveTenantBindings: () => ({ db: mockEnv.DB, kv: {} as KVNamespace, r2: {} as R2Bucket }),
 }))
 mock.module('../../users/users.service', () => ({
   usersService: { findAdminUsers: mockFindAdminUsers },

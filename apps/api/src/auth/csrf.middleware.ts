@@ -3,6 +3,23 @@ const CSRF_COOKIE_NAME = 'csrf_token'
 const CSRF_TOKEN_TTL_SECONDS = 24 * 60 * 60
 const encoder = new TextEncoder()
 
+const csrfHmacKeyCache = new Map<string, Promise<CryptoKey>>()
+
+function getCsrfHmacKey(secret: string): Promise<CryptoKey> {
+  let cached = csrfHmacKeyCache.get(secret)
+  if (!cached) {
+    cached = crypto.subtle.importKey(
+      'raw',
+      encoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign']
+    )
+    csrfHmacKeyCache.set(secret, cached)
+  }
+  return cached
+}
+
 export type CsrfCookieOptions = {
   secure: boolean
   nowSeconds?: number
@@ -33,13 +50,7 @@ function base64UrlEncode(bytes: Uint8Array): string {
 }
 
 async function hmacSha256(secret: string, value: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  )
+  const key = await getCsrfHmacKey(secret)
   const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(value))
   return base64UrlEncode(new Uint8Array(signature))
 }

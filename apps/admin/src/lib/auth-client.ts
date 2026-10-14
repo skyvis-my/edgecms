@@ -1,5 +1,6 @@
 import { createAuthClient } from 'better-auth/react'
 import { resolveApiBasePath } from './api-base-path'
+import { clearAccessTokens } from './access-token'
 import { clearCachedSession, getSessionWithLocalCache } from './session-fetch'
 import type { SessionDataShape } from './session-fetch'
 
@@ -80,9 +81,10 @@ export async function refreshSessionAfterLogin() {
   return getSessionWithLocalCache(getSessionWithEffectiveRole, { forceRefresh: true })
 }
 
-export async function signOutAndClearSession() {
+export async function signOut() {
   const result = await authClient.signOut()
   clearCachedSession()
+  clearAccessTokens()
   return result
 }
 
@@ -90,4 +92,3 @@ export async function signOutAndClearSession() {
  * Convenience re-exports for common auth operations.
  */
 export const { signIn, signUp, useSession } = authClient
-export const signOut = signOutAndClearSession

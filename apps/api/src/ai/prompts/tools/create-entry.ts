@@ -1,4 +1,4 @@
-import { type } from 'arktype'
+import { Type, createSchema } from '@/shared/schemas/typebox'
 import { entryStatus, id } from '@/shared/schemas'
 
 /**
@@ -12,12 +12,14 @@ export const createEntryTool = {
   name: 'createEntry',
   description:
     'Create a new entry in a collection. Use this when the user wants to add new content (e.g., "create a blog post about X", "add a new product"). The AI should infer the correct collection based on context, generate a URL-friendly slug, and structure field data according to the collection schema.',
-  parameters: type({
-    collectionId: id,
-    'slug?': 'string',
-    'status?': entryStatus,
-    data: 'Record<string, unknown>',
-  }),
+  parameters: createSchema(
+    Type.Object({
+      collectionId: id,
+      slug: Type.Optional(Type.String()),
+      status: Type.Optional(entryStatus),
+      data: Type.Record(Type.String(), Type.Unknown()),
+    })
+  ),
 }
 
 export type CreateEntryToolParams = typeof createEntryTool.parameters.infer

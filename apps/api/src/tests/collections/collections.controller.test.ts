@@ -17,7 +17,7 @@ vi.mock('cloudflare:workers', () => ({
 vi.mock('@/auth/auth.middleware', () => ({
   betterAuthPlugin: new Elysia().macro({
     auth: {
-      resolve() {
+      derive() {
         return { user: { id: 'user-1' } }
       },
     },
@@ -34,17 +34,48 @@ const { collectionsController } = await import(
 
 describe('collectionsController', () => {
   const app = new Elysia().use(collectionsController)
+  const makeTenantApp = (tenantId = 't1') =>
+    new Elysia()
+      .derive(() => ({
+        tenant: {
+          tenant: { id: tenantId, slug: 'acme', name: 'Acme', status: 'active' },
+          resources: { mode: 'shared' as const },
+        },
+      }))
+      .use(collectionsController)
 
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
+  it('GET / returns 400 TENANT_REQUIRED when no tenant context', async () => {
+    const response = await app.handle(new Request('http://localhost/api/admin/collections'))
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as { success: boolean; error: { code: string } }
+    expect(body.success).toBe(false)
+    expect(body.error.code).toBe('TENANT_REQUIRED')
+    expect(mockCollectionsService.findAll).not.toHaveBeenCalled()
+  })
+
+  it('GET /:collectionIdOrSlug returns 400 TENANT_REQUIRED when no tenant context', async () => {
+    const response = await app.handle(
+      new Request('http://localhost/api/admin/collections/c1')
+    )
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as { success: boolean; error: { code: string } }
+    expect(body.error.code).toBe('TENANT_REQUIRED')
+    expect(mockCollectionsService.findByIdOrSlug).not.toHaveBeenCalled()
+  })
+
   it('GET / returns data on success', async () => {
     mockCollectionsService.findAll.mockResolvedValue({ success: true, data: [{ id: 'c1' }] })
 
-    const response = await app.handle(new Request('http://localhost/api/admin/collections'))
+    const response = await makeTenantApp().handle(
+      new Request('http://localhost/api/admin/collections')
+    )
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ success: true, data: [{ id: 'c1' }] })
+    expect(mockCollectionsService.findAll).toHaveBeenCalledWith(expect.anything(), 't1')
   })
 
   it('GET /:collectionIdOrSlug returns error envelope on failure', async () => {
@@ -53,12 +84,19 @@ describe('collectionsController', () => {
       error: { code: 'NOT_FOUND', message: 'missing' },
     })
 
-    const response = await app.handle(new Request('http://localhost/api/admin/collections/missing'))
+    const response = await makeTenantApp('t2').handle(
+      new Request('http://localhost/api/admin/collections/missing')
+    )
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({
       success: false,
       error: { code: 'NOT_FOUND', message: 'missing' },
     })
+    expect(mockCollectionsService.findByIdOrSlug).toHaveBeenCalledWith(
+      expect.anything(),
+      'missing',
+      't2'
+    )
   })
 
   it('POST / returns 201 on success', async () => {

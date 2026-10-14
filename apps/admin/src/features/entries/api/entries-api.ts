@@ -112,19 +112,40 @@ export function useEntries(params: EntriesListParams = {}) {
 /**
  * Hook to fetch multiple entries by ID in a single batch request.
  * Eliminates N+1 queries when rendering lists of related entries.
+ * IDs are fetched in chunks of 50 to keep URLs small; long cache keys
+ * are hashed to avoid oversized query keys.
  */
+const ENTRIES_BY_IDS_CHUNK_SIZE = 50
+
+function hashIdsKey(joined: string): string {
+  let hash = 0
+  for (let i = 0; i < joined.length; i++) {
+    hash = (Math.imul(hash, 31) + joined.charCodeAt(i)) | 0
+  }
+  return `hash:${hash.toString(16)}:${joined.length}`
+}
+
 export function useEntriesByIds(ids: string[]) {
   const sortedIds = [...ids].sort()
+  const joinedIds = sortedIds.join(',')
+  // Keep the query key small: hash when the joined key would exceed ~200 chars.
+  const batchKey = joinedIds.length > 200 ? hashIdsKey(joinedIds) : joinedIds
   return useQuery({
-    queryKey: [...entriesKeys.all, 'batch', sortedIds.join(',')],
+    queryKey: [...entriesKeys.all, 'batch', batchKey],
     queryFn: async () => {
       if (sortedIds.length === 0) return []
-      return edenGet<Entry[]>(
-        `/admin/entries/batch?ids=${sortedIds.join(',')}`
+      const chunks: string[][] = []
+      for (let i = 0; i < sortedIds.length; i += ENTRIES_BY_IDS_CHUNK_SIZE) {
+        chunks.push(sortedIds.slice(i, i + ENTRIES_BY_IDS_CHUNK_SIZE))
+      }
+      const pages = await Promise.all(
+        chunks.map((chunk) => edenGet<Entry[]>(`/admin/entries/batch?ids=${chunk.join(',')}`))
       )
+      return pages.flat()
     },
     enabled: sortedIds.length > 0,
     staleTime: 30_000,
+    gcTime: 5 * 60 * 1000,
   })
 }
 
@@ -153,27 +174,32 @@ export type EntryByIdentifierOptions = {
 
 export function useEntryByIdentifier(identifier: string, options: EntryByIdentifierOptions = {}) {
   const { collectionId, enabled = true, preferCollectionLookup = false } = options
+  // Retained for API compat; the direct GET below always runs first since it
+  // is cheaper (1 row) than the scoped list fallback.
+  void preferCollectionLookup
 
   return useQuery({
     queryKey: entriesKeys.byIdentifier(identifier, collectionId),
     queryFn: async () => {
+      // Scoped fallback: keep the page small (perPage=50). The 200-row
+      // client-side find was the main over-fetch; the direct GET above
+      // covers the common case so this only runs on slug lookups / misses.
+      // NOTE: if the backend gains `?slug=` support, prefer that single-row
+      // lookup here instead of the scoped list fetch.
       const findByCollectionScope = async (): Promise<Entry | null> => {
         if (!collectionId) return null
 
         const queryParams = new URLSearchParams()
         queryParams.set('collectionId', collectionId)
         queryParams.set('page', '1')
-        queryParams.set('perPage', '200')
+        queryParams.set('perPage', '50')
 
         const response = await edenGet<EntriesListResponse>(`/admin/entries?${queryParams.toString()}`)
         return response.data.find((entry) => entry.slug === identifier || entry.id === identifier) ?? null
       }
 
-      if (preferCollectionLookup) {
-        const matched = await findByCollectionScope()
-        if (matched) return matched
-      }
-
+      // Prefer the direct GET first (1 row) and only fall back to the
+      // scoped list lookup on failure, regardless of preferCollectionLookup.
       try {
         return await edenGet<Entry>(`/admin/entries/${identifier}`)
       } catch (error) {

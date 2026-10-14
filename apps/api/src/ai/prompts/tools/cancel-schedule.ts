@@ -1,4 +1,4 @@
-import { type } from 'arktype'
+import { Type, createSchema } from '@/shared/schemas/typebox'
 import { id } from '@/shared/schemas'
 
 /**
@@ -12,9 +12,11 @@ export const cancelScheduleTool = {
   name: 'cancelSchedule',
   description:
     'Cancel any scheduled publish or unpublish transition for an entry. Use this when the user wants to cancel a scheduled action (e.g., "cancel the scheduled publish", "don\'t publish that post tomorrow", "remove the scheduled unpublish").',
-  parameters: type({
-    entryId: id,
-  }),
+  parameters: createSchema(
+    Type.Object({
+      entryId: id,
+    })
+  ),
 }
 
 export type CancelScheduleToolParams = typeof cancelScheduleTool.parameters.infer

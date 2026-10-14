@@ -1,3 +1,5 @@
+import { scheduleDeferredWork } from '@/commands/deferred-work'
+
 const buckets = new Map<string, { count: number; resetAt: number }>()
 const MAX_BUCKETS = 5000
 const PRUNE_TARGET_SIZE = 4000
@@ -110,12 +112,15 @@ export async function consumeRateLimitDistributed(
     now?: number
     windowMs?: number
     limit?: number
+    /** Request/handler context carrying `waitUntil`: KV persists detach via scheduleDeferredWork. */
+    source?: unknown
   }
 ): Promise<RateLimitResult> {
   const now = options?.now ?? Date.now()
   const windowMs = options?.windowMs ?? 60_000
   const limit = options?.limit ?? 120
   const kv = options?.kv
+  const source = options?.source
 
   if (!kv || typeof kv.get !== 'function' || typeof kv.put !== 'function') {
     return consumeRateLimit(key, now, windowMs, limit)
@@ -124,11 +129,30 @@ export async function consumeRateLimitDistributed(
   const kvKey = `${KV_RATE_LIMIT_PREFIX}${key}`
   const resetAt = now + windowMs
 
+  const syncL1 = (count: number, bucketResetAt: number): void => {
+    enforceBucketLimit(now)
+    buckets.set(key, { count, resetAt: bucketResetAt })
+  }
+
+  const persistCounter = (state: string, ttlSeconds: number): void => {
+    const write = kv.put(kvKey, state, { expirationTtl: ttlSeconds })
+    if (source !== undefined) {
+      // Non-blocking: isolate L1 is already in sync; KV write follows via waitUntil.
+      scheduleDeferredWork(source, write as Promise<unknown>, 'rate-limit-persist')
+      return
+    }
+  }
+
   try {
     const raw = await kv.get(kvKey)
     if (!raw) {
       const nextState = JSON.stringify({ count: 1, resetAt })
-      await kv.put(kvKey, nextState, { expirationTtl: Math.max(1, Math.ceil(windowMs / 1000)) })
+      syncL1(1, resetAt)
+      if (source !== undefined) {
+        persistCounter(nextState, Math.max(1, Math.ceil(windowMs / 1000)))
+      } else {
+        await kv.put(kvKey, nextState, { expirationTtl: Math.max(1, Math.ceil(windowMs / 1000)) })
+      }
       return { allowed: true, remaining: limit - 1, resetAt }
     }
 
@@ -138,19 +162,30 @@ export async function consumeRateLimitDistributed(
 
     if (now >= existingResetAt) {
       const nextState = JSON.stringify({ count: 1, resetAt })
-      await kv.put(kvKey, nextState, { expirationTtl: Math.max(1, Math.ceil(windowMs / 1000)) })
+      syncL1(1, resetAt)
+      if (source !== undefined) {
+        persistCounter(nextState, Math.max(1, Math.ceil(windowMs / 1000)))
+      } else {
+        await kv.put(kvKey, nextState, { expirationTtl: Math.max(1, Math.ceil(windowMs / 1000)) })
+      }
       return { allowed: true, remaining: limit - 1, resetAt }
     }
 
     if (existingCount >= limit) {
+      syncL1(existingCount, existingResetAt)
       return { allowed: false, remaining: 0, resetAt: existingResetAt }
     }
 
     const updatedCount = existingCount + 1
     const ttlSeconds = Math.max(1, Math.ceil((existingResetAt - now) / 1000))
-    await kv.put(kvKey, JSON.stringify({ count: updatedCount, resetAt: existingResetAt }), {
-      expirationTtl: ttlSeconds,
-    })
+    syncL1(updatedCount, existingResetAt)
+    if (source !== undefined) {
+      persistCounter(JSON.stringify({ count: updatedCount, resetAt: existingResetAt }), ttlSeconds)
+    } else {
+      await kv.put(kvKey, JSON.stringify({ count: updatedCount, resetAt: existingResetAt }), {
+        expirationTtl: ttlSeconds,
+      })
+    }
     return {
       allowed: true,
       remaining: Math.max(0, limit - updatedCount),

@@ -112,12 +112,15 @@ const runSmoke = async (options: SmokeOptions) => {
     }
 
     await runCommand('ensure playwright chromium', [
-      'bunx',
+      'bun',
+      'run',
+      '--filter',
+      'edgecms-admin',
       'playwright',
       'install',
       ...(process.env.CI ? ['--with-deps'] : []),
       'chromium',
-    ], { cwd: adminDir })
+    ])
   }
 
   const fetchHealth = async (url: string): Promise<HealthStatus> => {

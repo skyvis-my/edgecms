@@ -324,7 +324,7 @@ Custom content fields must use the `data.<field>` path shape. Public status filt
 Local performance proof needs a known tenant, collection, and entry path. Use:
 
 ```bash
-bun run perf:public-read:local -- --path /api/tenants/smoke/api/public/smoke-posts/<entry-slug>
+bun run perf:public-read:local -- --path /api/tenants/smoke/api/public/smoke-posts/<entry-slug> --expected-kind detail
 ```
 
 The local threshold report records p50/p95 and pass/fail for local behavior only. Remote proof requires `EDGE_CMS_URL` and an operator-provided deployed Worker URL.

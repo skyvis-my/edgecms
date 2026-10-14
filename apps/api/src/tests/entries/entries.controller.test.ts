@@ -19,7 +19,7 @@ vi.mock('cloudflare:workers', () => ({
 vi.mock('@/auth/auth.middleware', () => ({
   betterAuthPlugin: new Elysia().macro({
     auth: {
-      resolve() {
+      derive() {
         return { user: { id: 'u1' } }
       },
     },
@@ -56,8 +56,52 @@ const mockedEntriesService = asMockedObj(mockEntriesService)
 
 describe('entriesController', () => {
   const app = new Elysia().use(entriesController)
+  const makeTenantApp = (tenantId = 't1') =>
+    new Elysia()
+      .derive(() => ({
+        tenant: {
+          tenant: { id: tenantId, slug: 'acme', name: 'Acme', status: 'active' },
+          resources: { mode: 'shared' as const },
+        },
+      }))
+      .use(entriesController)
 
   beforeEach(() => vi.clearAllMocks())
+
+  it('GET / returns 400 TENANT_REQUIRED when no tenant context', async () => {
+    const response = await app.handle(new Request('http://localhost/api/admin/entries'))
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as { success: boolean; error: { code: string } }
+    expect(body.success).toBe(false)
+    expect(body.error.code).toBe('TENANT_REQUIRED')
+    expect(mockedEntriesService.findAllWithLocaleAndPopulate).not.toHaveBeenCalled()
+  })
+
+  it('GET /:entryId returns 400 TENANT_REQUIRED when no tenant context', async () => {
+    const response = await app.handle(new Request('http://localhost/api/admin/entries/e1'))
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as { success: boolean; error: { code: string } }
+    expect(body.success).toBe(false)
+    expect(body.error.code).toBe('TENANT_REQUIRED')
+    expect(mockedEntriesService.findByIdWithLocaleAndPopulate).not.toHaveBeenCalled()
+  })
+
+  it('GET / forwards the tenant id to the service (cross-tenant reads stay scoped)', async () => {
+    mockedEntriesService.findAllWithLocaleAndPopulate.mockResolvedValue({
+      success: true,
+      data: { entries: [], total: 0, page: 1, perPage: 20 },
+    })
+
+    const response = await makeTenantApp('t2').handle(
+      new Request('http://localhost/api/admin/entries')
+    )
+    expect(response.status).toBe(200)
+    expect(mockedEntriesService.findAllWithLocaleAndPopulate).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      't2'
+    )
+  })
 
   it('GET / returns pagination meta and supports populate', async () => {
     mockedEntriesService.findAllWithLocaleAndPopulate.mockResolvedValue({
@@ -65,7 +109,7 @@ describe('entriesController', () => {
       data: { entries: [{ id: 'e1' }], total: 1, page: 1, perPage: 20 },
     })
 
-    const response = await app.handle(
+    const response = await makeTenantApp().handle(
       new Request('http://localhost/api/admin/entries?populate=author&depth=2')
     )
 
@@ -85,17 +129,25 @@ describe('entriesController', () => {
       data: { id: 'e1' },
     })
 
-    const ok = await app.handle(
+    const ok = await makeTenantApp().handle(
       new Request('http://localhost/api/admin/entries/e1?populate=author&depth=3')
     )
     expect(ok.status).toBe(200)
+    expect(mockedEntriesService.findByIdWithLocaleAndPopulate).toHaveBeenCalledWith(
+      expect.anything(),
+      'e1',
+      expect.anything(),
+      't1'
+    )
 
     mockedEntriesService.findByIdWithLocaleAndPopulate.mockResolvedValueOnce({
       success: false,
       error: { code: 'NOT_FOUND', message: 'missing' },
     })
 
-    const err = await app.handle(new Request('http://localhost/api/admin/entries/missing'))
+    const err = await makeTenantApp().handle(
+      new Request('http://localhost/api/admin/entries/missing')
+    )
     expect(err.status).toBe(200)
   })
 

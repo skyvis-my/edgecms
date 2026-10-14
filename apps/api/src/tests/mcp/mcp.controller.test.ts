@@ -10,11 +10,11 @@ mock.module('@/mcp/mcp-server', () => ({
 }))
 
 mock.module('@/auth/auth.middleware', () => ({
-  betterAuthPlugin: new Elysia({ name: 'better-auth', aot: false })
+  betterAuthPlugin: new Elysia({ name: 'better-auth' })
     .derive(() => ({ user: undefined }))
     .macro({
       auth: {
-        resolve() {
+        derive() {
           return { user: undefined }
         },
       },

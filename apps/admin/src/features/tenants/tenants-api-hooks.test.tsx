@@ -88,7 +88,7 @@ describe('tenants api hooks', () => {
 
   it('create/update/delete and user membership mutations invalidate proper keys', async () => {
     const {
-      tenantKeys,
+      tenantsKeys,
       useCreateTenant,
       useUpdateTenant,
       useDeleteTenant,
@@ -131,12 +131,12 @@ describe('tenants api hooks', () => {
     await removeUserHook.result.current.mutateAsync({ slug: 'acme', userId: 'u1' })
     expect(edenDelete).toHaveBeenCalledWith('/admin/tenants/acme/users/u1')
 
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: tenantKeys.all })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: tenantKeys.detail('acme') })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: tenantsKeys.all })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: tenantsKeys.detail('acme') })
   })
 
   it('useUpdateTenantUserRole calls PUT and invalidates queries', async () => {
-    const { tenantKeys, useUpdateTenantUserRole } = await import('./api')
+    const { tenantsKeys, useUpdateTenantUserRole } = await import('./api')
 
     edenPut.mockResolvedValueOnce({ tenantId: 't1', userId: 'u1', role: 'admin' })
 
@@ -147,7 +147,7 @@ describe('tenants api hooks', () => {
     await hook.result.current.mutateAsync({ slug: 'acme', userId: 'u1', role: 'admin' })
 
     expect(edenPut).toHaveBeenCalledWith('/admin/tenants/acme/users/u1', { role: 'admin' })
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: tenantKeys.detail('acme') })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: tenantsKeys.detail('acme') })
   })
 
   it('rejects superadmin when adding a tenant user', async () => {
@@ -166,7 +166,7 @@ describe('tenants api hooks', () => {
   })
 
   it('queues delete mutation offline for sync replay', async () => {
-    const { useDeleteTenant } = await import(`./api?bypass=${Date.now()}`)
+    const { useDeleteTenant } = await import('./api')
     const { wrapper } = createWrapper()
     const { result } = renderHook(() => useDeleteTenant(), { wrapper })
 
@@ -192,4 +192,82 @@ describe('tenants api hooks', () => {
 
     Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: originalOnLine })
   })
+
+  it('sets and gets active tenant slug in storage', async () => {
+    const { setCurrentTenantSlug, getCurrentTenantSlug } = await import('./api')
+    setCurrentTenantSlug('stored-tenant')
+    expect(getCurrentTenantSlug()).toBe('stored-tenant')
+    setCurrentTenantSlug(null)
+    expect(getCurrentTenantSlug()).toBeNull()
+  })
+
+  it('executes create/update/user mutations offline with optimistic cache results', async () => {
+    const {
+      tenantsKeys,
+      useCreateTenant,
+      useUpdateTenant,
+      useAddTenantUser,
+      useRemoveTenantUser,
+      useUpdateTenantUserRole,
+    } = await import('./api')
+
+    const { wrapper, queryClient } = createWrapper()
+    const originalOnLine = navigator.onLine
+    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: false })
+
+    queryClient.setQueryData(tenantsKeys.all, [{ id: 't1', slug: 'tenant-1', name: 'Tenant 1' }])
+    queryClient.setQueryData(tenantsKeys.detail('tenant-1'), {
+      id: 't1',
+      slug: 'tenant-1',
+      name: 'Tenant 1',
+      users: [{ id: 'u1', email: 'u1@test.com', name: 'User 1', role: 'member' }],
+    })
+
+    const createHook = renderHook(() => useCreateTenant(), { wrapper })
+    const created = await createHook.result.current.mutateAsync({
+      name: 'Offline Tenant',
+      slug: 'offline-tenant',
+      localeCatalog: ['en', 'fr'],
+      targetUrl: 'https://example.com',
+      corsOrigin: '*',
+      mediaUploadMaxBytes: 1000,
+      mediaUploadMaxDimension: 1000,
+      mediaAllowedMimeTypes: ['image/png'],
+    })
+    expect(created.name).toBe('Offline Tenant')
+    expect(created.slug).toBe('offline-tenant')
+    expect(created.id).toContain('offline-')
+
+    const updateHook = renderHook(() => useUpdateTenant(), { wrapper })
+    const updated = await updateHook.result.current.mutateAsync({
+      slug: 'tenant-1',
+      input: { name: 'Tenant 1 Updated' },
+    })
+    expect(updated.name).toBe('Tenant 1 Updated')
+
+    const addUserHook = renderHook(() => useAddTenantUser(), { wrapper })
+    const addedUser = await addUserHook.result.current.mutateAsync({
+      slug: 'tenant-1',
+      input: { userId: 'u2', role: 'admin' },
+    })
+    expect(addedUser.id).toBe('u2')
+    expect(addedUser.role).toBe('admin')
+
+    const updateRoleHook = renderHook(() => useUpdateTenantUserRole(), { wrapper })
+    const roleUpdated = await updateRoleHook.result.current.mutateAsync({
+      slug: 'tenant-1',
+      userId: 'u1',
+      role: 'owner',
+    })
+    expect(roleUpdated.role).toBe('owner')
+
+    const removeUserHook = renderHook(() => useRemoveTenantUser(), { wrapper })
+    await removeUserHook.result.current.mutateAsync({
+      slug: 'tenant-1',
+      userId: 'u1',
+    })
+
+    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: originalOnLine })
+  })
 })
+

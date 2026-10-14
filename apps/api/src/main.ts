@@ -1,23 +1,13 @@
 import { createApp, warmPublicCacheInBackground } from './app'
-import { bootstrapApp } from './runtime/bootstrap'
+import { ensureWorkerBootstrapped } from './runtime/bootstrap'
 import { handleQueue } from '@/webhooks/queue-consumer'
 import type { WebhookQueueMessage } from '@/webhooks/queue-producer'
 import { getRequestUrl } from '@/shared/utils/request-url'
 import type { Env } from './env'
 
-const app = createApp()
+export { ensureWorkerBootstrapped, resetWorkerBootstrapStateForTests } from './runtime/bootstrap'
 
-let bootstrapped = false
-
-export async function ensureWorkerBootstrapped(workerEnv?: Env): Promise<void> {
-  if (bootstrapped) return
-  bootstrapped = true
-  await bootstrapApp({ env: workerEnv })
-}
-
-export function resetWorkerBootstrapStateForTests(): void {
-  bootstrapped = false
-}
+export const app = createApp()
 
 const LIVE_HEALTH_HEADERS: Record<string, string> = {
   'content-type': 'application/json; charset=utf-8',
@@ -31,12 +21,13 @@ const LIVE_HEALTH_HEADERS: Record<string, string> = {
 
 const appFetch = app.fetch as (request: Request, ...args: unknown[]) => Promise<Response>
 
-const worker = Object.assign(app, {
-  async queue(batch: MessageBatch<WebhookQueueMessage>, env: Env, _ctx: ExecutionContext) {
-    await ensureWorkerBootstrapped(env)
-    return handleQueue(batch, env)
-  },
-  async fetch(request: Request, ...args: [any?, any?]) {
+const worker = Object.create(app)
+worker.queue = async (batch: MessageBatch<WebhookQueueMessage>, env: Env, _ctx: ExecutionContext) => {
+  await ensureWorkerBootstrapped(env)
+  return handleQueue(batch, env)
+}
+Object.defineProperty(worker, 'fetch', {
+  value: async (request: Request, ...args: [any?, any?]) => {
     const url = request.url
     if (
       (request.method === 'GET' || request.method === 'HEAD') &&
@@ -54,6 +45,8 @@ const worker = Object.assign(app, {
     warmPublicCacheInBackground(env, executionCtx)
     return appFetch(request, ...args)
   },
+  writable: true,
+  configurable: true,
 })
 
 export default worker

@@ -807,6 +807,278 @@ describe('handleQueue', () => {
     )
     consoleWarnSpy.mockRestore()
   })
+
+  describe('dead-letter retry logic', () => {
+    it('retries failed delivery with exponential backoff delay calculation when attempts < maxRetries', async () => {
+      mockFetch.mockResolvedValue(new Response('Server Error', { status: 500 }))
+
+      const message: WebhookQueueMessage = {
+        webhookId: 'webhook-1',
+        eventPayload: {
+          id: 'event-retry-1',
+          event: 'entry.published',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          data: { after: { id: 'entry-1' }, metadata: { syncChannel: 'global' } },
+        },
+        webhookUrl: 'https://example.com/webhook',
+        webhookSecret: 'test-secret',
+        maxRetries: 5,
+        timeout: 30,
+        tenantId: 'global',
+      }
+
+      // attempt = 1 (msg.attempts = 0), currentAttempt = 1, delay = 10 * 3^0 = 10s
+      const mockMessage1 = {
+        id: 'msg-retry-1',
+        timestamp: new Date(),
+        body: message,
+        attempts: 0,
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+      await handleQueue(createMessageBatch([mockMessage1]), mockEnv)
+      expect(mockMessage1.retry).toHaveBeenCalledWith({ delaySeconds: 10 })
+      expect(mockMessage1.ack).not.toHaveBeenCalled()
+
+      // attempt = 2 (msg.attempts = 1), currentAttempt = 2, delay = 10 * 3^1 = 30s
+      const mockMessage2 = {
+        id: 'msg-retry-2',
+        timestamp: new Date(),
+        body: message,
+        attempts: 1,
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+      await handleQueue(createMessageBatch([mockMessage2]), mockEnv)
+      expect(mockMessage2.retry).toHaveBeenCalledWith({ delaySeconds: 30 })
+
+      // attempt = 3 (msg.attempts = 2), currentAttempt = 3, delay = 10 * 3^2 = 90s
+      const mockMessage3 = {
+        id: 'msg-retry-3',
+        timestamp: new Date(),
+        body: message,
+        attempts: 2,
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+      await handleQueue(createMessageBatch([mockMessage3]), mockEnv)
+      expect(mockMessage3.retry).toHaveBeenCalledWith({ delaySeconds: 90 })
+    })
+
+    it('exhausts retries and commits dead-letter terminal failure with msg.ack() when attempts >= maxRetries', async () => {
+      mockFetch.mockResolvedValue(new Response('Permanent Error', { status: 500 }))
+
+      const message: WebhookQueueMessage = {
+        webhookId: 'webhook-1',
+        eventPayload: {
+          id: 'event-dead-letter-1',
+          event: 'entry.deleted',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          data: { after: { id: 'entry-1' }, metadata: { syncChannel: 'global' } },
+        },
+        webhookUrl: 'https://example.com/webhook',
+        webhookSecret: 'test-secret',
+        maxRetries: 5,
+        timeout: 30,
+        tenantId: 'global',
+      }
+
+      // 5th attempt on maxRetries=5 -> exhausted!
+      const mockMessage = {
+        id: 'msg-dead-1',
+        timestamp: new Date(),
+        body: message,
+        attempts: 4, // currentAttempt becomes 5 (>= maxRetries)
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+
+      await handleQueue(createMessageBatch([mockMessage]), mockEnv)
+
+      expect(mockMessage.ack).toHaveBeenCalledTimes(1)
+      expect(mockMessage.retry).not.toHaveBeenCalled()
+
+      // Verify delivery record status is 'failed' and nextRetryAt is null
+      const failedDelivery = mockOrm.insertValues.find(
+        (v) => v.eventId === 'event-dead-letter-1'
+      )
+      expect(failedDelivery).toBeDefined()
+      expect(failedDelivery?.status).toBe('failed')
+      expect(failedDelivery?.nextRetryAt).toBeNull()
+      expect(failedDelivery?.attempts).toBe(5)
+    })
+
+    it('re-enqueues message with msg.retry() on unexpected uncaught runtime exception', async () => {
+      // Cause an unexpected throw inside deliverWebhook or message processing
+      mockFetch.mockImplementation(() => {
+        throw new Error('Fatal socket segmentation fault')
+      })
+
+      const message: WebhookQueueMessage = {
+        webhookId: 'webhook-1',
+        eventPayload: {
+          id: 'event-err-1',
+          event: 'entry.created',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          data: { after: { id: 'entry-1' }, metadata: { syncChannel: 'global' } },
+        },
+        webhookUrl: 'https://example.com/webhook',
+        webhookSecret: 'test-secret',
+        maxRetries: 5,
+        timeout: 30,
+        tenantId: 'global',
+      }
+
+      const mockMessage = {
+        id: 'msg-err-1',
+        timestamp: new Date(),
+        body: message,
+        attempts: 1,
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+
+      await handleQueue(createMessageBatch([mockMessage]), mockEnv)
+
+      // On unexpected exception, message is retried to prevent silent data drop
+      expect(mockMessage.retry).toHaveBeenCalledTimes(1)
+      expect(mockMessage.ack).not.toHaveBeenCalled()
+    })
+
+    it('handles destination rejected by destination policy as dead-letter terminal failure', async () => {
+      const blockedOrm = createMockDrizzleDb({
+        webhookRows: [
+          {
+            id: 'webhook-blocked',
+            tenantId: 'global',
+            url: 'http://169.254.169.254/metadata',
+          },
+        ],
+      })
+      ;(drizzle as unknown as ReturnType<typeof vi.fn>).mockReturnValue(blockedOrm)
+
+      const message: WebhookQueueMessage = {
+        webhookId: 'webhook-blocked',
+        eventPayload: {
+          id: 'event-blocked-1',
+          event: 'entry.created',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          data: { after: { id: 'entry-1' }, metadata: { syncChannel: 'global' } },
+        },
+        webhookUrl: 'http://169.254.169.254/metadata',
+        webhookSecret: 'test-secret',
+        maxRetries: 5,
+        timeout: 30,
+        tenantId: 'global',
+      }
+
+      const mockMessage = {
+        id: 'msg-blocked-1',
+        timestamp: new Date(),
+        body: message,
+        attempts: 0,
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+
+      await handleQueue(createMessageBatch([mockMessage]), mockEnv)
+
+      // Blocked destinations are immediately acknowledged to avoid spamming restricted IPs
+      expect(mockMessage.ack).toHaveBeenCalledTimes(1)
+      expect(mockMessage.retry).not.toHaveBeenCalled()
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
+
+    it('processes batch containing mixed outcomes: success, retry with backoff, and dead-letter failure', async () => {
+      mockFetch.mockImplementation(async (_url, init) => {
+        const bodyStr = String(init?.body ?? '')
+        if (bodyStr.includes('"ev-1"')) {
+          return new Response('OK', { status: 200 })
+        }
+        return new Response('Error', { status: 500 })
+      })
+
+      const msgSuccess = {
+        id: 'batch-success',
+        timestamp: new Date(),
+        body: {
+          webhookId: 'webhook-1',
+          eventPayload: {
+            id: 'ev-1',
+            event: 'entry.created',
+            timestamp: '',
+            data: { after: {}, metadata: { syncChannel: 'global' } },
+          },
+          webhookUrl: 'https://example.com/success',
+          webhookSecret: 'secret',
+          maxRetries: 5,
+          timeout: 30,
+          tenantId: 'global',
+        } as WebhookQueueMessage,
+        attempts: 0,
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+
+      const msgRetry = {
+        id: 'batch-retry',
+        timestamp: new Date(),
+        body: {
+          webhookId: 'webhook-1',
+          eventPayload: {
+            id: 'ev-2',
+            event: 'entry.updated',
+            timestamp: '',
+            data: { after: {}, metadata: { syncChannel: 'global' } },
+          },
+          webhookUrl: 'https://example.com/fail',
+          webhookSecret: 'secret',
+          maxRetries: 5,
+          timeout: 30,
+          tenantId: 'global',
+        } as WebhookQueueMessage,
+        attempts: 1, // currentAttempt = 2 < 5
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+
+      const msgDeadLetter = {
+        id: 'batch-dead',
+        timestamp: new Date(),
+        body: {
+          webhookId: 'webhook-1',
+          eventPayload: {
+            id: 'ev-3',
+            event: 'entry.deleted',
+            timestamp: '',
+            data: { after: {}, metadata: { syncChannel: 'global' } },
+          },
+          webhookUrl: 'https://example.com/fail',
+          webhookSecret: 'secret',
+          maxRetries: 5,
+          timeout: 30,
+          tenantId: 'global',
+        } as WebhookQueueMessage,
+        attempts: 4, // currentAttempt = 5 >= 5
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+
+      await handleQueue(createMessageBatch([msgSuccess, msgRetry, msgDeadLetter]), mockEnv)
+
+      // msgSuccess: delivered -> ack
+      expect(msgSuccess.ack).toHaveBeenCalledTimes(1)
+      expect(msgSuccess.retry).not.toHaveBeenCalled()
+
+      // msgRetry: retry with backoff -> retry({ delaySeconds: 30 })
+      expect(msgRetry.retry).toHaveBeenCalledWith({ delaySeconds: 30 })
+      expect(msgRetry.ack).not.toHaveBeenCalled()
+
+      // msgDeadLetter: max retries reached -> ack
+      expect(msgDeadLetter.ack).toHaveBeenCalledTimes(1)
+      expect(msgDeadLetter.retry).not.toHaveBeenCalled()
+    })
+  })
 })
 
 // ============================================================================

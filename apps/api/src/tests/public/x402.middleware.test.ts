@@ -214,4 +214,41 @@ describe('HTTP 402 / x402 Agent Micropayments Protocol Adapter (C-16)', () => {
       expect(data.collection).toBe('premium-articles')
     })
   })
+
+  describe('fail-closed when secret missing', () => {
+    it('createL402Challenge throws 500 without secret', async () => {
+      await expect(createL402Challenge('', '/api/public/premium')).rejects.toMatchObject({
+        status: 500,
+      })
+    })
+
+    it('createSettlementToken throws 500 without secret', async () => {
+      await expect(createSettlementToken('', 'chal-1', '/res')).rejects.toMatchObject({
+        status: 500,
+      })
+    })
+
+    it('verifyL402Token throws 500 without secret', async () => {
+      await expect(verifyL402Token('', 'tok', '/res')).rejects.toMatchObject({ status: 500 })
+    })
+
+    it('handleX402Gate throws 500 for monetized request without secret', async () => {
+      const ctx = {
+        request: new Request('http://localhost/api/public/premium-posts'),
+        set: { headers: {} },
+      } as any
+      await expect(
+        handleX402Gate(ctx, { secret: '', collectionSlug: 'premium-posts' })
+      ).rejects.toMatchObject({ status: 500 })
+    })
+
+    it('free routes still pass without secret', async () => {
+      const ctx = {
+        request: new Request('http://localhost/api/public/free-posts'),
+        set: { headers: {} },
+      } as any
+      const res = await handleX402Gate(ctx, { secret: '', collectionSlug: 'free-posts' })
+      expect(res).toBeNull()
+    })
+  })
 })

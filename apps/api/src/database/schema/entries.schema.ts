@@ -1,4 +1,5 @@
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import { sql } from 'drizzle-orm'
 import { collections } from './collections.schema'
 
 /**
@@ -32,8 +33,17 @@ export const entries = sqliteTable(
   },
   (table) => [
     uniqueIndex('entries_collection_slug_unique').on(table.collectionId, table.slug),
-    index('entries_collectionId_idx').on(table.collectionId),
-    index('entries_status_idx').on(table.status),
+    index('entries_collection_published_idx')
+      .on(table.collectionId, table.createdAt)
+      .where(sql`${table.status} = 'published'`),
+    index('entries_collection_status_created_idx').on(
+      table.collectionId,
+      table.status,
+      table.createdAt
+    ),
+    index('entries_collection_publish_idx').on(table.collectionId, table.publishAt),
+    index('entries_collection_unpublish_idx').on(table.collectionId, table.unpublishAt),
+    index('entries_collection_updated_idx').on(table.collectionId, table.updatedAt),
   ]
 )
 
@@ -60,6 +70,5 @@ export const entryVersions = sqliteTable(
   },
   (table) => [
     uniqueIndex('entry_versions_entry_version_unique').on(table.entryId, table.version),
-    index('entry_versions_entryId_idx').on(table.entryId),
   ]
 )

@@ -245,6 +245,7 @@ function makeEntry(overrides: Partial<EntryRow> = {}): EntryRow {
 function makeRelation(overrides: Partial<RelationRow> = {}): RelationRow {
   return {
     id: 'test-relation',
+    tenantId: 'test-tenant-id',
     sourceEntryId: 'e1',
     targetEntryId: 'e2',
     sourceCollectionId: 'c1',

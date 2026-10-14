@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { collectionConfigSchema } from '../../../../../../packages/schemas/src/collections'
+import { collectionConfigSchema } from '@edgecms/schemas'
 import {
   buildCollectionConfigExportPayload,
   generateCollectionConfigExport,

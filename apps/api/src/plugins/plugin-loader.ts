@@ -108,6 +108,12 @@ function sanitizeToolCommands(raw: unknown): Array<{
 }
 
 function getRoutePaths(routeApp: AnyElysia): string[] {
+  const routes = (routeApp as unknown as { routes?: Array<{ path?: unknown }> }).routes
+  if (Array.isArray(routes)) {
+    return routes
+      .map((route) => route.path)
+      .filter((path): path is string => typeof path === 'string')
+  }
   const history =
     (routeApp as unknown as {
       router?: { history?: Array<{ path?: unknown }> }
@@ -330,12 +336,13 @@ export function parsePluginConfig(raw: string | undefined): PluginManifest[] {
 }
 
 function createDefaultRegistry(): PluginRegistry {
-  if (typeof (pluginRegistry as any)?.createRegistry === 'function') {
-    return (pluginRegistry as any).createRegistry()
+  const dynamicCreate = (pluginRegistry as unknown as { createRegistry?: () => PluginRegistry })?.createRegistry
+  if (typeof dynamicCreate === 'function') {
+    return dynamicCreate()
   }
   if (typeof pluginRegistry?.constructor === 'function') {
     try {
-      return new (pluginRegistry.constructor as any)()
+      return new (pluginRegistry.constructor as new () => PluginRegistry)()
     } catch {
       // fallback
     }

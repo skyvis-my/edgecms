@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'bun:test'
-import { validateRequestJwt } from '../../auth/jwt'
+import {
+  ACCESS_TOKEN_DEFAULT_TTL_SECONDS,
+  createAccessToken,
+  validateRequestJwt,
+} from '../../auth/jwt'
 
 function base64UrlEncode(value: unknown): string {
   return btoa(JSON.stringify(value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
@@ -75,5 +79,57 @@ describe('validateRequestJwt', () => {
     })
 
     expect(result.valid).toBe(true)
+  })
+})
+
+describe('createAccessToken', () => {
+  it('mints a token that validates with matching issuer and audience', async () => {
+    const token = await createAccessToken(
+      { sub: 'u1', tid: 't1', rv: 0, pv: 0 },
+      'shared-secret',
+      { issuer: 'edgecms', audience: 'admin' }
+    )
+    const request = new Request('http://localhost/api/health', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const result = await validateRequestJwt(request, {
+      secret: 'shared-secret',
+      issuer: 'edgecms',
+      audience: 'admin',
+    })
+
+    expect(result.valid).toBe(true)
+    if (!result.valid) throw new Error('Expected valid JWT')
+    expect(result.payload).toMatchObject({ sub: 'u1', tid: 't1', iss: 'edgecms', aud: 'admin' })
+  })
+
+  it('uses the default TTL when none is provided', async () => {
+    expect(ACCESS_TOKEN_DEFAULT_TTL_SECONDS).toBe(600)
+    const before = Math.floor(Date.now() / 1000)
+    const token = await createAccessToken({ sub: 'u1' }, 's3cret')
+    const request = new Request('http://localhost/x', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const result = await validateRequestJwt(request, { secret: 's3cret' })
+
+    expect(result.valid).toBe(true)
+    if (!result.valid) throw new Error('Expected valid JWT')
+    const exp = result.payload?.exp as number
+    expect(exp).toBeGreaterThanOrEqual(before + ACCESS_TOKEN_DEFAULT_TTL_SECONDS)
+  })
+
+  it('rejects an expired minted token', async () => {
+    const token = await createAccessToken({ sub: 'u1' }, 's3cret', { ttlSeconds: -10 })
+    const request = new Request('http://localhost/x', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const result = await validateRequestJwt(request, { secret: 's3cret' })
+
+    expect(result.valid).toBe(false)
+  })
+
+  it('requires sub and secret', async () => {
+    await expect(createAccessToken({ sub: '' }, 's3cret')).rejects.toThrow('sub')
+    await expect(createAccessToken({ sub: 'u1' }, '')).rejects.toThrow('secret')
   })
 })

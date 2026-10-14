@@ -3,8 +3,6 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import {
   CheckCircle2,
   Download,
-  FolderOpen,
-  Image as ImageIcon,
   RefreshCw,
   Trash2,
   WifiOff,
@@ -17,7 +15,6 @@ import { Main } from '@/components/layout/main'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
 import { db } from '@/features/sync/local-db'
 import { ApiClientError } from '@/lib/api-error'
 import { toRelativeTime } from '@/lib/date-time'
@@ -31,6 +28,8 @@ import {
 } from './file-policy'
 import { HoverPreview } from './hover-preview'
 import { MediaContextMenu } from './media-context-menu'
+import { MediaGridView } from './media-grid-view'
+import { MediaListView } from './media-list-view'
 import { MediaPreviewModal } from './media-preview-modal'
 import { MediaToolbar } from './media-toolbar'
 import {
@@ -63,7 +62,6 @@ import {
 import { optimizeImageForUpload } from './media-optimizer'
 import {
   buildAssetFilename,
-  formatBytes,
   getMovedFolderPath,
   normalizeFolderPath,
   splitAssetFilename,
@@ -1360,362 +1358,106 @@ export function MediaManager({
                 No assets or folders found for this folder/filter combination.
               </div>
             ) : viewMode === 'grid' ? (
-              <div className='space-y-3'>
-                {(newFolderDraft !== null || folderEntries.length > 0) && (
-                  <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-4'>
-                    {newFolderDraft !== null && (
-                      <div className='h-[92px] rounded-lg border border-primary/60 bg-card p-3'>
-                        <div className='flex items-center gap-2'>
-                          <FolderOpen className='h-5 w-5 text-amber-500' />
-                          <Input
-                            ref={newFolderInputRef}
-                            value={newFolderDraft}
-                            onChange={(event) => setNewFolderDraft(event.target.value)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault()
-                                commitCreatingFolder()
-                              }
-                              if (event.key === 'Escape') {
-                                event.preventDefault()
-                                cancelCreatingFolder()
-                              }
-                            }}
-                            onBlur={commitCreatingFolder}
-                            className='h-7'
-                            aria-label='New folder name'
-                          />
-                        </div>
-                      </div>
-                    )}
-                    {folderEntries.map((entry) => (
-                      <button
-                        key={`folder:${entry.path}`}
-                        type='button'
-                        className={cn(
-                          'relative h-[92px] rounded-lg border bg-card p-3 text-left hover:bg-muted/50',
-                          'border-border'
-                        )}
-                        onClick={() => handleFolderClick(entry.path)}
-                        onDoubleClick={() => {
-                          setCurrentPath(entry.path)
-                          setSelectedFolderPath(null)
-                        }}
-                        onContextMenu={(event) => {
-                          event.preventDefault()
-                          setSelectedFolderPath(entry.path)
-                          setSelectedAssetIds([])
-                          setContextMenu({ open: true, x: event.clientX, y: event.clientY, entry })
-                        }}
-                        draggable={renamingFolderPath !== entry.path}
-                        onDragStart={(event) => {
-                          event.dataTransfer.setData(DRAG_FOLDER_DATA_TYPE, entry.path)
-                        }}
-                        onDragOver={(event) => event.preventDefault()}
-                        onDrop={(event) => void onFolderDrop(entry.path, event)}
-                      >
-                        {selectedFolderPath === entry.path && (
-                          <span className='pointer-events-none absolute left-1.5 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-primary/80' />
-                        )}
-                        <div className='flex items-center gap-2'>
-                          <FolderOpen className='h-5 w-5 text-amber-500' />
-                          {renamingFolderPath === entry.path ? (
-                            <Input
-                              ref={renameFolderInputRef}
-                              value={renamingFolderName}
-                              onChange={(event) => setRenamingFolderName(event.target.value)}
-                              onKeyDown={(event) => {
-                                if (event.key === 'Enter') {
-                                  event.preventDefault()
-                                  void commitRenamingFolder()
-                                }
-                                if (event.key === 'Escape') {
-                                  event.preventDefault()
-                                  cancelRenamingFolder()
-                                }
-                              }}
-                              onBlur={() => void commitRenamingFolder()}
-                              className='h-7'
-                              aria-label='Rename folder'
-                            />
-                          ) : (
-                            <span className='truncate font-medium'>{entry.name}</span>
-                          )}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-4'>
-                  {assetEntries.map((entry, idx) => {
-                    const asset = entry.asset
-                    const previewPath = getPreviewPath(asset, ['medium', 'small'])
-                    const isSelected = selectedAssetIds.includes(asset.id)
-                    const assetIndex = visibleAssetIds.indexOf(asset.id)
-                    const dragIds = isSelected ? selectedAssetIds : [asset.id]
-                    const { basename, folder } = splitAssetFilename(asset.filename)
-
-                    return (
-                      <div
-                        key={`asset:${asset.id}`}
-                        className={cn(
-                          'group relative flex h-full cursor-pointer flex-col rounded-lg border bg-card',
-                          'border-border'
-                        )}
-                        onClick={(event) =>
-                          handleAssetClick(asset.id, assetIndex >= 0 ? assetIndex : idx, event)
-                        }
-                        onDoubleClick={() => openPreviewAt(asset.id)}
-                        onContextMenu={(event) => {
-                          event.preventDefault()
-                          if (!selectedAssetIds.includes(asset.id)) {
-                            setSelectedAssetIds([asset.id])
-                            setAnchorIndex(assetIndex >= 0 ? assetIndex : idx)
-                          }
-                          setSelectedFolderPath(null)
-                          setContextMenu({
-                            open: true,
-                            x: event.clientX,
-                            y: event.clientY,
-                            entry,
-                          })
-                        }}
-                      >
-                        {isSelected && (
-                          <span className='pointer-events-none absolute left-1.5 top-1/2 z-20 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-primary/80' />
-                        )}
-                        <a
-                          className='absolute right-2 top-2 z-20 rounded-md bg-background/90 p-1.5 text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-foreground focus:opacity-100 group-hover:opacity-100'
-                          href={getAssetDownloadPath(asset)}
-                          download={basename}
-                          aria-label={`Download original file ${basename}`}
-                          title='Download original'
-                          onClick={(event) => event.stopPropagation()}
-                          onDoubleClick={(event) => event.stopPropagation()}
-                        >
-                          <Download className='h-4 w-4' />
-                        </a>
-                        <div
-                          className='relative block h-40 w-full overflow-hidden bg-muted'
-                          draggable
-                          onMouseEnter={(event) =>
-                            scheduleHoverPreview(
-                              asset,
-                              previewPath,
-                              basename,
-                              folder,
-                              event.clientX,
-                              event.clientY
-                            )
-                          }
-                          onMouseLeave={clearHoverPreview}
-                          onDragStart={(event) => {
-                            event.dataTransfer.setData(
-                              DRAG_ASSETS_DATA_TYPE,
-                              JSON.stringify(dragIds)
-                            )
-                          }}
-                        >
-                          {previewPath ? (
-                            <img
-                              src={previewPath}
-                              alt={asset.filename}
-                              className='h-full w-full object-cover'
-                              loading='lazy'
-                            />
-                          ) : (
-                            <div className='flex h-full items-center justify-center text-muted-foreground'>
-                              <ImageIcon className='h-8 w-8' />
-                            </div>
-                          )}
-                        </div>
-                        <div className='p-3 text-sm'>
-                          <p className='truncate font-medium'>{basename}</p>
-                          <div className='mt-0.5 flex items-center justify-between gap-2 text-xs text-muted-foreground'>
-                            <span className='truncate'>{formatBytes(asset.size)}</span>
-                            <span className='shrink-0'>{formatUpdatedDate(asset)}</span>
-                          </div>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
+              <MediaGridView
+                folderEntries={folderEntries}
+                assetEntries={assetEntries}
+                newFolderDraft={newFolderDraft}
+                newFolderInputRef={newFolderInputRef}
+                setNewFolderDraft={setNewFolderDraft}
+                commitCreatingFolder={commitCreatingFolder}
+                cancelCreatingFolder={cancelCreatingFolder}
+                selectedFolderPath={selectedFolderPath}
+                renamingFolderPath={renamingFolderPath}
+                renameFolderInputRef={renameFolderInputRef}
+                renamingFolderName={renamingFolderName}
+                setRenamingFolderName={setRenamingFolderName}
+                commitRenamingFolder={commitRenamingFolder}
+                cancelRenamingFolder={cancelRenamingFolder}
+                handleFolderClick={handleFolderClick}
+                onOpenFolder={(path) => {
+                  setCurrentPath(path)
+                  setSelectedFolderPath(null)
+                }}
+                onContextMenuFolder={(event, entry) => {
+                  event.preventDefault()
+                  setSelectedFolderPath(entry.path)
+                  setSelectedAssetIds([])
+                  setContextMenu({ open: true, x: event.clientX, y: event.clientY, entry })
+                }}
+                onFolderDrop={onFolderDrop}
+                selectedAssetIds={selectedAssetIds}
+                visibleAssetIds={visibleAssetIds}
+                handleAssetClick={handleAssetClick}
+                openPreviewAt={openPreviewAt}
+                onContextMenuAsset={(event, entry, assetIndex) => {
+                  event.preventDefault()
+                  if (!selectedAssetIds.includes(entry.asset.id)) {
+                    setSelectedAssetIds([entry.asset.id])
+                    setAnchorIndex(assetIndex)
+                  }
+                  setSelectedFolderPath(null)
+                  setContextMenu({
+                    open: true,
+                    x: event.clientX,
+                    y: event.clientY,
+                    entry,
+                  })
+                }}
+                getAssetDownloadPath={getAssetDownloadPath}
+                getPreviewPath={getPreviewPath}
+                scheduleHoverPreview={scheduleHoverPreview}
+                clearHoverPreview={clearHoverPreview}
+                formatUpdatedDate={formatUpdatedDate}
+              />
             ) : (
-              <div className='overflow-hidden rounded-md border'>
-                <div className='grid grid-cols-[minmax(0,1fr)_140px_110px_150px] border-b bg-muted/30 px-3 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground'>
-                  <span>Asset / Folder</span>
-                  <span>Type</span>
-                  <span>Size</span>
-                  <span>Uploaded</span>
-                </div>
-                <div className='divide-y'>
-                  {newFolderDraft !== null && (
-                    <div className='grid grid-cols-[minmax(0,1fr)_140px_110px_150px] items-center px-3 py-2'>
-                      <span className='flex items-center gap-2'>
-                        <FolderOpen className='h-4 w-4 text-amber-500' />
-                        <Input
-                          ref={newFolderInputRef}
-                          value={newFolderDraft}
-                          onChange={(event) => setNewFolderDraft(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') {
-                              event.preventDefault()
-                              commitCreatingFolder()
-                            }
-                            if (event.key === 'Escape') {
-                              event.preventDefault()
-                              cancelCreatingFolder()
-                            }
-                          }}
-                          onBlur={commitCreatingFolder}
-                          className='h-7'
-                          aria-label='New folder name'
-                        />
-                      </span>
-                      <span className='text-xs text-muted-foreground'>Folder</span>
-                      <span className='text-xs text-muted-foreground'>-</span>
-                      <span className='text-xs text-muted-foreground'>{currentPath || '/'}</span>
-                    </div>
-                  )}
-                  {entries.map((entry, idx) => {
-                    if (entry.type === 'folder') {
-                      return (
-                        <button
-                          key={`list-folder:${entry.path}`}
-                          type='button'
-                          className={cn(
-                            'relative grid w-full grid-cols-[minmax(0,1fr)_140px_110px_150px] items-center px-3 py-2 ps-5 text-left text-sm hover:bg-muted/40'
-                          )}
-                          onClick={() => handleFolderClick(entry.path)}
-                          onDoubleClick={() => {
-                            setCurrentPath(entry.path)
-                            setSelectedFolderPath(null)
-                          }}
-                          onContextMenu={(event) => {
-                            event.preventDefault()
-                            setSelectedFolderPath(entry.path)
-                            setSelectedAssetIds([])
-                            setContextMenu({
-                              open: true,
-                              x: event.clientX,
-                              y: event.clientY,
-                              entry,
-                            })
-                          }}
-                          draggable={renamingFolderPath !== entry.path}
-                          onDragStart={(event) => {
-                            event.dataTransfer.setData(DRAG_FOLDER_DATA_TYPE, entry.path)
-                          }}
-                          onDragOver={(event) => event.preventDefault()}
-                          onDrop={(event) => void onFolderDrop(entry.path, event)}
-                        >
-                          {selectedFolderPath === entry.path && (
-                            <span className='pointer-events-none absolute left-2 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-primary/80' />
-                          )}
-                          <span className='flex items-center gap-2 truncate'>
-                            <FolderOpen className='h-4 w-4 text-amber-500' />
-                            {renamingFolderPath === entry.path ? (
-                              <Input
-                                ref={renameFolderInputRef}
-                                value={renamingFolderName}
-                                onChange={(event) => setRenamingFolderName(event.target.value)}
-                                onKeyDown={(event) => {
-                                  if (event.key === 'Enter') {
-                                    event.preventDefault()
-                                    void commitRenamingFolder()
-                                  }
-                                  if (event.key === 'Escape') {
-                                    event.preventDefault()
-                                    cancelRenamingFolder()
-                                  }
-                                }}
-                                onBlur={() => void commitRenamingFolder()}
-                                className='h-7'
-                                aria-label='Rename folder'
-                              />
-                            ) : (
-                              <span className='truncate'>{entry.name}</span>
-                            )}
-                          </span>
-                          <span className='text-xs text-muted-foreground'>Folder</span>
-                          <span className='text-xs text-muted-foreground'>-</span>
-                          <span className='text-xs text-muted-foreground'>{entry.path}</span>
-                        </button>
-                      )
-                    }
-
-                    const asset = entry.asset
-                    const previewPath = getPreviewPath(asset, ['small', 'medium'])
-                    const isSelected = selectedAssetIds.includes(asset.id)
-                    const assetIndex = visibleAssetIds.indexOf(asset.id)
-                    const dragIds = isSelected ? selectedAssetIds : [asset.id]
-
-                    return (
-                      <button
-                        key={`list-asset:${asset.id}`}
-                        type='button'
-                        className={cn(
-                          'relative grid w-full grid-cols-[minmax(0,1fr)_140px_110px_150px] items-center px-3 py-2 ps-5 text-left text-sm hover:bg-muted/40'
-                        )}
-                        draggable
-                        onDragStart={(event) => {
-                          event.dataTransfer.setData(DRAG_ASSETS_DATA_TYPE, JSON.stringify(dragIds))
-                        }}
-                        onClick={(event) =>
-                          handleAssetClick(asset.id, assetIndex >= 0 ? assetIndex : idx, event)
-                        }
-                        onDoubleClick={() => openPreviewAt(asset.id)}
-                        onContextMenu={(event) => {
-                          event.preventDefault()
-                          if (!selectedAssetIds.includes(asset.id)) {
-                            setSelectedAssetIds([asset.id])
-                            setAnchorIndex(assetIndex >= 0 ? assetIndex : idx)
-                          }
-                          setSelectedFolderPath(null)
-                          setContextMenu({ open: true, x: event.clientX, y: event.clientY, entry })
-                        }}
-                      >
-                        {isSelected && (
-                          <span className='pointer-events-none absolute left-2 top-1/2 h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-primary/80' />
-                        )}
-                        <span className='flex min-w-0 items-center gap-2'>
-                          {previewPath ? (
-                            <img
-                              src={previewPath}
-                              alt={asset.filename}
-                              className='h-8 w-8 rounded object-cover'
-                              loading='lazy'
-                            />
-                          ) : (
-                            <span className='flex h-8 w-8 items-center justify-center rounded bg-muted'>
-                              <ImageIcon className='h-4 w-4 text-muted-foreground' />
-                            </span>
-                          )}
-                          <span className='min-w-0'>
-                            <span className='block truncate font-medium'>
-                              {splitAssetFilename(asset.filename).basename}
-                            </span>
-                            <span className='block truncate text-xs text-muted-foreground'>
-                              {splitAssetFilename(asset.filename).folder || '/'}
-                            </span>
-                          </span>
-                        </span>
-                        <span className='truncate text-xs text-muted-foreground'>
-                          {asset.mimeType}
-                        </span>
-                        <span className='text-xs text-muted-foreground'>
-                          {formatBytes(asset.size)}
-                        </span>
-                        <span className='truncate text-xs text-muted-foreground'>
-                          {formatUploadedDate(asset.createdAt)}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
+              <MediaListView
+                entries={entries}
+                currentPath={currentPath}
+                newFolderDraft={newFolderDraft}
+                newFolderInputRef={newFolderInputRef}
+                setNewFolderDraft={setNewFolderDraft}
+                commitCreatingFolder={commitCreatingFolder}
+                cancelCreatingFolder={cancelCreatingFolder}
+                selectedFolderPath={selectedFolderPath}
+                renamingFolderPath={renamingFolderPath}
+                renameFolderInputRef={renameFolderInputRef}
+                renamingFolderName={renamingFolderName}
+                setRenamingFolderName={setRenamingFolderName}
+                commitRenamingFolder={commitRenamingFolder}
+                cancelRenamingFolder={cancelRenamingFolder}
+                handleFolderClick={handleFolderClick}
+                onOpenFolder={(path) => {
+                  setCurrentPath(path)
+                  setSelectedFolderPath(null)
+                }}
+                onContextMenuFolder={(event, entry) => {
+                  event.preventDefault()
+                  setSelectedFolderPath(entry.path)
+                  setSelectedAssetIds([])
+                  setContextMenu({ open: true, x: event.clientX, y: event.clientY, entry })
+                }}
+                onFolderDrop={onFolderDrop}
+                selectedAssetIds={selectedAssetIds}
+                visibleAssetIds={visibleAssetIds}
+                handleAssetClick={handleAssetClick}
+                openPreviewAt={openPreviewAt}
+                onContextMenuAsset={(event, entry, assetIndex) => {
+                  event.preventDefault()
+                  if (!selectedAssetIds.includes(entry.asset.id)) {
+                    setSelectedAssetIds([entry.asset.id])
+                    setAnchorIndex(assetIndex)
+                  }
+                  setSelectedFolderPath(null)
+                  setContextMenu({
+                    open: true,
+                    x: event.clientX,
+                    y: event.clientY,
+                    entry,
+                  })
+                }}
+                getPreviewPath={getPreviewPath}
+                formatUploadedDate={formatUploadedDate}
+              />
             )}
 
             <ActivityLogPanel

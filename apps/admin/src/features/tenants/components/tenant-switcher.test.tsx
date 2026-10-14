@@ -46,7 +46,6 @@ mock.module('../api', () => ({
   }),
   // Preserve exports that other test files may need
   tenantsKeys: { all: ['tenants'], detail: (slug: string) => ['tenants', slug], current: ['tenant-current'] },
-  tenantKeys: { all: ['tenants'], detail: (slug: string) => ['tenants', slug], current: ['tenant-current'] },
   TENANT_USER_ROLES: ['owner', 'admin', 'member'],
   useUpdateTenantUserRole: () => ({ mutateAsync: mock(() => {}), isPending: false }),
   useTenant: () => ({ data: null }),

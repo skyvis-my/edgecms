@@ -71,13 +71,54 @@ export function rewritePublicAssetFormatRequest(request: Request): Request {
 }
 
 export function applyPublicAssetFormatAliases<T extends RequestEntryPoints>(app: T): T {
-  const originalHandle = app.handle.bind(app)
-  const originalFetch = app.fetch.bind(app)
+  const ownFetchDesc = Object.getOwnPropertyDescriptor(app, 'fetch')
+  const ownHandleDesc = Object.getOwnPropertyDescriptor(app, 'handle')
 
-  app.handle = ((request: Request) =>
-    originalHandle(rewritePublicAssetFormatRequest(request))) as T['handle']
-  app.fetch = ((request: Request, ...args: unknown[]) =>
-    originalFetch(rewritePublicAssetFormatRequest(request), ...args)) as T['fetch']
+  const getSuperFetch = (): ((req: Request, ...args: unknown[]) => unknown) => {
+    if (ownFetchDesc?.value) {
+      return ownFetchDesc.value.bind(app)
+    }
+    let proto = Object.getPrototypeOf(app)
+    while (proto) {
+      const desc = Object.getOwnPropertyDescriptor(proto, 'fetch')
+      if (desc?.get) {
+        return desc.get.call(app)
+      }
+      proto = Object.getPrototypeOf(proto)
+    }
+    return (app as unknown as { fetchFn?: (req: Request, ...args: unknown[]) => unknown }).fetchFn ?? (ownFetchDesc?.value ?? app.fetch)
+  }
+
+  const getSuperHandle = (): ((req: Request) => Promise<Response>) => {
+    if (ownHandleDesc?.value) {
+      return ownHandleDesc.value.bind(app)
+    }
+    let proto = Object.getPrototypeOf(app)
+    while (proto) {
+      const desc = Object.getOwnPropertyDescriptor(proto, 'handle')
+      if (desc?.get) {
+        return desc.get.call(app)
+      }
+      proto = Object.getPrototypeOf(proto)
+    }
+    return (app as unknown as { _handle?: (req: Request) => Promise<Response> })._handle ?? (ownHandleDesc?.value ?? app.handle)
+  }
+
+  Object.defineProperty(app, 'handle', {
+    get() {
+      const superHandle = getSuperHandle()
+      return (request: Request) => superHandle(rewritePublicAssetFormatRequest(request))
+    },
+    configurable: true,
+  })
+  Object.defineProperty(app, 'fetch', {
+    get() {
+      const superFetch = getSuperFetch()
+      return (request: Request, ...args: unknown[]) =>
+        superFetch(rewritePublicAssetFormatRequest(request), ...args)
+    },
+    configurable: true,
+  })
 
   return app
 }

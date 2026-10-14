@@ -16,8 +16,16 @@ import { drizzle } from 'drizzle-orm/d1'
  * const results = await db.select().from(someTable)
  * ```
  */
-export function createDb(d1: D1Database) {
-  return drizzle(d1)
+export interface CreateDbOptions {
+  sessionBookmark?: string
+}
+
+export function createDb(d1: D1Database, options?: CreateDbOptions) {
+  let targetD1 = d1
+  if (options?.sessionBookmark && typeof (d1 as unknown as { withSession?: (s: string) => D1Database }).withSession === 'function') {
+    targetD1 = (d1 as unknown as { withSession: (s: string) => D1Database }).withSession(options.sessionBookmark)
+  }
+  return drizzle(targetD1)
 }
 
 /** The Drizzle D1 instance type, for use in repositories and service layers. */

@@ -82,10 +82,17 @@ export function getTenantContext(ctx: { tenant: TenantContext }): TenantContext 
  * @param workerEnv - Static Worker environment bindings
  * @returns Resolved bindings object with db, kv, and r2
  */
+export interface ResolveTenantBindingsOptions {
+  sessionBookmark?: string
+}
+
 export function resolveTenantBindings(
   tenantContext: TenantContext | undefined,
-  workerEnv: { DB: D1Database; CACHE: KVNamespace; MEDIA: R2Bucket }
+  workerEnv: { DB: D1Database; CACHE: KVNamespace; MEDIA: R2Bucket },
+  options?: ResolveTenantBindingsOptions
 ): ResolvedBindings {
+  const dbOpts = options?.sessionBookmark ? { sessionBookmark: options.sessionBookmark } : undefined
+
   if (tenantContext?.resources.mode === 'isolated') {
     const dbBindingName = tenantContext.resources.bindings.db
     const kvBindingName = tenantContext.resources.bindings.kv
@@ -103,14 +110,14 @@ export function resolveTenantBindings(
       | undefined
 
     return {
-      db: createDb(dbBinding ?? workerEnv.DB),
+      db: dbOpts ? createDb(dbBinding ?? workerEnv.DB, dbOpts) : createDb(dbBinding ?? workerEnv.DB),
       kv: kvBinding ?? workerEnv.CACHE,
       r2: r2Binding ?? workerEnv.MEDIA,
     }
   }
 
   return {
-    db: createDb(workerEnv.DB),
+    db: dbOpts ? createDb(workerEnv.DB, dbOpts) : createDb(workerEnv.DB),
     kv: workerEnv.CACHE,
     r2: workerEnv.MEDIA,
   }

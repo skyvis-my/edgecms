@@ -7,8 +7,6 @@ import type { EntryRow } from '../../entries/entries.repository'
 
 type EntryStatus = (typeof entryStatuses)[number]
 
-const { entriesService } = await import(`../../entries/entries.service?bypass=${Date.now()}`)
-
 // Mock dependencies
 vi.mock('../../entries/entries.repository', () => ({
   entriesRepository: {
@@ -37,6 +35,7 @@ vi.mock('@/collections/collections.repository', () => ({
 
 import { collectionsRepository } from '@/collections/collections.repository'
 import { entriesRepository } from '../../entries/entries.repository'
+import { entriesService } from '../../entries/entries.service'
 
 const mockEntriesRepo = asMockedObj(entriesRepository)
 const mockCollectionsRepo = asMockedObj(collectionsRepository)
@@ -688,7 +687,8 @@ describe('entriesService', () => {
       expect(mockEntriesRepo.update).toHaveBeenCalledWith(
         db,
         'e1',
-        expect.objectContaining({ version: 2 })
+        expect.objectContaining({ version: 2 }),
+        undefined
       )
     })
 
@@ -806,7 +806,8 @@ describe('entriesService', () => {
       expect(mockEntriesRepo.update).toHaveBeenCalledWith(
         db,
         'e1',
-        expect.objectContaining({ slug: 'new-slug' })
+        expect.objectContaining({ slug: 'new-slug' }),
+        undefined
       )
     })
 
@@ -868,6 +869,119 @@ describe('entriesService', () => {
       expect(result.success).toBe(false)
       if (!result.success) {
         expect(result.error.code).toBe('NOT_FOUND')
+      }
+    })
+  })
+
+  describe('duplicate', () => {
+    it('creates a new entry with cloned data and draft status', async () => {
+      const originalEntry = makeEntryRow({
+        id: 'entry-1',
+        collectionId: 'col-1',
+        slug: 'original-slug',
+        status: 'published',
+        data: { title: 'Original Title', content: 'Original Content' },
+        version: 3,
+      })
+
+      mockEntriesRepo.findById.mockResolvedValue(originalEntry)
+      mockEntriesRepo.findByCollectionAndSlug.mockResolvedValue(undefined)
+      mockEntriesRepo.create.mockImplementation(async (_db, data) => data as EntryRow)
+
+      const result = await entriesService.duplicate(db, 'entry-1', 'user-1', 'tenant-1')
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.slug).toBe('original-slug-copy')
+        expect(result.data.status).toBe('draft')
+        expect(result.data.version).toBe(1)
+        expect(result.data.data).toEqual(originalEntry.data)
+      }
+    })
+
+    it('returns NOT_FOUND for non-existent entry', async () => {
+      mockEntriesRepo.findById.mockResolvedValue(undefined)
+
+      const result = await entriesService.duplicate(db, 'non-existent-id', 'user-1', 'tenant-1')
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.code).toBe('NOT_FOUND')
+      }
+    })
+
+    it('generates unique slug with suffix if copy already exists', async () => {
+      const originalEntry = makeEntryRow({
+        id: 'entry-1',
+        collectionId: 'col-1',
+        slug: 'original-slug',
+      })
+
+      let slugCheckCount = 0
+      mockEntriesRepo.findById.mockResolvedValue(originalEntry)
+      mockEntriesRepo.findByCollectionAndSlug.mockImplementation(async (_db, _collectionId, slug) => {
+        slugCheckCount++
+        if (slug === 'original-slug-copy' && slugCheckCount === 1) {
+          return { id: 'existing-copy-1' } as EntryRow
+        }
+        if (slug === 'original-slug-copy-1' && slugCheckCount === 2) {
+          return { id: 'existing-copy-2' } as EntryRow
+        }
+        return undefined
+      })
+      mockEntriesRepo.create.mockImplementation(async (_db, data) => data as EntryRow)
+
+      const result = await entriesService.duplicate(db, 'entry-1', 'user-1', 'tenant-1')
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.slug).toBe('original-slug-copy-2')
+      }
+    })
+
+    it('does not copy publish or unpublish schedules', async () => {
+      const originalEntry = makeEntryRow({
+        id: 'entry-scheduled',
+        collectionId: 'col-1',
+        slug: 'scheduled-entry',
+        status: 'scheduled',
+        publishAt: '2026-07-01T00:00:00.000Z',
+        unpublishAt: '2026-08-01T00:00:00.000Z',
+      })
+
+      mockEntriesRepo.findById.mockResolvedValue(originalEntry)
+      mockEntriesRepo.findByCollectionAndSlug.mockResolvedValue(undefined)
+      mockEntriesRepo.create.mockImplementation(async (_db, data) => data as EntryRow)
+
+      const result = await entriesService.duplicate(db, 'entry-scheduled', 'user-1', 'tenant-1')
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.status).toBe('draft')
+        expect(result.data.publishAt).toBeUndefined()
+        expect(result.data.unpublishAt).toBeUndefined()
+      }
+    })
+
+    it('preserves localized field data across all locales', async () => {
+      const localizedData = {
+        title: { en: 'Hello World', fr: 'Bonjour le monde' },
+        category: 'news',
+      }
+      const originalEntry = makeEntryRow({
+        id: 'entry-localized',
+        data: localizedData,
+      })
+
+      mockEntriesRepo.findById.mockResolvedValue(originalEntry)
+      mockEntriesRepo.findByCollectionAndSlug.mockResolvedValue(undefined)
+      mockEntriesRepo.create.mockImplementation(async (_db, data) => data as EntryRow)
+
+      const result = await entriesService.duplicate(db, 'entry-localized', 'user-1', 'tenant-1')
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.data).toEqual(localizedData)
       }
     })
   })

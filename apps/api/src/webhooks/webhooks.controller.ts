@@ -1,10 +1,9 @@
-import { env } from 'cloudflare:workers'
 import { Elysia, t } from 'elysia'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
-import type { Env } from '@/env'
-import { hasTenantContext, resolveTenantBindings } from '@/tenants/tenant-context'
+import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import { parseAllowedWebhookHosts } from './webhook-destination-policy'
 import { webhooksService } from './webhooks.service'
+import { toServiceResponse } from '@/shared/utils/service-response'
 
 const MAX_WEBHOOK_RETRIES = 5
 
@@ -17,7 +16,7 @@ function redactWebhookSecret<T extends SecretBearingWebhook>(webhook: T): Omit<T
   return safe
 }
 
-function resolveWebhookDestinationPolicy(workerEnv: Partial<Env>) {
+function resolveWebhookDestinationPolicy(workerEnv: { WEBHOOK_ALLOWED_HOSTS?: string }) {
   return {
     allowedHosts: parseAllowedWebhookHosts(workerEnv.WEBHOOK_ALLOWED_HOSTS),
   }
@@ -33,208 +32,140 @@ function resolveWebhookDestinationPolicy(workerEnv: Partial<Env>) {
  */
 export const webhooksController = new Elysia({ prefix: '/api/admin/webhooks' })
   .use(betterAuthPlugin)
+  .use(withTenantBindings)
 
   /**
    * GET / — List all webhooks.
    */
-  .get(
-    '/',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const result = await webhooksService.findAll(db, tenantCtx?.tenant.id)
-      if (!result.success) {
-        return { success: false as const, error: result.error }
-      }
-      return {
-        success: true as const,
-        data: result.data.map((webhook) => redactWebhookSecret(webhook)),
-      }
-    },
-    { auth: true }
-  )
+  .get('/', { auth: true }, async ({ db, tenantCtx }) => {
+    const result = await webhooksService.findAll(db, tenantCtx?.tenant.id)
+    if (!result.success) {
+      return { success: false as const, error: result.error }
+    }
+    return {
+      success: true as const,
+      data: result.data.map((webhook) => redactWebhookSecret(webhook)),
+    }
+  })
 
   /**
    * POST / — Create a new webhook.
    */
-  .post(
-    '/',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const result = await webhooksService.create(
-        db,
-        ctx.body,
-        tenantCtx?.tenant.id,
-        resolveWebhookDestinationPolicy(workerEnv)
-      )
-      if (!result.success) {
-        ctx.set.status = 400
-        return { success: false as const, error: result.error }
-      }
-      ctx.set.status = 201
-      return { success: true as const, data: result.data }
-    },
-    {
-      auth: true,
-      body: t.Object({
-        url: t.String({ minLength: 1 }),
-        events: t.Array(t.String()),
-        headers: t.Optional(t.Record(t.String(), t.String())),
-        enabled: t.Optional(t.Boolean()),
-        retryMaxRetries: t.Optional(t.Integer({ minimum: 1, maximum: MAX_WEBHOOK_RETRIES })),
-        retryBackoff: t.Optional(t.Union([t.Literal('exponential'), t.Literal('linear')])),
-        retryTimeout: t.Optional(t.Integer({ minimum: 5, maximum: 120 })),
-      }),
-    }
-  )
+  .post('/', {
+    auth: true,
+    body: t.Object({
+      url: t.String({ minLength: 1 }),
+      events: t.Array(t.String()),
+      headers: t.Optional(t.Record(t.String(), t.String(), { properties: {} })),
+      enabled: t.Optional(t.Boolean()),
+      retryMaxRetries: t.Optional(t.Integer({ minimum: 1, maximum: MAX_WEBHOOK_RETRIES })),
+      retryBackoff: t.Optional(t.Union([t.Literal('exponential'), t.Literal('linear')])),
+      retryTimeout: t.Optional(t.Integer({ minimum: 5, maximum: 120 })),
+    }),
+  }, async ({ db, body, set, workerEnv, tenantCtx }) => {
+    const result = await webhooksService.create(
+      db,
+      body,
+      tenantCtx?.tenant.id,
+      resolveWebhookDestinationPolicy(workerEnv)
+    )
+    return toServiceResponse(set, result, { successStatus: 201, defaultErrorStatus: 400 })
+  })
 
   /**
    * GET /signing — Return webhook signature header documentation.
    */
-  .get(
-    '/signing',
-    async () => {
-      return {
-        success: true as const,
-        data: {
-          algorithm: 'HMAC-SHA256',
-          headers: ['x-edgecms-signature', 'x-webhook-signature'],
-          format: 'sha256=<hex digest>',
-          bodyEncoding: 'application/json',
-        },
-      }
-    },
-    { auth: true }
-  )
+  .get('/signing', { auth: true }, async () => {
+    return {
+      success: true as const,
+      data: {
+        algorithm: 'HMAC-SHA256',
+        headers: ['x-edgecms-signature', 'x-webhook-signature'],
+        format: 'sha256=<hex digest>',
+        bodyEncoding: 'application/json',
+      },
+    }
+  })
 
   /**
    * GET /:webhookId — Get a webhook by ID.
    */
-  .get(
-    '/:webhookId',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const result = await webhooksService.findById(db, ctx.params.webhookId, tenantCtx?.tenant.id)
-      if (!result.success) {
-        return { success: false as const, error: result.error }
-      }
-      return { success: true as const, data: redactWebhookSecret(result.data) }
-    },
-    { auth: true }
-  )
+  .get('/:webhookId', { auth: true }, async ({ db, params, tenantCtx }) => {
+    const result = await webhooksService.findById(db, params.webhookId, tenantCtx?.tenant.id)
+    if (!result.success) {
+      return { success: false as const, error: result.error }
+    }
+    return { success: true as const, data: redactWebhookSecret(result.data) }
+  })
 
   /**
    * PUT /:webhookId — Update a webhook by ID.
    */
-  .put(
-    '/:webhookId',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const result = await webhooksService.update(
-        db,
-        ctx.params.webhookId,
-        ctx.body,
-        tenantCtx?.tenant.id,
-        resolveWebhookDestinationPolicy(workerEnv)
-      )
-      if (!result.success) {
-        ctx.set.status = result.error.code === 'NOT_FOUND' ? 404 : 400
-        return { success: false as const, error: result.error }
-      }
-      return { success: true as const, data: redactWebhookSecret(result.data) }
-    },
-    {
-      auth: true,
-      body: t.Object({
-        url: t.Optional(t.String({ minLength: 1 })),
-        events: t.Optional(t.Array(t.String())),
-        headers: t.Optional(t.Record(t.String(), t.String())),
-        enabled: t.Optional(t.Boolean()),
-        retryMaxRetries: t.Optional(t.Integer({ minimum: 1, maximum: MAX_WEBHOOK_RETRIES })),
-        retryBackoff: t.Optional(t.Union([t.Literal('exponential'), t.Literal('linear')])),
-        retryTimeout: t.Optional(t.Integer({ minimum: 5, maximum: 120 })),
-      }),
+  .put('/:webhookId', {
+    auth: true,
+    body: t.Object({
+      url: t.Optional(t.String({ minLength: 1 })),
+      events: t.Optional(t.Array(t.String())),
+      headers: t.Optional(t.Record(t.String(), t.String(), { properties: {} })),
+      enabled: t.Optional(t.Boolean()),
+      retryMaxRetries: t.Optional(t.Integer({ minimum: 1, maximum: MAX_WEBHOOK_RETRIES })),
+      retryBackoff: t.Optional(t.Union([t.Literal('exponential'), t.Literal('linear')])),
+      retryTimeout: t.Optional(t.Integer({ minimum: 5, maximum: 120 })),
+    }),
+  }, async ({ db, params, body, set, workerEnv, tenantCtx }) => {
+    const result = await webhooksService.update(
+      db,
+      params.webhookId,
+      body,
+      tenantCtx?.tenant.id,
+      resolveWebhookDestinationPolicy(workerEnv)
+    )
+    if (!result.success) {
+      return toServiceResponse(set, result)
     }
-  )
+    return { success: true as const, data: redactWebhookSecret(result.data) }
+  })
 
   /**
    * DELETE /:webhookId — Delete a webhook by ID.
    */
-  .delete(
-    '/:webhookId',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const result = await webhooksService.deleteById(
-        db,
-        ctx.params.webhookId,
-        tenantCtx?.tenant.id
-      )
-      if (!result.success) {
-        ctx.set.status = 404
-        return { success: false as const, error: result.error }
-      }
-      return { success: true as const, data: result.data }
-    },
-    { auth: true }
-  )
+  .delete('/:webhookId', { auth: true }, async ({ db, params, set, tenantCtx }) => {
+    const result = await webhooksService.deleteById(
+      db,
+      params.webhookId,
+      tenantCtx?.tenant.id
+    )
+    return toServiceResponse(set, result, { defaultErrorStatus: 404 })
+  })
 
   /**
    * POST /:webhookId/test — Send a test delivery to the webhook.
    */
-  .post(
-    '/:webhookId/test',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const result = await webhooksService.testDelivery(
-        db,
-        ctx.params.webhookId,
-        tenantCtx?.tenant.id
-      )
-      if (!result.success) {
-        ctx.set.status = result.error.code === 'NOT_FOUND' ? 404 : 500
-        return { success: false as const, error: result.error }
-      }
-      return { success: true as const, data: result.data }
-    },
-    { auth: true }
-  )
+  .post('/:webhookId/test', { auth: true }, async ({ db, params, set, tenantCtx }) => {
+    const result = await webhooksService.testDelivery(
+      db,
+      params.webhookId,
+      tenantCtx?.tenant.id
+    )
+    return toServiceResponse(set, result, { defaultErrorStatus: 500 })
+  })
 
   /**
    * GET /:webhookId/deliveries — List delivery logs for a webhook (paginated).
    */
-  .get(
-    '/:webhookId/deliveries',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const { params, query } = ctx
-
-      const result = await webhooksService.getDeliveries(db, params.webhookId, tenantCtx?.tenant.id, {
-        limit: query.limit,
-        offset: query.offset,
-      })
-      if (!result.success) {
-        return { success: false as const, error: result.error }
-      }
-      return { success: true as const, data: result.data }
-    },
-    {
-      auth: true,
-      query: t.Object({
-        limit: t.Optional(t.Number({ minimum: 1, maximum: 200, default: 50 })),
-        offset: t.Optional(t.Number({ minimum: 0, default: 0 })),
-      }),
+  .get('/:webhookId/deliveries', {
+    auth: true,
+    query: t.Object({
+      limit: t.Optional(t.Number({ minimum: 1, maximum: 200, default: 50 })),
+      offset: t.Optional(t.Number({ minimum: 0, default: 0 })),
+    }),
+  }, async ({ db, params, query, tenantCtx }) => {
+    const result = await webhooksService.getDeliveries(db, params.webhookId, tenantCtx?.tenant.id, {
+      limit: query.limit !== undefined ? Number(query.limit) : undefined,
+      offset: query.offset !== undefined ? Number(query.offset) : undefined,
+    })
+    if (!result.success) {
+      return { success: false as const, error: result.error }
     }
-  )
+    return { success: true as const, data: result.data }
+  })

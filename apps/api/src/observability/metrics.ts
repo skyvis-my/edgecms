@@ -1,4 +1,5 @@
 const counters = new Map<string, number>()
+const MAX_METRIC_SERIES = 2000
 
 function normalizeLabelKey(labels: Record<string, string>): string {
   const serialized = Object.entries(labels)
@@ -9,7 +10,7 @@ function normalizeLabelKey(labels: Record<string, string>): string {
 }
 
 export class RequestMetrics {
-  private counters = new Map<string, number>()
+  private readonly entries = new Map<string, { name: string; labels: Record<string, string>; count: number }>()
 
   private normalizeKey(name: string, labels: Record<string, string>): string {
     const labelKey = normalizeLabelKey(labels)
@@ -18,32 +19,28 @@ export class RequestMetrics {
 
   increment(name: string, labels: Record<string, string> = {}) {
     const key = this.normalizeKey(name, labels)
-    const value = (this.counters.get(key) ?? 0) + 1
-    this.counters.set(key, value)
+    const existing = this.entries.get(key)
+    if (existing) {
+      existing.count += 1
+      return
+    }
+    if (this.entries.size >= MAX_METRIC_SERIES) return
+    this.entries.set(key, { name, labels: { ...labels }, count: 1 })
   }
 
   flush(sink: MetricSink) {
-    for (const [key, value] of this.counters.entries()) {
-      const [rawName, ...labelParts] = key.split('|')
-      if (!rawName) {
-        continue
-      }
-      const labels: Record<string, string> = {}
-      if (labelParts.length > 0 && labelParts[0] !== 'none') {
-        for (const part of labelParts.join('|').split(',')) {
-          const [k, v] = part.split('=')
-          if (k && v !== undefined) {
-            labels[k] = v
-          }
-        }
-      }
-      sink(rawName, labels, value)
+    for (const entry of this.entries.values()) {
+      sink(entry.name, entry.labels, entry.count)
     }
-    this.counters.clear()
+    this.entries.clear()
   }
 
   snapshot(): Map<string, number> {
-    return new Map(this.counters)
+    const out = new Map<string, number>()
+    for (const [key, entry] of this.entries) {
+      out.set(key, entry.count)
+    }
+    return out
   }
 }
 
@@ -101,10 +98,29 @@ export class MetricsRegistry {
 
   increment(name: string, labels: Record<string, string> = {}): void {
     const key = normalizeKey(name, labels)
-    const value = (this.counters.get(key) ?? 0) + 1
-    this.counters.set(key, value)
+    const existing = this.counters.get(key)
+    if (existing !== undefined) {
+      const value = existing + 1
+      this.counters.set(key, value)
+      try {
+        this.metricSink?.(name, labels, value)
+      } catch {
+        // Never let telemetry failures affect runtime behavior.
+      }
+      return
+    }
+    // Bound long-lived isolates: drop new series past the cap (sink still fires).
+    if (this.counters.size >= MAX_METRIC_SERIES) {
+      try {
+        this.metricSink?.(name, labels, 1)
+      } catch {
+        // Never let telemetry failures affect runtime behavior.
+      }
+      return
+    }
+    this.counters.set(key, 1)
     try {
-      this.metricSink?.(name, labels, value)
+      this.metricSink?.(name, labels, 1)
     } catch {
       // Never let telemetry failures affect runtime behavior.
     }
@@ -137,7 +153,12 @@ function normalizeKey(name: string, labels: Record<string, string>): string {
 
 export function incrementMetric(name: string, labels: Record<string, string> = {}) {
   const key = normalizeKey(name, labels)
-  const value = (counters.get(key) ?? 0) + 1
+  const existing = counters.get(key)
+  if (existing === undefined && counters.size >= MAX_METRIC_SERIES) {
+    defaultMetricsRegistry.increment(name, labels)
+    return
+  }
+  const value = (existing ?? 0) + 1
   counters.set(key, value)
   defaultMetricsRegistry.increment(name, labels)
 }

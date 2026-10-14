@@ -96,6 +96,7 @@ describe('publicRepository', () => {
         collectionId: 'c1',
         page: 1,
         perPage: 1,
+        skipCount: true,
       })
     })
 
@@ -122,6 +123,7 @@ describe('publicRepository', () => {
         collectionId: 'c1',
         page: 1,
         perPage: 1,
+        skipCount: true,
       })
     })
 

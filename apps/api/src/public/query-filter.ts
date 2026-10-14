@@ -11,6 +11,9 @@ const MAX_FILTERS = 10
 
 const FILTER_KEY_REGEX = /^filter\[([^\]]+)\](?:\[([^\]]+)\])?$/
 const DATA_FIELD_REGEX = /^data\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/
+// Perf guard: LIKE '%...%' scans are expensive — cap value length and IN list size.
+const MAX_VALUE_LEN = 100
+const MAX_IN_VALUES = 50
 
 export type ParsedFilter = {
   field: string
@@ -43,6 +46,8 @@ export function parsePublicFilters(
       if (!sortField) continue
       const isDesc = sortField.startsWith('-')
       const field = isDesc ? sortField.slice(1) : sortField
+      // Note: data.* sorts force temp-btree scans (kept allowed for compat;
+      // callers should prefer indexed top-level sorts). No error here.
       if (isAllowedSortField(field)) {
         sort.push({ field, order: isDesc ? 'desc' : 'asc' })
       } else {
@@ -79,6 +84,10 @@ export function parsePublicFilters(
       )
       continue
     }
+    // Note: data.* JSON extracts cannot use indexes; abuse is bounded by
+    // MAX_VALUE_LEN / MAX_IN_VALUES / MAX_FILTERS. Expensive shapes
+    // (contains LIKE scans, JSON sorts) are additionally gated per collection
+    // via enforceSearchAllowlist (see below) on the public read path.
 
     const value =
       operatorStr === 'in' || operatorStr === 'not_in'
@@ -92,6 +101,19 @@ export function parsePublicFilters(
       errors.push(`Filter "${field}" with operator "${operatorStr}" must include at least one value`)
       continue
     }
+    // Cap IN lists to avoid oversized SQL.
+    if ((operatorStr === 'in' || operatorStr === 'not_in') && (value as string[]).length > MAX_IN_VALUES) {
+      errors.push(`Filter "${field}" accepts at most ${MAX_IN_VALUES} values`)
+      continue
+    }
+    // Disallow long contains values (esp. on data.* JSON extracts which can't use indexes);
+    // fall back guidance: use eq or shorten the value.
+    if (operatorStr === 'contains' && typeof rawValue === 'string' && rawValue.length > MAX_VALUE_LEN) {
+      errors.push(
+        `Filter "${field}" with operator "contains" exceeds max length ${MAX_VALUE_LEN}; use "eq" or a shorter value`
+      )
+      continue
+    }
     if (field === 'status' && !isPublishedStatusFilter(operatorStr, value)) {
       errors.push('Public status filters only support published content.')
       continue
@@ -101,6 +123,59 @@ export function parsePublicFilters(
   }
 
   return { filters, sort, errors }
+}
+
+export type EnforcedPublicQuery = {
+  filters: ParsedFilter[]
+  sort: ParsedSort[]
+  errors: string[]
+}
+
+/** Top-level segment of a `data.a.b.c` path (the declared field name). */
+function dataRootField(field: string): string {
+  return field.slice(5).split('.')[0] ?? ''
+}
+
+/**
+ * Enforce a collection's `searchFields` allowlist on the expensive query
+ * shapes: `contains` (LIKE `%…%` full scan) and `data.*` sorts (temp-btree
+ * scans over json_extract).
+ *
+ * - `searchFields == null` (never configured): passthrough for compat.
+ * - Otherwise only allowlisted root fields may use `contains` or be sorted.
+ *   Rejected filters/sorts are dropped and reported in `errors`.
+ * - All other operators on `data.*` (eq, in, …) stay allowed; abuse is still
+ *   bounded by MAX_VALUE_LEN / MAX_IN_VALUES / MAX_FILTERS.
+ */
+export function enforceSearchAllowlist(
+  filters: ParsedFilter[],
+  sort: ParsedSort[],
+  searchFields: string[] | null | undefined
+): EnforcedPublicQuery {
+  if (searchFields == null) {
+    return { filters, sort, errors: [] }
+  }
+  const allowed = new Set(searchFields)
+  const errors: string[] = []
+  const keptFilters = filters.filter((filter) => {
+    if (filter.field.startsWith('data.') && filter.operator === 'contains') {
+      if (!allowed.has(dataRootField(filter.field))) {
+        errors.push(
+          `Filter "${filter.field}" with operator "contains" is not searchable on this collection`
+        )
+        return false
+      }
+    }
+    return true
+  })
+  const keptSort = sort.filter((s) => {
+    if (s.field.startsWith('data.') && !allowed.has(dataRootField(s.field))) {
+      errors.push(`Field "${s.field}" is not sortable on this collection`)
+      return false
+    }
+    return true
+  })
+  return { filters: keptFilters, sort: keptSort, errors }
 }
 
 export function hashFilterParams(
@@ -190,16 +265,21 @@ function applyOperator(
       return sql`${column} < ${v as string}`
     case 'lte':
       return sql`${column} <= ${v as string}`
-    case 'contains':
-      return sql`${column} LIKE ${'%' + (v as string) + '%'}`
+    case 'contains': {
+      // Truncate defensive cap (parse already rejects > MAX_VALUE_LEN).
+      const needle = String(v).slice(0, MAX_VALUE_LEN)
+      return sql`${column} LIKE ${'%' + needle + '%'}`
+    }
     case 'in': {
       if (!Array.isArray(value) || value.length === 0) return null
-      const placeholders = value.map((val) => sql`${val}`)
+      const capped = value.slice(0, MAX_IN_VALUES)
+      const placeholders = capped.map((val) => sql`${val}`)
       return sql`${column} IN (${sql.join(placeholders, sql`, `)})`
     }
     case 'not_in': {
       if (!Array.isArray(value) || value.length === 0) return null
-      const placeholders = value.map((val) => sql`${val}`)
+      const capped = value.slice(0, MAX_IN_VALUES)
+      const placeholders = capped.map((val) => sql`${val}`)
       return sql`${column} NOT IN (${sql.join(placeholders, sql`, `)})`
     }
     case 'exists': {

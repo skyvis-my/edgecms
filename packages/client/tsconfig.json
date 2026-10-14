@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "declaration": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": false,
+    "exactOptionalPropertyTypes": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "typeRoots": ["../../node_modules/@types", "./node_modules/@types"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "newLine": "lf",
+    "noEmitOnError": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "ES2022",
+    "verbatimModuleSyntax": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["src/**/__tests__/**"]
+}

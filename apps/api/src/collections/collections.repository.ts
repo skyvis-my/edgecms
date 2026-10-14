@@ -23,7 +23,12 @@ export const collectionsRepository = {
   /** List all collections ordered by creation date (newest first). */
   async findAll(db: Database, tenantId?: string): Promise<CollectionRow[]> {
     const tenantScope = resolveTenantScope(tenantId)
-    return db.select().from(collections).where(eq(collections.tenantId, tenantScope)).all()
+    return db
+      .select()
+      .from(collections)
+      .where(eq(collections.tenantId, tenantScope))
+      .limit(100)
+      .all()
   },
 
   /** Find a single collection by its primary key. */
@@ -52,8 +57,22 @@ export const collectionsRepository = {
     const pattern = `${escapedPrefix}%`
     const tenantScope = resolveTenantScope(tenantId)
     const condition = and(eq(collections.tenantId, tenantScope), like(collections.slug, pattern))
-    const rows = await db.select({ slug: collections.slug }).from(collections).where(condition)
+    const rows = await db
+      .select({ slug: collections.slug })
+      .from(collections)
+      .where(condition)
+      .limit(100)
     return rows.map((row) => row.slug)
+  },
+
+  /** Find multiple collections by ID in a single query (batch loader for N+1 avoidance). */
+  async findByIds(db: Database, ids: string[], tenantId?: string): Promise<CollectionRow[]> {
+    const uniqueIds = [...new Set(ids)].slice(0, 100)
+    if (uniqueIds.length === 0) return []
+    const { inArray, and } = await import('drizzle-orm')
+    const conditions = [inArray(collections.id, uniqueIds)]
+    if (tenantId) conditions.push(eq(collections.tenantId, resolveTenantScope(tenantId)))
+    return db.select().from(collections).where(and(...conditions)).limit(100).all()
   },
 
   /** Insert a new collection row. */

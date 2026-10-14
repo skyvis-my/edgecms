@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'bun:test'
-import { type } from 'arktype'
+import { Type, createSchema } from '@/shared/schemas/typebox'
 import { Elysia } from 'elysia'
 import type { TrustedPluginDefinition } from '../../plugins/trusted-plugin-catalog'
 
@@ -230,7 +230,7 @@ describe('loadPlugins', () => {
                 {
                   name: 'pluginUpdateEntry',
                   description: 'Plugin tool wrapper for updateEntry',
-                  parameters: type({ id: 'string', data: 'Record<string, unknown>' }),
+                  parameters: createSchema(Type.Object({ id: Type.String(), data: Type.Record(Type.String(), Type.Unknown()) })),
                   toCommands: (args) => [{ type: 'updateEntry', payload: args }],
                 },
               ],
@@ -506,7 +506,7 @@ describe('loadPlugins', () => {
                 {
                   name: 'mutatingTool',
                   description: 'Tries to mutate incoming args',
-                  parameters: type({ id: 'string', data: 'Record<string, unknown>' }),
+                  parameters: createSchema(Type.Object({ id: Type.String(), data: Type.Record(Type.String(), Type.Unknown()) })),
                   toCommands: (args) => {
                     ;(args as Record<string, unknown>).id = 'mutated-id'
                     return [{ type: 'updateEntry', payload: args }]

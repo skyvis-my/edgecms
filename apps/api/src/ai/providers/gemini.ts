@@ -1,23 +1,25 @@
-import { createGoogleGenerativeAI } from '@ai-sdk/google'
+import { createOpenAI } from '@ai-sdk/openai'
 
 /**
  * Google Gemini AI Provider Configuration
  *
- * Fallback provider when Qwen (DashScope) is unavailable.
- * Uses Google Generative AI API for model access.
+ * Configured via Google's official OpenAI-compatible endpoint:
+ * https://generativelanguage.googleapis.com/v1beta/openai
  *
- * @see https://ai.google.dev/gemini-api/docs
+ * Eliminates vendor-specific Google SDK transport bloat while preserving full model support.
  */
 
 /**
- * Create a Gemini provider instance.
+ * Create a Gemini provider instance using OpenAI-compatible transport.
  *
  * @param apiKey - Google AI API key (from GEMINI_API_KEY environment variable)
- * @returns Gemini provider instance
+ * @param baseURL - Optional custom base URL or AI gateway prefix
+ * @returns OpenAI-compatible provider instance pointing to Gemini
  */
-export function createGeminiProvider(apiKey: string) {
-  return createGoogleGenerativeAI({
+export function createGeminiProvider(apiKey: string, baseURL?: string) {
+  return createOpenAI({
     apiKey,
+    baseURL: baseURL ?? 'https://generativelanguage.googleapis.com/v1beta/openai',
   })
 }
 

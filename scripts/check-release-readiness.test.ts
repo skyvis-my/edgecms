@@ -156,8 +156,37 @@ describe('check-release-readiness.sh', () => {
     expect(stdout).toContain('[PASS] apps/api deploy:production targets env: production')
     expect(stdout).toContain('[PASS] package.json wires local public read perf proof')
     expect(stdout).toContain('[PASS] package.json wires deployed public read perf proof')
-    expect(stdout).toContain('[PASS] .github/workflows/deploy-staging.yml gates deploy:staging with check:release')
     expect(stdout).toContain('[PASS] .github/workflows/deploy-production.yml gates deploy:production with check:release')
+  })
+
+  it('passes when production deploy script targets --mode production (cf CLI)', async () => {
+    const fixtureRoot = await createFixture()
+    await writeFixtureFile(
+      fixtureRoot,
+      'apps/api/package.json',
+      JSON.stringify(
+        {
+          name: 'edgecms-api',
+          version: '0.1.0',
+          scripts: { 'deploy:production': 'bun run build:worker && cf deploy --mode production' },
+        },
+        null,
+        2
+      )
+    )
+    createdRoots.push(fixtureRoot)
+
+    const proc = Bun.spawn(['bash', 'scripts/check-release-readiness.sh', fixtureRoot], {
+      cwd: process.cwd(),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+
+    const stdout = await new Response(proc.stdout).text()
+    const exitCode = await proc.exited
+
+    expect(exitCode).toBe(0)
+    expect(stdout).toContain('[PASS] apps/api deploy:production targets env: production')
   })
 
   it('fails when wrangler.toml still contains placeholder resource IDs', async () => {

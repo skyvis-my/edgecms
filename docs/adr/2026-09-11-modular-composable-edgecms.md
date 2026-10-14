@@ -4,7 +4,7 @@ Date: 2026-09-11
 
 Status: **Proposed**. This document proposes architecture and acceptance gates; it does not assert implementation, package publication or deployment completion.
 
-Context: [benchmark and evidence ledger](../comparisons/2026-09-11-headless-cms-benchmark.md). Delivery: [implementation plan](../plans/2026-09-11-headless-cms-gap-implementation-plan.md). Existing [architecture decisions](../architecture-decisions.md) remain in force.
+Context: benchmark and evidence ledger (internal reference). Delivery: implementation plan (internal reference). Existing [architecture decisions](../architecture-decisions.md) remain in force.
 
 ## Problem and intended outcome
 

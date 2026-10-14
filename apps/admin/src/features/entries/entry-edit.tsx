@@ -27,8 +27,10 @@ export function EntryEdit() {
     isLoading: isLoadingEntry,
     error: entryError,
   } = useEntryByIdentifier(entryId, {
-    collectionId: collection?.id,
-    enabled: Boolean(collection?.id),
+    // Parallelize with the collection query: resolve scoping from the route
+    // param instead of waiting for `collection?.id`.
+    collectionId,
+    enabled: !!collectionId,
     preferCollectionLookup: true,
   })
 

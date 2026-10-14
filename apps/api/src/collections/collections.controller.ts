@@ -1,8 +1,7 @@
-import { env } from 'cloudflare:workers'
 import { Elysia, t } from 'elysia'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
-import type { Env } from '@/env'
-import { hasTenantContext, resolveTenantBindings } from '@/tenants/tenant-context'
+import { createErrorEnvelope, toServiceResponse } from '@/shared/utils/service-response'
+import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import { collectionsService } from './collections.service'
 
 /**
@@ -19,71 +18,85 @@ import { collectionsService } from './collections.service'
  */
 export const collectionsController = new Elysia({ prefix: '/api/admin/collections' })
   .use(betterAuthPlugin)
+  .use(withTenantBindings)
 
   /**
    * GET / — List all collections.
    */
-  .get(
-    '/',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const result = await collectionsService.findAll(db, tenantCtx?.tenant.id)
-      if (!result.success) {
-        return { success: false as const, error: result.error }
-      }
-      return { success: true as const, data: result.data }
-    },
-    { auth: true }
-  )
+  .get('/', { auth: true }, async ({ db, set, tenantCtx }) => {
+    if (!tenantCtx?.tenant) {
+      set.status = 400
+      return createErrorEnvelope('TENANT_REQUIRED', 'Tenant context is required')
+    }
+    return toServiceResponse(set, await collectionsService.findAll(db, tenantCtx?.tenant.id))
+  })
 
   /**
    * GET /:collectionIdOrSlug — Get a collection by ID or slug.
    */
-  .get(
-    '/:collectionIdOrSlug',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const result = await collectionsService.findByIdOrSlug(
+  .get('/:collectionIdOrSlug', { auth: true }, async ({ db, params, set, tenantCtx }) => {
+    if (!tenantCtx?.tenant) {
+      set.status = 400
+      return createErrorEnvelope('TENANT_REQUIRED', 'Tenant context is required')
+    }
+    return toServiceResponse(
+      set,
+      await collectionsService.findByIdOrSlug(
         db,
-        ctx.params.collectionIdOrSlug,
+        params.collectionIdOrSlug,
         tenantCtx?.tenant.id
-      )
-      if (!result.success) {
-        return { success: false as const, error: result.error }
-      }
-      return { success: true as const, data: result.data }
-    },
-    { auth: true }
-  )
+      ),
+      { errorStatusMap: { NOT_FOUND: 200 }, defaultErrorStatus: 200 }
+    )
+  })
 
   /**
    * POST / — Create a new collection.
    */
-  .post(
-    '/',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const result = await collectionsService.create(db, ctx.body, tenantCtx?.tenant.id)
-      if (!result.success) {
-        ctx.set.status = 400
-        return { success: false as const, error: result.error }
-      }
-      ctx.set.status = 201
-      return { success: true as const, data: result.data }
-    },
-    {
-      auth: true,
-      body: t.Object({
-        name: t.String({ minLength: 1 }),
-        slug: t.Optional(t.String({ minLength: 1 })),
-        singleton: t.Optional(t.Boolean()),
-        fields: t.Array(
+  .post('/', {
+    auth: true,
+    body: t.Object({
+      name: t.String({ minLength: 1 }),
+      slug: t.Optional(t.String({ minLength: 1 })),
+      singleton: t.Optional(t.Boolean()),
+      fields: t.Array(
+        t.Object({
+          name: t.String({ minLength: 1 }),
+          type: t.String({ minLength: 1 }),
+          required: t.Boolean(),
+          localizable: t.Boolean(),
+          options: t.Optional(t.Record(t.String(), t.Unknown())),
+        })
+      ),
+      defaultLocale: t.Optional(t.String()),
+      supportedLocales: t.Optional(t.Array(t.String())),
+      displayName: t.Optional(t.String()),
+      description: t.Optional(t.String()),
+      icon: t.Optional(t.String()),
+      color: t.Optional(t.String()),
+      listFields: t.Optional(t.Array(t.String())),
+      searchFields: t.Optional(t.Array(t.String())),
+      defaultSort: t.Optional(t.String()),
+      defaultSortOrder: t.Optional(t.Union([t.Literal('asc'), t.Literal('desc')])),
+    }),
+  }, async ({ db, body, set, tenantCtx }) => {
+    return toServiceResponse(
+      set,
+      await collectionsService.create(db, body, tenantCtx?.tenant.id),
+      { successStatus: 201 }
+    )
+  })
+
+  /**
+   * PUT /:collectionId — Update a collection by ID.
+   */
+  .put('/:collectionId', {
+    auth: true,
+    body: t.Object({
+      name: t.Optional(t.String({ minLength: 1 })),
+      singleton: t.Optional(t.Boolean()),
+      fields: t.Optional(
+        t.Array(
           t.Object({
             name: t.String({ minLength: 1 }),
             type: t.String({ minLength: 1 }),
@@ -91,91 +104,42 @@ export const collectionsController = new Elysia({ prefix: '/api/admin/collection
             localizable: t.Boolean(),
             options: t.Optional(t.Record(t.String(), t.Unknown())),
           })
-        ),
-        defaultLocale: t.Optional(t.String()),
-        supportedLocales: t.Optional(t.Array(t.String())),
-        displayName: t.Optional(t.String()),
-        description: t.Optional(t.String()),
-        icon: t.Optional(t.String()),
-        color: t.Optional(t.String()),
-        listFields: t.Optional(t.Array(t.String())),
-        searchFields: t.Optional(t.Array(t.String())),
-        defaultSort: t.Optional(t.String()),
-        defaultSortOrder: t.Optional(t.Union([t.Literal('asc'), t.Literal('desc')])),
-      }),
-    }
-  )
-
-  /**
-   * PUT /:collectionId — Update a collection by ID.
-   */
-  .put(
-    '/:collectionId',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const result = await collectionsService.update(
+        )
+      ),
+      defaultLocale: t.Optional(t.String()),
+      supportedLocales: t.Optional(t.Array(t.String())),
+      displayName: t.Optional(t.String()),
+      description: t.Optional(t.String()),
+      icon: t.Optional(t.String()),
+      color: t.Optional(t.String()),
+      listFields: t.Optional(t.Array(t.String())),
+      searchFields: t.Optional(t.Array(t.String())),
+      defaultSort: t.Optional(t.String()),
+      defaultSortOrder: t.Optional(t.Union([t.Literal('asc'), t.Literal('desc')])),
+      bypassManagedLock: t.Optional(t.Boolean()),
+    }),
+  }, async ({ db, params, body, set, tenantCtx }) => {
+    return toServiceResponse(
+      set,
+      await collectionsService.update(
         db,
-        ctx.params.collectionId,
-        ctx.body,
+        params.collectionId,
+        body,
         tenantCtx?.tenant.id
       )
-      if (!result.success) {
-        ctx.set.status = result.error.code === 'NOT_FOUND' ? 404 : 400
-        return { success: false as const, error: result.error }
-      }
-      return { success: true as const, data: result.data }
-    },
-    {
-      auth: true,
-      body: t.Object({
-        name: t.Optional(t.String({ minLength: 1 })),
-        singleton: t.Optional(t.Boolean()),
-        fields: t.Optional(
-          t.Array(
-            t.Object({
-              name: t.String({ minLength: 1 }),
-              type: t.String({ minLength: 1 }),
-              required: t.Boolean(),
-              localizable: t.Boolean(),
-              options: t.Optional(t.Record(t.String(), t.Unknown())),
-            })
-          )
-        ),
-        defaultLocale: t.Optional(t.String()),
-        supportedLocales: t.Optional(t.Array(t.String())),
-        displayName: t.Optional(t.String()),
-        description: t.Optional(t.String()),
-        icon: t.Optional(t.String()),
-        color: t.Optional(t.String()),
-        listFields: t.Optional(t.Array(t.String())),
-        searchFields: t.Optional(t.Array(t.String())),
-        defaultSort: t.Optional(t.String()),
-        defaultSortOrder: t.Optional(t.Union([t.Literal('asc'), t.Literal('desc')])),
-      }),
-    }
-  )
+    )
+  })
 
   /**
    * DELETE /:collectionId — Delete a collection by ID.
    */
-  .delete(
-    '/:collectionId',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const result = await collectionsService.deleteById(
+  .delete('/:collectionId', { auth: true }, async ({ db, params, set, tenantCtx }) => {
+    return toServiceResponse(
+      set,
+      await collectionsService.deleteById(
         db,
-        ctx.params.collectionId,
+        params.collectionId,
         tenantCtx?.tenant.id
       )
-      if (!result.success) {
-        ctx.set.status = 404
-        return { success: false as const, error: result.error }
-      }
-      return { success: true as const, data: result.data }
-    },
-    { auth: true }
-  )
+    )
+  })

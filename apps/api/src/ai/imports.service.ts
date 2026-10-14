@@ -254,7 +254,8 @@ export const aiImportService = {
 
     const file = input.file
     if (file.size > FILE_LIMIT) throw new Error('File is too large')
-    const contentType = file.type || 'application/octet-stream'
+    const rawContentType = file.type || 'application/octet-stream'
+    const contentType = rawContentType.split(';')[0]?.trim().toLowerCase() || 'application/octet-stream'
     if (!TEXT_CONTENT_TYPES.has(contentType) && !contentType.startsWith('image/')) {
       throw new Error('File type is not supported')
     }
@@ -269,22 +270,28 @@ export const aiImportService = {
 
     const isText = TEXT_CONTENT_TYPES.has(contentType)
     const extractedText = isText ? normalizeText(new TextDecoder().decode(bytes)) : undefined
-    return aiImportsRepository.createSource(db, {
-      id: sourceId,
-      batchId,
-      tenantId,
-      kind: 'file',
-      filename: file.name,
-      contentType,
-      sizeBytes: file.size,
-      r2ObjectKey,
-      extractionStatus: isText ? 'ready' : 'unsupported',
-      extractedText,
-      mediaSummaryJson: isText ? undefined : { filename: file.name, contentType, sizeBytes: file.size },
-      hash: await sha256(bytes),
-      expiresAt: expiresAt(),
-      createdAt: timestamp,
-    })
+    // R2-then-DB: compensate the uploaded object when the DB insert fails.
+    try {
+      return await aiImportsRepository.createSource(db, {
+        id: sourceId,
+        batchId,
+        tenantId,
+        kind: 'file',
+        filename: file.name,
+        contentType,
+        sizeBytes: file.size,
+        r2ObjectKey,
+        extractionStatus: isText ? 'ready' : 'unsupported',
+        extractedText,
+        mediaSummaryJson: isText ? undefined : { filename: file.name, contentType, sizeBytes: file.size },
+        hash: await sha256(bytes),
+        expiresAt: expiresAt(),
+        createdAt: timestamp,
+      })
+    } catch (err) {
+      await env.MEDIA.delete(r2ObjectKey).catch(() => undefined)
+      throw err
+    }
   },
 
   async analyze(db: Database, batchId: string, tenantId?: string) {
@@ -390,6 +397,9 @@ export const aiImportService = {
             },
           ]
 
+    // Batch set + suggestions: suggestion-set status and suggestion rows are
+    // written as separate statements (no cross-table batch here); failures
+    // throw (no silent swallow) and apply() below surfaces partial_failure.
     await aiImportsRepository.createSuggestions(db, suggestions)
     await aiImportsRepository.updateSuggestionSet(db, suggestionSet.id, tenantId, { status: 'ready' })
     await aiImportsRepository.updateBatch(db, batch.id, tenantId, { status: 'ready_for_review' })

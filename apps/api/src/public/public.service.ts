@@ -2,12 +2,64 @@ import { assetsService } from '@/assets/assets.service'
 import { CacheMetadataTracker } from '@/cache/cache-metadata'
 import { kvService } from '@/cache/kv.service'
 import { snapshotService } from '@/cache/snapshot.service'
+import type { CollectionRow } from '@/collections/collections.repository'
 import type { Database } from '@/database/db'
 import { computeDynamicTTL } from '@/scheduling/ttl.service'
 import type { ParsedFilter, ParsedSort } from '@/public/query-filter'
 
-import { buildDrizzleConditions, buildSortClause, hashFilterParams } from '@/public/query-filter'
+import { buildDrizzleConditions, buildSortClause, enforceSearchAllowlist, hashFilterParams } from '@/public/query-filter'
 import { publicRepository } from './public.repository'
+
+const DEFAULT_BROWSER_TTL = 60
+const DEFAULT_CDN_TTL = 300
+
+type EmbeddedSnapshotTtls = {
+  dynamicTTL: number
+  browserTTL: number
+  cdnTTL: number
+}
+
+function toHeaderTtls(dynamicTTL: number): { browserTTL: number; cdnTTL: number } {
+  return {
+    browserTTL: Math.min(dynamicTTL, DEFAULT_BROWSER_TTL),
+    cdnTTL: Math.min(dynamicTTL, DEFAULT_CDN_TTL),
+  }
+}
+
+function readEmbeddedHeaderTtls(stored: unknown): { browserTTL: number; cdnTTL: number } {
+  const cache =
+    typeof stored === 'object' && stored !== null
+      ? (stored as { cache?: unknown }).cache
+      : undefined
+  if (
+    typeof cache === 'object' &&
+    cache !== null &&
+    typeof (cache as EmbeddedSnapshotTtls).browserTTL === 'number' &&
+    typeof (cache as EmbeddedSnapshotTtls).cdnTTL === 'number'
+  ) {
+    return {
+      browserTTL: (cache as EmbeddedSnapshotTtls).browserTTL,
+      cdnTTL: (cache as EmbeddedSnapshotTtls).cdnTTL,
+    }
+  }
+  return { browserTTL: DEFAULT_BROWSER_TTL, cdnTTL: DEFAULT_CDN_TTL }
+}
+
+function withEmbeddedTtls<T extends object>(
+  snapshot: T,
+  ttls: EmbeddedSnapshotTtls
+): T & { cache: EmbeddedSnapshotTtls } {
+  return { ...snapshot, cache: ttls }
+}
+
+function stripEmbeddedTtls<T>(stored: T): T {
+  if (typeof stored === 'object' && stored !== null && 'cache' in stored) {
+    const copy = { ...(stored as Record<string, unknown>) }
+    delete copy.cache
+    return copy as T
+  }
+  return stored
+}
 
 export type PublicCacheMeta = {
   cacheTag: string
@@ -23,35 +75,50 @@ type PublicError = {
 
 type PublicResult<T> = { success: true; data: T } | { success: false; error: PublicError }
 
-async function resolveCacheHeaderTtls(db: Database, collectionId: string | undefined) {
-  if (!collectionId) {
-    return { browserTTL: 60, cdnTTL: 300 }
-  }
+type PublicSnapshotResult = PublicResult<{ payload: unknown; cache: PublicCacheMeta }>
 
-  const [browserTTL, cdnTTL] = await Promise.all([
-    computeDynamicTTL(db, collectionId, 60).then((ttl) => Math.min(ttl, 60)),
-    computeDynamicTTL(db, collectionId, 300).then((ttl) => Math.min(ttl, 300)),
-  ])
+// Singleflight: concurrent requests for the same versioned snapshot share one
+// generation pipeline instead of stampeding D1 + KV writes.
+const inflightSnapshotRequests = new Map<string, Promise<PublicSnapshotResult>>()
 
-  return { browserTTL, cdnTTL }
+function dedupeSnapshotRequest(
+  key: string,
+  factory: () => Promise<PublicSnapshotResult>
+): Promise<PublicSnapshotResult> {
+  const existing = inflightSnapshotRequests.get(key)
+  if (existing) return existing
+  const pending = factory().finally(() => {
+    if (inflightSnapshotRequests.get(key) === pending) inflightSnapshotRequests.delete(key)
+  })
+  inflightSnapshotRequests.set(key, pending)
+  return pending
 }
 
+// TODO(perf): no persistent negative cache for 404s. Miss results depend on D1
+// state (collection/entry visibility, tenant scope) keyed by tenant + version,
+// so caching them risks stale 404s; singleflight above already dedupes
+// concurrent misses. Revisit with a short (≤10s) TTL negative cache if 404
+// volume becomes a problem.
+
 function buildCachedPublicResult(
-  payload: unknown,
+  stored: unknown,
   cacheTag: string,
   tracker: CacheMetadataTracker
-): PublicResult<{ payload: unknown; cache: PublicCacheMeta }> {
+): PublicSnapshotResult {
   if (tracker.getStatus() === 'MISS') {
     tracker.recordHit('kv')
   }
+  // Reuse the TTLs embedded at write time so hit/miss Cache-Control headers
+  // agree — no D1 recompute on the hot path.
+  const { browserTTL, cdnTTL } = readEmbeddedHeaderTtls(stored)
   return {
     success: true,
     data: {
-      payload,
+      payload: stripEmbeddedTtls(stored),
       cache: {
         cacheTag,
-        browserTTL: 60,
-        cdnTTL: 300,
+        browserTTL,
+        cdnTTL,
         debugHeaders: tracker.toHeaders(),
       },
     },
@@ -95,6 +162,28 @@ export type ImageTransformOptions = {
   format?: 'auto' | 'webp' | 'avif' | 'jpeg' | 'png' | 'json'
 }
 
+function parseRangeHeader(
+  rangeHeader: string,
+  total: number
+): { start: number; end: number } | null {
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim())
+  if (!match) return null
+  const [, startStr, endStr] = match
+  if (!startStr && !endStr) return null
+  if (!startStr) {
+    const suffix = Number.parseInt(endStr as string, 10)
+    if (!Number.isFinite(suffix) || suffix <= 0) return null
+    if (suffix >= total) return { start: 0, end: total - 1 }
+    return { start: total - suffix, end: total - 1 }
+  }
+  const start = Number.parseInt(startStr as string, 10)
+  if (!Number.isFinite(start) || start < 0 || start >= total) return null
+  if (!endStr) return { start, end: total - 1 }
+  const end = Number.parseInt(endStr as string, 10)
+  if (!Number.isFinite(end) || end < start) return null
+  return { start, end: Math.min(end, total - 1) }
+}
+
 export const publicService = {
   async getAssetVariant(params: {
     db: Database
@@ -106,8 +195,9 @@ export const publicService = {
     transform?: ImageTransformOptions
     requestUrl?: string
     isRaw?: boolean
+    rangeHeader?: string | null
   }): Promise<PublicResult<Response>> {
-    const { db, r2, assetId, variantParam, accept, tenantId, transform, requestUrl, isRaw } = params
+    const { db, r2, assetId, variantParam, accept, tenantId, transform, requestUrl, isRaw, rangeHeader } = params
     const variant = resolveVariantParam(variantParam)
 
     const hasTransform = Boolean(
@@ -171,12 +261,12 @@ export const publicService = {
 
     let object = await r2.get(resolved.data.key)
     let contentType = resolved.data.contentType
-    if (!object) {
-      const original = await assetsService.resolvePublicVariant(db, assetId, variant, null, tenantId)
-      if (original.success && original.data.key !== resolved.data.key) {
-        object = await r2.get(original.data.key)
-        contentType = original.data.contentType
-      }
+    let objectKey = resolved.data.key
+    if (!object && resolved.data.fallbackKey !== resolved.data.key) {
+      // Single-DB-call fallback: reuse originalKey from the first resolve (no second query).
+      object = await r2.get(resolved.data.fallbackKey)
+      contentType = resolved.data.fallbackContentType
+      objectKey = resolved.data.fallbackKey
     }
     if (!object) {
       return { success: false, error: { status: 404, message: 'Asset variant not found' } }
@@ -191,9 +281,42 @@ export const publicService = {
           : contentType,
       'x-edgecms-cache': 'hit',
       'x-image-transform': hasTransform ? 'fallback' : 'none',
+      'Accept-Ranges': 'bytes',
     }
     if (hasTransform) {
       headers['x-image-transform-params'] = JSON.stringify(transform)
+    }
+
+    // R2 Range requests: serve partial content with 206 when the client
+    // sends `Range: bytes=start-end` and the object size is known.
+    // Range + transform is not combined — transforms return full bodies above.
+    if (rangeHeader && !hasTransform) {
+      const total = (object as unknown as { size?: unknown }).size
+      if (typeof total === 'number' && Number.isFinite(total) && total > 0) {
+        const range = parseRangeHeader(rangeHeader, total)
+        if (range) {
+          const ranged = await r2.get(objectKey, {
+            range: { offset: range.start, length: range.end - range.start + 1 },
+          })
+          const body = (ranged as unknown as { body?: unknown } | null)?.body
+          if (ranged && body !== undefined) {
+            const rangedSize = (ranged as unknown as { size?: unknown }).size
+            return {
+              success: true,
+              data: new Response(ranged.body as unknown as typeof object.body, {
+                status: 206,
+                headers: {
+                  ...headers,
+                  'Content-Range': `bytes ${range.start}-${range.end}/${total}`,
+                  'Content-Length': String(
+                    typeof rangedSize === 'number' ? rangedSize : range.end - range.start + 1
+                  ),
+                },
+              }),
+            }
+          }
+        }
+      }
     }
 
     const response = new Response(object.body, { headers })
@@ -211,28 +334,53 @@ export const publicService = {
     tenantId?: string
     filters?: ParsedFilter[]
     sort?: ParsedSort[]
-  }): Promise<PublicResult<{ payload: unknown; cache: PublicCacheMeta }>> {
-    const { db, kv, collectionSlug, locale, page, perPage, tenantId, filters = [], sort } = params
+    preloadedCollection?: CollectionRow | null
+  }): Promise<PublicSnapshotResult> {
+    const {
+      db,
+      kv,
+      collectionSlug,
+      locale,
+      page,
+      perPage,
+      tenantId,
+      filters = [],
+      sort,
+      preloadedCollection,
+    } = params
     const filterHash = hashFilterParams(filters, sort ?? [])
     const tracker = new CacheMetadataTracker()
     const baseKey = `snapshot:${collectionSlug}:${locale}:list:${page}:${perPage}:${filterHash}`
     const version = await kvService.getCurrentVersion(kv, collectionSlug, locale, tenantId)
     const versionedKey = kvService.getVersionedKey(baseKey, version, tenantId)
 
-    let snapshot = await kvService.getSnapshot(kv, versionedKey, tracker)
+    const snapshot = await kvService.getSnapshot(kv, versionedKey, tracker)
     const cacheTag = `collection:${collectionSlug},locale:${locale}`
     if (snapshot) {
       return buildCachedPublicResult(snapshot, cacheTag, tracker)
     }
 
-    const collection = await publicRepository.findCollectionBySlug(db, collectionSlug, tenantId)
+    const collection =
+      preloadedCollection === undefined
+        ? await publicRepository.findCollectionBySlug(db, collectionSlug, tenantId)
+        : preloadedCollection
     if (!collection) {
       return { success: false, error: { status: 404, message: 'Collection not found' } }
     }
 
-    if (!snapshot) {
-      const extraConditions = buildDrizzleConditions(filters)
-      const orderByClause = buildSortClause(sort ?? [])
+    return dedupeSnapshotRequest(versionedKey, async () => {
+      // Enforce the collection's searchFields allowlist on expensive shapes
+      // (contains LIKE scans, JSON sorts). Runs on the miss path only, after
+      // the collection load — KV hits stay at zero D1.
+      const gated = enforceSearchAllowlist(filters, sort ?? [], collection.searchFields ?? null)
+      if (gated.errors.length > 0) {
+        return {
+          success: false,
+          error: { status: 400, message: `Invalid filter parameters: ${gated.errors.join('; ')}` },
+        }
+      }
+      const extraConditions = buildDrizzleConditions(gated.filters)
+      const orderByClause = buildSortClause(gated.sort)
 
       const generatedSnapshot = await snapshotService.generateListSnapshot(
         db,
@@ -249,28 +397,31 @@ export const publicService = {
       }
 
       const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
-      await kvService.putSnapshot(kv, versionedKey, generatedSnapshot, dynamicTTL)
-
+      const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
       const tags = snapshotService.generateCacheTags(collection.id, undefined, locale)
-      await snapshotService.storeCacheTags(db, versionedKey, tags)
+      await Promise.all([
+        kvService.putSnapshot(
+          kv,
+          versionedKey,
+          withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL }),
+          dynamicTTL
+        ),
+        snapshotService.storeCacheTags(db, versionedKey, tags),
+      ])
 
-      snapshot = generatedSnapshot
-    }
-
-    const { browserTTL, cdnTTL } = await resolveCacheHeaderTtls(db, collection.id)
-
-    return {
-      success: true,
-      data: {
-        payload: snapshot,
-        cache: {
-          cacheTag,
-          browserTTL,
-          cdnTTL,
-          debugHeaders: tracker.toHeaders(),
+      return {
+        success: true,
+        data: {
+          payload: generatedSnapshot,
+          cache: {
+            cacheTag,
+            browserTTL,
+            cdnTTL,
+            debugHeaders: tracker.toHeaders(),
+          },
         },
-      },
-    }
+      }
+    })
   },
 
   async getCollectionEntry(params: {
@@ -282,8 +433,19 @@ export const publicService = {
     populateParam: string
     depth: number
     tenantId?: string
-  }): Promise<PublicResult<{ payload: unknown; cache: PublicCacheMeta }>> {
-    const { db, kv, collectionSlug, idOrSlug, locale, populateParam, depth, tenantId } = params
+    preloadedCollection?: CollectionRow | null
+  }): Promise<PublicSnapshotResult> {
+    const {
+      db,
+      kv,
+      collectionSlug,
+      idOrSlug,
+      locale,
+      populateParam,
+      depth,
+      tenantId,
+      preloadedCollection,
+    } = params
     const tracker = new CacheMetadataTracker()
     const { cacheToken, fieldNames } = normalizePopulateQuery(populateParam)
     const normalizedDepth = Math.min(Math.max(depth, 1), 3)
@@ -291,18 +453,21 @@ export const publicService = {
     const version = await kvService.getCurrentVersion(kv, collectionSlug, locale, tenantId)
     const versionedKey = kvService.getVersionedKey(baseKey, version, tenantId)
 
-    let snapshot = await kvService.getSnapshot(kv, versionedKey, tracker)
+    const snapshot = await kvService.getSnapshot(kv, versionedKey, tracker)
     const cacheTag = `collection:${collectionSlug},locale:${locale},entry:${idOrSlug}`
     if (snapshot) {
       return buildCachedPublicResult(snapshot, cacheTag, tracker)
     }
 
-    const collection = await publicRepository.findCollectionBySlug(db, collectionSlug, tenantId)
+    const collection =
+      preloadedCollection === undefined
+        ? await publicRepository.findCollectionBySlug(db, collectionSlug, tenantId)
+        : preloadedCollection
     if (!collection) {
       return { success: false, error: { status: 404, message: 'Collection not found' } }
     }
 
-    if (!snapshot) {
+    return dedupeSnapshotRequest(versionedKey, async () => {
       const generatedSnapshot = await snapshotService.generateEntrySnapshot(
         db,
         collectionSlug,
@@ -324,32 +489,35 @@ export const publicService = {
       }
 
       const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
-      await kvService.putSnapshot(kv, versionedKey, generatedSnapshot, dynamicTTL)
-
+      const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
       const tags = snapshotService.generateCacheTags(
         collection.id,
         generatedSnapshot.entry.id,
         locale
       )
-      await snapshotService.storeCacheTags(db, versionedKey, tags)
+      await Promise.all([
+        kvService.putSnapshot(
+          kv,
+          versionedKey,
+          withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL }),
+          dynamicTTL
+        ),
+        snapshotService.storeCacheTags(db, versionedKey, tags),
+      ])
 
-      snapshot = generatedSnapshot
-    }
-
-    const { browserTTL, cdnTTL } = await resolveCacheHeaderTtls(db, collection.id)
-
-    return {
-      success: true,
-      data: {
-        payload: snapshot,
-        cache: {
-          cacheTag,
-          browserTTL,
-          cdnTTL,
-          debugHeaders: tracker.toHeaders(),
+      return {
+        success: true,
+        data: {
+          payload: generatedSnapshot,
+          cache: {
+            cacheTag,
+            browserTTL,
+            cdnTTL,
+            debugHeaders: tracker.toHeaders(),
+          },
         },
-      },
-    }
+      }
+    })
   },
 
   async getSingletonEntry(params: {
@@ -358,29 +526,33 @@ export const publicService = {
     collectionSlug: string
     locale: string
     tenantId?: string
-  }): Promise<PublicResult<{ payload: unknown; cache: PublicCacheMeta }>> {
-    const { db, kv, collectionSlug, locale, tenantId } = params
+    preloadedCollection?: CollectionRow | null
+  }): Promise<PublicSnapshotResult> {
+    const { db, kv, collectionSlug, locale, tenantId, preloadedCollection } = params
     const tracker = new CacheMetadataTracker()
     const baseKey = `snapshot:${collectionSlug}:${locale}:singleton`
     const version = await kvService.getCurrentVersion(kv, collectionSlug, locale, tenantId)
     const versionedKey = kvService.getVersionedKey(baseKey, version, tenantId)
 
-    let snapshot = await kvService.getSnapshot(kv, versionedKey, tracker)
+    const snapshot = await kvService.getSnapshot(kv, versionedKey, tracker)
     const cacheTag = `collection:${collectionSlug},locale:${locale}`
     if (snapshot) {
       return buildCachedPublicResult(snapshot, cacheTag, tracker)
     }
 
-    const collection = await publicRepository.findCollectionBySlug(db, collectionSlug, tenantId)
+    const collection =
+      preloadedCollection === undefined
+        ? await publicRepository.findCollectionBySlug(db, collectionSlug, tenantId)
+        : preloadedCollection
     if (!collection) {
       return { success: false, error: { status: 404, message: 'Collection not found' } }
     }
 
-    if (!snapshot) {
-      if (!collection.singleton) {
-        return { success: false, error: { status: 400, message: 'Collection is not a singleton' } }
-      }
+    if (!collection.singleton) {
+      return { success: false, error: { status: 400, message: 'Collection is not a singleton' } }
+    }
 
+    return dedupeSnapshotRequest(versionedKey, async () => {
       const entry = await publicRepository.findFirstVisibleEntryForCollection(db, collection.id)
       if (!entry) {
         return {
@@ -403,27 +575,30 @@ export const publicService = {
       }
 
       const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
-      await kvService.putSnapshot(kv, versionedKey, generatedSnapshot, dynamicTTL)
-
+      const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
       const tags = snapshotService.generateCacheTags(collection.id, entry.id, locale)
-      await snapshotService.storeCacheTags(db, versionedKey, tags)
+      await Promise.all([
+        kvService.putSnapshot(
+          kv,
+          versionedKey,
+          withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL }),
+          dynamicTTL
+        ),
+        snapshotService.storeCacheTags(db, versionedKey, tags),
+      ])
 
-      snapshot = generatedSnapshot
-    }
-
-    const { browserTTL, cdnTTL } = await resolveCacheHeaderTtls(db, collection.id)
-
-    return {
-      success: true,
-      data: {
-        payload: snapshot,
-        cache: {
-          cacheTag,
-          browserTTL,
-          cdnTTL,
-          debugHeaders: tracker.toHeaders(),
+      return {
+        success: true,
+        data: {
+          payload: generatedSnapshot,
+          cache: {
+            cacheTag,
+            browserTTL,
+            cdnTTL,
+            debugHeaders: tracker.toHeaders(),
+          },
         },
-      },
-    }
+      }
+    })
   },
 }

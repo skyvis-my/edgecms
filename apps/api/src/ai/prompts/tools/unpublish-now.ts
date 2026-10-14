@@ -1,4 +1,4 @@
-import { type } from 'arktype'
+import { Type, createSchema } from '@/shared/schemas/typebox'
 import { id } from '@/shared/schemas'
 
 /**
@@ -11,9 +11,11 @@ export const unpublishNowTool = {
   name: 'unpublishNow',
   description:
     'Unpublish an entry immediately, removing it from the public API and reverting it to draft status. Use this when the user wants to take content offline (e.g., "unpublish this post", "take this down", "revert to draft").',
-  parameters: type({
-    entryId: id,
-  }),
+  parameters: createSchema(
+    Type.Object({
+      entryId: id,
+    })
+  ),
 }
 
 export type UnpublishNowToolParams = typeof unpublishNowTool.parameters.infer

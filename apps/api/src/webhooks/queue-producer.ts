@@ -8,8 +8,10 @@
 import { eq } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/d1'
 import { webhooks } from '@/database/schema/webhooks.schema'
+import type { Database } from '@/database/db'
 import { logger } from '@/observability/logger'
 import type { EventType, WebhookEvent } from './event-bus'
+import { outboxRepository } from './outbox.repository'
 
 /**
  * Queue message format for webhook delivery.
@@ -85,6 +87,76 @@ export function invalidateWebhookSubscriptionCache(): void {
   invalidateSubscriptionCacheRef?.()
 }
 
+type WebhookRow = typeof webhooks.$inferSelect
+
+/**
+ * Map subscription rows to queue messages for an event.
+ *
+ * Single source of truth for tenant-scope filtering + message shaping.
+ * Returns null when the event scope is malformed (missing syncChannel).
+ */
+export function toQueueMessages(
+  subscriptionRows: WebhookRow[],
+  event: WebhookEvent
+): WebhookQueueMessage[] | null {
+  const eventScope = resolveEventTenantScope(event)
+  if (eventScope === null) {
+    return null
+  }
+  const deliverableWebhooks = subscriptionRows.filter((webhook) =>
+    canDeliver(webhook.tenantId, eventScope)
+  )
+  return deliverableWebhooks.map((webhook) => ({
+    webhookId: webhook.id,
+    eventPayload: event,
+    webhookUrl: webhook.url,
+    webhookSecret: webhook.secret,
+    webhookHeaders: webhook.headers as Record<string, string> | undefined,
+    maxRetries: normalizeQueueMaxRetries(webhook.retryMaxRetries),
+    timeout: webhook.retryTimeout,
+    tenantId: eventScope,
+  }))
+}
+
+/**
+ * Resolve queue messages for an event with a fresh subscription query
+ * (no cache). Used by the outbox relay sweeper; the live listener path
+ * below keeps its cached subscriptions.
+ */
+export async function buildMessagesForEvent(
+  db: Database,
+  event: WebhookEvent
+): Promise<WebhookQueueMessage[]> {
+  try {
+    const chain = db
+      .select()
+      .from(webhooks)
+      .where(eq(webhooks.enabled, true)) as unknown as {
+      all?: () => Promise<WebhookRow[]>
+    } & PromiseLike<WebhookRow[]>
+    const enabledWebhooks =
+      typeof chain.all === 'function' ? await chain.all() : await chain
+    const matching = enabledWebhooks.filter((webhook) =>
+      (webhook.events as EventType[]).includes(event.event)
+    )
+    const messages = toQueueMessages(matching, event)
+    if (messages === null) {
+      logger.warn('webhook_enqueue_malformed_scope_dropped', {
+        eventId: event.id,
+        eventType: event.event,
+      })
+      return []
+    }
+    return messages
+  } catch (error) {
+    logger.error('webhook_enqueue_failed', {
+      eventType: event.event,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return []
+  }
+}
+
 /**
  * Initialize the webhook queue producer.
  *
@@ -112,7 +184,6 @@ export function initWebhookProducer(
   queue: Queue<WebhookQueueMessage>
 ): void {
   const orm = drizzle(db)
-  type WebhookRow = typeof webhooks.$inferSelect
   let subscriptionsPromise: Promise<Map<EventType, WebhookRow[]>> | null = null
   let subscriptionsExpiresAt = 0
 
@@ -168,32 +239,31 @@ export function initWebhookProducer(
       try {
         const subscriptions = await getSubscriptions()
         const matchingWebhooks = subscriptions.get(event.event) ?? []
-        const eventScope = resolveEventTenantScope(event)
-        if (eventScope === null) {
+        const messages = toQueueMessages(matchingWebhooks, event)
+        if (messages === null) {
           logger.warn('webhook_enqueue_malformed_scope_dropped', {
             eventId: event.id,
             eventType: event.event,
           })
           return
         }
-        const deliverableWebhooks = matchingWebhooks.filter((webhook) =>
-          canDeliver(webhook.tenantId, eventScope)
-        )
-
-        const messages: WebhookQueueMessage[] = deliverableWebhooks.map((webhook) => ({
-            webhookId: webhook.id,
-            eventPayload: event,
-            webhookUrl: webhook.url,
-            webhookSecret: webhook.secret,
-            webhookHeaders: webhook.headers as Record<string, string> | undefined,
-            maxRetries: normalizeQueueMaxRetries(webhook.retryMaxRetries),
-            timeout: webhook.retryTimeout,
-            tenantId: eventScope,
-          }))
 
         for (let i = 0; i < messages.length; i += QUEUE_SEND_BATCH_SIZE) {
           const chunk = messages.slice(i, i + QUEUE_SEND_BATCH_SIZE)
           await queue.sendBatch(chunk.map((body) => ({ body })))
+        }
+
+        // Close the outbox loop: the engine wrote a pending row atomically
+        // with the command commit (linked via metadata.outboxEventId).
+        // Best-effort — a failure here leaves the row pending for the relay.
+        const outboxEventId = (event.data.metadata as { outboxEventId?: unknown } | undefined)
+          ?.outboxEventId
+        if (typeof outboxEventId === 'string' && outboxEventId.length > 0) {
+          try {
+            await outboxRepository.markSent(orm, outboxEventId)
+          } catch {
+            // Sweeper replays still-pending rows.
+          }
         }
       } catch (error) {
         // Log error but don't throw — we don't want webhook delivery failures

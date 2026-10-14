@@ -17,20 +17,12 @@ import { ErrorBanner } from '@/components/error-banner'
 import { AuthPageHeader } from '@/components/layout/auth-page-header'
 import { Main } from '@/components/layout/main'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import { formatBytes } from '@/features/assets/media-utils'
+import { ServiceMatrixCard } from './components/service-matrix-card'
+import { TenantFleetSection } from './components/tenant-fleet-section'
 import { setCurrentTenantSlug, useTenants } from '@/features/tenants/api'
-import type { WebhookDefinition } from '@/features/webhooks/api'
+import { edenGet } from '@/lib/eden-client'
 import { buildTenantAdminUrl } from '@/lib/tenant-route'
 import { cn } from '@/lib/utils'
 
@@ -68,17 +60,19 @@ type AssetUsageSummary = {
   totalBytes: number
 }
 
-type ApiEnvelope<T> =
-  | {
-      success: true
-      data: T
-    }
-  | {
-      success: false
-      error?: {
-        message?: string
-      }
-    }
+type WebhookStatusSummary = {
+  total: number
+  enabled: number
+  failed: number
+  pending: number
+  delivered: number
+}
+
+type DashboardSummary = {
+  stats: SystemStats
+  webhooks: WebhookStatusSummary
+  assets: AssetUsageSummary
+}
 
 function getSubsystemStatus(subsystem: HealthSubsystem | undefined) {
   if (!subsystem) return 'unknown'
@@ -156,25 +150,6 @@ function getServiceAction(status: string) {
   return 'Refresh health'
 }
 
-async function fetchDashboardJson<T>(path: string): Promise<T> {
-  const res = await fetch(path, { credentials: 'include' })
-  const payload = (await res.json()) as T | ApiEnvelope<T>
-
-  if (!res.ok) {
-    if (typeof payload === 'object' && payload !== null && 'success' in payload && !payload.success) {
-      throw new Error(payload.error?.message ?? 'Dashboard request failed')
-    }
-    throw new Error('Dashboard request failed')
-  }
-
-  if (typeof payload === 'object' && payload !== null && 'success' in payload) {
-    if (payload.success) return payload.data
-    throw new Error(payload.error?.message ?? 'Dashboard request failed')
-  }
-
-  return payload as T
-}
-
 function useHealth() {
   return useQuery<HealthStatus>({
     queryKey: ['health'],
@@ -190,28 +165,10 @@ function useHealth() {
   })
 }
 
-function useSystemStats() {
-  return useQuery<SystemStats>({
-    queryKey: ['dashboard', 'system-stats'],
-    queryFn: () => fetchDashboardJson<SystemStats>('/api/admin/system/stats'),
-    staleTime: 60 * 1000,
-    refetchInterval: 60 * 1000,
-  })
-}
-
-function useWebhookOverview() {
-  return useQuery<WebhookDefinition[]>({
-    queryKey: ['dashboard', 'webhook-overview'],
-    queryFn: () => fetchDashboardJson<WebhookDefinition[]>('/api/admin/webhooks'),
-    staleTime: 60 * 1000,
-    refetchInterval: 60 * 1000,
-  })
-}
-
-function useAssetUsage() {
-  return useQuery<AssetUsageSummary[]>({
-    queryKey: ['dashboard', 'asset-usage'],
-    queryFn: () => fetchDashboardJson<AssetUsageSummary[]>('/api/admin/assets/usage'),
+function useDashboardSummary() {
+  return useQuery<DashboardSummary>({
+    queryKey: ['dashboard', 'summary'],
+    queryFn: () => edenGet<DashboardSummary>('/admin/system/dashboard'),
     staleTime: 60 * 1000,
     refetchInterval: 60 * 1000,
   })
@@ -250,9 +207,21 @@ function TenantCardSkeleton() {
 export function DashboardPage() {
   const { data: tenants, isLoading: tenantsLoading, error: tenantsError } = useTenants()
   const { data: health, isLoading: healthLoading, error: healthError } = useHealth()
-  const { data: systemStats, isLoading: statsLoading, error: statsError } = useSystemStats()
-  const { data: webhooks, isLoading: webhooksLoading, error: webhooksError } = useWebhookOverview()
-  const { data: assetUsage, isLoading: assetUsageLoading, error: assetUsageError } = useAssetUsage()
+  const {
+    data: dashboardSummary,
+    isLoading: summaryLoading,
+    error: summaryError,
+  } = useDashboardSummary()
+
+  const systemStats = dashboardSummary?.stats
+  const webhooks = dashboardSummary?.webhooks
+  const assetUsage = dashboardSummary?.assets ? [dashboardSummary.assets] : undefined
+  const statsLoading = summaryLoading
+  const webhooksLoading = summaryLoading
+  const assetUsageLoading = summaryLoading
+  const statsError = summaryError
+  const webhooksError = summaryError
+  const assetUsageError = summaryError
 
   const totalTenants = tenants?.length ?? 0
   const activeTenants = tenants?.filter((t) => t.status === 'active').length ?? 0
@@ -267,15 +236,12 @@ export function DashboardPage() {
   const totalEntries = systemStats?.entries ?? 0
   const collectionCount = systemStats?.collections ?? 0
   const publishCoverage = totalEntries > 0 ? Math.round((publishedEntries / totalEntries) * 100) : 0
-  const webhookCount = webhooks?.length ?? 0
-  const enabledWebhooks = webhooks?.filter((webhook) => webhook.status === 'enabled').length ?? 0
-  const failedWebhooks =
-    webhooks?.filter((webhook) => webhook.lastDeliveryStatus === 'failed').length ?? 0
-  const pendingWebhooks =
-    webhooks?.filter((webhook) => webhook.lastDeliveryStatus === 'pending').length ?? 0
-  const deliveredWebhooks =
-    webhooks?.filter((webhook) => webhook.lastDeliveryStatus === 'delivered').length ?? 0
-  const staleTelemetryIssues = [statsError, webhooksError, healthError].filter(Boolean).length
+  const webhookCount = webhooks?.total ?? 0
+  const enabledWebhooks = webhooks?.enabled ?? 0
+  const failedWebhooks = webhooks?.failed ?? 0
+  const pendingWebhooks = webhooks?.pending ?? 0
+  const deliveredWebhooks = webhooks?.delivered ?? 0
+  const staleTelemetryIssues = [summaryError, healthError].filter(Boolean).length
   const topTenants = tenants
     ?.slice()
     .sort((a, b) => (b.userCount ?? 0) - (a.userCount ?? 0))
@@ -569,78 +535,14 @@ export function DashboardPage() {
         )}
 
         <div className='grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(320px,0.9fr)]'>
-          <Card>
-            <CardHeader className='flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between'>
-              <div>
-                <CardTitle className='text-base'>Service Matrix</CardTitle>
-                <p className='text-sm text-muted-foreground'>
-                  Live health from the Worker runtime probes.
-                </p>
-              </div>
-              <Badge variant={degradedServices.length === 0 ? 'default' : 'destructive'}>
-                {degradedServices.length === 0 ? 'All clear' : `${degradedServices.length} flagged`}
-              </Badge>
-            </CardHeader>
-            <CardContent>
-              {healthLoading ? (
-                <div className='space-y-3'>
-                  {Array.from({ length: 6 }).map((_, index) => (
-                    <Skeleton key={index} className='h-10 w-full' />
-                  ))}
-                </div>
-              ) : (
-                <div className='overflow-hidden rounded-md border'>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Service</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Latency</TableHead>
-                        <TableHead>Binding</TableHead>
-                        <TableHead>Action</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {serviceRows.map((service) => {
-                        const Icon = service.icon
-                        return (
-                          <TableRow key={service.key}>
-                            <TableCell>
-                              <div className='flex items-start gap-3'>
-                                <Icon className={cn('mt-0.5 h-4 w-4', getStatusTone(service.status))} />
-                                <div>
-                                  <div className='font-medium'>{service.name}</div>
-                                  <div className='text-xs text-muted-foreground'>
-                                    {service.owner} - {service.detail}
-                                  </div>
-                                </div>
-                              </div>
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant={getStatusBadgeVariant(service.status)} className='capitalize'>
-                                {service.status}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className='text-sm'>
-                              {service.latencyLabel ?? 'Probe only'}
-                            </TableCell>
-                            <TableCell>
-                              <code className='rounded bg-muted px-2 py-0.5 text-xs'>
-                                {service.binding}
-                              </code>
-                            </TableCell>
-                            <TableCell className='text-sm text-muted-foreground'>
-                              {getServiceAction(service.status)}
-                            </TableCell>
-                          </TableRow>
-                        )
-                      })}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          <ServiceMatrixCard
+            serviceRows={serviceRows}
+            degradedServicesCount={degradedServices.length}
+            healthLoading={healthLoading}
+            getStatusTone={getStatusTone}
+            getStatusBadgeVariant={getStatusBadgeVariant}
+            getServiceAction={getServiceAction}
+          />
 
           <div className='grid gap-4'>
             <Card>
@@ -898,128 +800,19 @@ export function DashboardPage() {
           </Card>
         </div>
 
-        <div className='grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.8fr)]'>
-          <Card>
-            <CardHeader className='flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between'>
-              <div>
-                <CardTitle className='text-base'>Tenant Workspaces</CardTitle>
-                <p className='text-sm text-muted-foreground'>
-                  Workspace access with user count, media usage, and operational status.
-                </p>
-              </div>
-              <Badge variant='outline'>
-                {assetUsageLoading
-                  ? `${totalTenantUsers} users`
-                  : `${formatBytes(totalMediaBytes)} / ${totalMediaAssets} assets`}
-              </Badge>
-            </CardHeader>
-            <CardContent>
-              {tenantsError && (
-                <ErrorBanner message='Failed to load tenants. Please try again.' />
-              )}
-
-              {tenantsLoading && (
-                <div className='grid gap-4 md:grid-cols-2'>
-                  <TenantCardSkeleton />
-                  <TenantCardSkeleton />
-                </div>
-              )}
-
-              {tenants && tenants.length === 0 && (
-                <div className='rounded-md border py-8 text-center'>
-                  <p className='text-muted-foreground'>
-                    No tenants found. Create first tenant to start operating EdgeCMS.
-                  </p>
-                </div>
-              )}
-
-              {tenants && tenants.length > 0 && (
-                <div className='grid gap-4 md:grid-cols-2'>
-                  {tenants.map((tenant) => {
-                    const usage = assetUsageByTenantId.get(tenant.id)
-                    const mediaBytesLabel = assetUsageLoading
-                      ? 'Loading media usage'
-                      : `${formatBytes(usage?.totalBytes ?? 0)} / ${usage?.assetCount ?? 0} assets`
-                    return (
-                      <Card key={tenant.id} className='bg-muted/20'>
-                        <CardHeader className='flex flex-row items-start justify-between pb-3'>
-                          <div className='space-y-1'>
-                            <CardTitle className='text-base'>{tenant.name}</CardTitle>
-                            <code className='rounded bg-muted px-2 py-0.5 text-xs'>{tenant.slug}</code>
-                          </div>
-                          <Badge variant={tenant.status === 'active' ? 'default' : 'secondary'}>
-                            {tenant.status}
-                          </Badge>
-                        </CardHeader>
-                        <CardContent>
-                          <div className='flex items-center justify-between gap-3'>
-                            <div className='space-y-1 text-sm text-muted-foreground'>
-                              <div className='flex items-center gap-1'>
-                                <Users className='h-3.5 w-3.5' />
-                                <span>{tenant.userCount ?? 0} users</span>
-                              </div>
-                              <div className='flex items-center gap-1'>
-                                <HardDrive className='h-3.5 w-3.5' />
-                                <span>{mediaBytesLabel}</span>
-                              </div>
-                              <div>Locale catalog: {tenant.localeCatalog.length}</div>
-                              <div>
-                                Upload cap: {formatBytes(tenant.mediaUploadMaxBytes)}, resize{' '}
-                                {tenant.mediaUploadMaxDimension}px
-                              </div>
-                            </div>
-                            <Button
-                              variant='outline'
-                              size='sm'
-                              onClick={() => openTenantWorkspace(tenant.slug)}
-                            >
-                              Open
-                            </Button>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    )
-                  })}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className='text-base'>Most Active Tenants</CardTitle>
-              <p className='text-sm text-muted-foreground'>
-                Top workspaces by assigned admin users.
-              </p>
-            </CardHeader>
-            <CardContent className='space-y-3'>
-              {tenantsLoading ? (
-                <>
-                  <Skeleton className='h-12 w-full' />
-                  <Skeleton className='h-12 w-full' />
-                  <Skeleton className='h-12 w-full' />
-                </>
-              ) : topTenants && topTenants.length > 0 ? (
-                topTenants.map((tenant, index) => (
-                  <div key={tenant.id} className='flex items-center justify-between rounded-md border p-3'>
-                    <div className='flex items-center gap-3'>
-                      <div className='flex h-7 w-7 items-center justify-center rounded-md bg-muted text-xs font-medium'>
-                        {index + 1}
-                      </div>
-                      <div>
-                        <div className='text-sm font-medium'>{tenant.name}</div>
-                        <div className='text-xs text-muted-foreground'>{tenant.slug}</div>
-                      </div>
-                    </div>
-                    <Badge variant='outline'>{tenant.userCount ?? 0} users</Badge>
-                  </div>
-                ))
-              ) : (
-                <p className='text-sm text-muted-foreground'>No tenant activity yet.</p>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+        <TenantFleetSection
+          tenants={tenants}
+          topTenants={topTenants}
+          tenantsLoading={tenantsLoading}
+          tenantsError={tenantsError}
+          totalTenantUsers={totalTenantUsers}
+          totalMediaBytes={totalMediaBytes}
+          totalMediaAssets={totalMediaAssets}
+          assetUsageLoading={assetUsageLoading}
+          assetUsageByTenantId={assetUsageByTenantId}
+          openTenantWorkspace={openTenantWorkspace}
+          TenantCardSkeleton={TenantCardSkeleton}
+        />
       </Main>
     </>
   )
