@@ -56,7 +56,7 @@ jobs:
 
       - name: Apply D1 migrations
         working-directory: apps/api
-        run: echo y | node scripts/cf.mjs d1 migrations apply \"$STAGING_D1_DATABASE_ID\" --dir drizzle/migrations
+        run: echo y | node scripts/cf.mjs d1 migrations apply $STAGING_D1_DATABASE_ID --dir drizzle/migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

@@ -77,6 +77,8 @@ describe('F08 — Packed consumer runtime qualification', () => {
     expect(typeof client.api.admin.collections.get).toBe('function')
   })
 
+  // Spawns a full tsc typecheck in a temp consumer project: slow CI runners
+  // exceed bun's 5s default test timeout, so allow 60s explicitly.
   it('typechecks a consumer project importing from @edgecms/runtime outside the monorepo', () => {
     const consumerDir = makeTempDir()
     const packageRoot = join(import.meta.dir, '..', '..')
@@ -168,5 +170,5 @@ export default {
     })
 
     expect(result.status, `tsc failed:\nSTDOUT:\n${result.stdout}\nSTDERR:\n${result.stderr}`).toBe(0)
-  })
+  }, 60000)
 })
