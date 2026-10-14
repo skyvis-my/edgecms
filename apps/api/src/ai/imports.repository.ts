@@ -79,12 +79,19 @@ export const aiImportsRepository = {
     return row
   },
 
-  async listSources(db: Database, batchId: string, tenantId?: string): Promise<AiImportSource[]> {
+  async listSources(
+    db: Database,
+    batchId: string,
+    tenantId?: string,
+    options: { limit?: number } = {}
+  ): Promise<AiImportSource[]> {
+    const limit = Math.min(100, Math.max(1, options.limit ?? 100))
     return db
       .select()
       .from(aiImportSources)
       .where(and(eq(aiImportSources.batchId, batchId), eq(aiImportSources.tenantId, tenantScope(tenantId))))
       .orderBy(desc(aiImportSources.createdAt))
+      .limit(limit)
   },
 
   async createSuggestionSet(

@@ -36,6 +36,14 @@ describe('tenant-context', () => {
     expect(result).toEqual({ db: { __db: true }, kv: env.CACHE, r2: env.MEDIA })
   })
 
+  it('resolveTenantBindings forwards sessionBookmark to createDb when specified', () => {
+    const env = { DB: {} as D1Database, CACHE: {} as KVNamespace, MEDIA: {} as R2Bucket }
+    const result = resolveTenantBindings(undefined, env, { sessionBookmark: 'bm-12345' })
+
+    expect(createDb).toHaveBeenCalledWith(env.DB, { sessionBookmark: 'bm-12345' })
+    expect(result).toEqual({ db: { __db: true }, kv: env.CACHE, r2: env.MEDIA })
+  })
+
   it('verifyTenantMembership maps found and missing memberships', async () => {
     findTenantUser.mockResolvedValueOnce({ role: 'admin' }).mockResolvedValueOnce(undefined)
 

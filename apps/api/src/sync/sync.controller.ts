@@ -1,4 +1,3 @@
-import { env } from 'cloudflare:workers'
 import { Elysia, t } from 'elysia'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
 import { hasSuperAdminRole, isSuperAdminEmail, parseSuperAdminEmails } from '@/auth/super-admin'
@@ -12,9 +11,11 @@ import {
   pullSyncChanges,
 } from '@/sync/sync.service'
 import { type SyncEvent, subscribeSyncEvents } from '@/sync/sync-events'
-import { hasTenantContext, resolveTenantBindings } from '@/tenants/tenant-context'
+import { withTenantBindings } from '@/tenants/with-tenant-bindings'
+import type { Database } from '@/database/db'
 import { tenantsRepository } from '@/tenants/tenants.repository'
 import { getRequestUrl } from '@/shared/utils/request-url'
+import { createErrorEnvelope } from '@/shared/utils/service-response'
 
 const MAX_PUSH_COMMANDS = 100
 const SSE_HEARTBEAT_MS = 25000
@@ -44,7 +45,7 @@ async function resolveGlobalSyncSelector(params: {
   tenantSlug: string | undefined
   user: SyncUserLike
   session: unknown
-  db: ReturnType<typeof resolveTenantBindings>['db']
+  db: Database
   workerEnv: Env
 }):
   Promise<
@@ -109,6 +110,7 @@ async function resolveGlobalSyncSelector(params: {
  */
 export const syncController = new Elysia({ prefix: '/api/admin/sync' })
   .use(betterAuthPlugin)
+  .use(withTenantBindings)
 
   /**
    * GET /pull — Pull changes since cursor.
@@ -125,63 +127,52 @@ export const syncController = new Elysia({ prefix: '/api/admin/sync' })
    * - cursor: number — New cursor value (last sequence in results, or same if empty)
    * - hasMore: boolean — Whether there are more changes beyond this batch
    */
-  .get(
-    '/pull',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const { query } = ctx
-      const cursor = query.cursor ?? 0
-      const limit = normalizeSyncPullLimit(query.limit)
-      let tenantScope = tenantCtx?.tenant.id
-      let includeAllTenants = false
-
-      if (!tenantCtx) {
-        const scope = await resolveGlobalSyncSelector({
-          tenantSlug: query.tenantSlug,
-          user: ctx.user as SyncUserLike,
-          session: (ctx as { session?: unknown }).session,
-          db,
-          workerEnv,
-        })
-        if (!scope.ok) {
-          ctx.set.status = scope.status
-          return {
-            success: false as const,
-            error: { code: scope.code, message: scope.message },
-          }
-        }
-        tenantScope = scope.tenantScope
-        includeAllTenants = scope.includeAllTenants
-      }
-
-      const pullPayload = await pullSyncChanges({
+  .get('/pull', {
+    auth: true,
+    query: t.Object({
+      cursor: t.Optional(t.Number({ minimum: 0 })),
+      limit: t.Optional(t.Number({ minimum: 1, maximum: MAX_SYNC_PULL_LIMIT })),
+      tenantSlug: t.Optional(t.String({ minLength: 1 })),
+    }),
+  }, async ({ db, query, set, user, session, workerEnv, tenantCtx }) => {
+    const cursor = query.cursor !== undefined ? Number(query.cursor) : 0
+    const limit = normalizeSyncPullLimit(query.limit !== undefined ? Number(query.limit) : undefined)
+    let tenantScope = tenantCtx?.tenant.id
+    let includeAllTenants = false
+  
+    if (!tenantCtx) {
+      const scope = await resolveGlobalSyncSelector({
+        tenantSlug: query.tenantSlug,
+        user: user as SyncUserLike,
+        session,
         db,
-        cursor,
-        limit,
-        tenantScope,
-        includeAllTenants,
+        workerEnv,
       })
-
-      incrementMetric('sync_pull_total', {
-        status: 'success',
-        hasMore: pullPayload.hasMore ? 'true' : 'false',
-      })
-      return {
-        success: true as const,
-        data: pullPayload,
+      if (!scope.ok) {
+        set.status = scope.status
+        return createErrorEnvelope(scope.code, scope.message)
       }
-    },
-    {
-      auth: true,
-      query: t.Object({
-        cursor: t.Optional(t.Number({ minimum: 0 })),
-        limit: t.Optional(t.Number({ minimum: 1, maximum: MAX_SYNC_PULL_LIMIT })),
-        tenantSlug: t.Optional(t.String({ minLength: 1 })),
-      }),
+      tenantScope = scope.tenantScope
+      includeAllTenants = scope.includeAllTenants
     }
-  )
+  
+    const pullPayload = await pullSyncChanges({
+      db,
+      cursor,
+      limit,
+      tenantScope,
+      includeAllTenants,
+    })
+  
+    incrementMetric('sync_pull_total', {
+      status: 'success',
+      hasMore: pullPayload.hasMore ? 'true' : 'false',
+    })
+    return {
+      success: true as const,
+      data: pullPayload,
+    }
+  })
 
   /**
    * GET /stream — Subscribe to sync change notifications via SSE.
@@ -189,112 +180,103 @@ export const syncController = new Elysia({ prefix: '/api/admin/sync' })
    * Clients keep this connection open and trigger immediate pulls when
    * receiving `change` events, reducing pull latency and unnecessary polling.
    */
-  .get(
-    '/stream',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      let syncChannel = tenantCtx?.tenant.id ?? 'global'
-
-      if (!tenantCtx) {
-        const tenantSlug = getRequestUrl(ctx.request).searchParams.get('tenantSlug') ?? undefined
-        const scope = await resolveGlobalSyncSelector({
-          tenantSlug,
-          user: ctx.user as SyncUserLike,
-          session: (ctx as { session?: unknown }).session,
-          db,
-          workerEnv,
-        })
-        if (!scope.ok) {
-          ctx.set.status = scope.status
-          return {
-            success: false as const,
-            error: { code: scope.code, message: scope.message },
+  .get('/stream', {
+    auth: true,
+  }, async (ctx) => {
+    const { db, workerEnv, tenantCtx } = ctx
+    let syncChannel = tenantCtx?.tenant.id ?? 'global'
+  
+    if (!tenantCtx) {
+      const tenantSlug = getRequestUrl(ctx.request).searchParams.get('tenantSlug') ?? undefined
+      const scope = await resolveGlobalSyncSelector({
+        tenantSlug,
+        user: ctx.user as SyncUserLike,
+        session: (ctx as { session?: unknown }).session,
+        db,
+        workerEnv,
+      })
+      if (!scope.ok) {
+        ctx.set.status = scope.status
+        return createErrorEnvelope(scope.code, scope.message)
+      }
+      syncChannel = scope.syncChannel
+    }
+    const encoder = new TextEncoder()
+    let closeStream = () => {}
+  
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        let closed = false
+        const pendingEvents: SyncEvent[] = []
+  
+        const sendEvent = (eventName: string, payload: Record<string, unknown>) => {
+          if (closed) return
+          controller.enqueue(
+            encoder.encode(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`)
+          )
+        }
+  
+        const flushPendingEvents = () => {
+          while (!closed && pendingEvents.length > 0) {
+            const event = pendingEvents.shift()
+            if (!event) break
+            sendEvent(event.type, event)
           }
         }
-        syncChannel = scope.syncChannel
-      }
-      const encoder = new TextEncoder()
-      let closeStream = () => {}
-
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          let closed = false
-          const pendingEvents: SyncEvent[] = []
-
-          const sendEvent = (eventName: string, payload: Record<string, unknown>) => {
-            if (closed) return
-            controller.enqueue(
-              encoder.encode(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`)
-            )
+  
+        const flush = setInterval(() => {
+          flushPendingEvents()
+        }, SSE_EVENT_FLUSH_MS)
+  
+        const heartbeat = setInterval(() => {
+          if (closed) return
+          flushPendingEvents()
+          controller.enqueue(encoder.encode(': keep-alive\n\n'))
+        }, SSE_HEARTBEAT_MS)
+  
+        const unsubscribe = subscribeSyncEvents((event) => {
+          if (closed) return
+          pendingEvents.push(event)
+        }, syncChannel)
+        const abortHandler = () => {
+          cleanup()
+        }
+  
+        const cleanup = () => {
+          if (closed) return
+          closed = true
+          clearInterval(flush)
+          clearInterval(heartbeat)
+          unsubscribe()
+          ctx.request.signal.removeEventListener('abort', abortHandler)
+          try {
+            controller.close()
+          } catch {
+            // Ignore close errors when stream is already closed/cancelled.
           }
-
-          const flushPendingEvents = () => {
-            while (!closed && pendingEvents.length > 0) {
-              const event = pendingEvents.shift()
-              if (!event) break
-              sendEvent(event.type, event)
-            }
-          }
-
-          const flush = setInterval(() => {
-            flushPendingEvents()
-          }, SSE_EVENT_FLUSH_MS)
-
-          const heartbeat = setInterval(() => {
-            if (closed) return
-            flushPendingEvents()
-            controller.enqueue(encoder.encode(': keep-alive\n\n'))
-          }, SSE_HEARTBEAT_MS)
-
-          const unsubscribe = subscribeSyncEvents((event) => {
-            if (closed) return
-            pendingEvents.push(event)
-          }, syncChannel)
-          const abortHandler = () => {
-            cleanup()
-          }
-
-          const cleanup = () => {
-            if (closed) return
-            closed = true
-            clearInterval(flush)
-            clearInterval(heartbeat)
-            unsubscribe()
-            ctx.request.signal.removeEventListener('abort', abortHandler)
-            try {
-              controller.close()
-            } catch {
-              // Ignore close errors when stream is already closed/cancelled.
-            }
-          }
-
-          closeStream = cleanup
-          ctx.request.signal.addEventListener('abort', abortHandler)
-
-          sendEvent('connected', {
-            type: 'connected',
-            timestamp: new Date().toISOString(),
-          })
-        },
-        cancel() {
-          closeStream()
-        },
-      })
-
-      return new Response(stream, {
-        headers: {
-          'Content-Type': 'text/event-stream; charset=utf-8',
-          'Cache-Control': 'no-cache, no-transform',
-          Connection: 'keep-alive',
-        },
-      })
-    },
-    {
-      auth: true,
-    }
-  )
+        }
+  
+        closeStream = cleanup
+        ctx.request.signal.addEventListener('abort', abortHandler)
+  
+        sendEvent('connected', {
+          type: 'connected',
+          timestamp: new Date().toISOString(),
+        })
+      },
+      cancel() {
+        closeStream()
+      },
+    })
+  
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive',
+      },
+    })
+  })
 
   /**
    * POST /push — Push offline commands.
@@ -312,74 +294,61 @@ export const syncController = new Elysia({ prefix: '/api/admin/sync' })
    *   - 'conflict': Optimistic version mismatch (client is out of date)
    *   - 'failed': Command execution failed
    */
-  .post(
-    '/push',
-    async (elysiaCtx) => {
-      const { body, user, set } = elysiaCtx
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(elysiaCtx) ? elysiaCtx.tenant : undefined
-      const { db, kv } = resolveTenantBindings(tenantCtx, workerEnv)
-      const syncChannel = tenantCtx?.tenant.id ?? 'global'
-      const { commands } = body
-
-      if (!commands || commands.length === 0) {
-        set.status = 400
-        return {
-          success: false as const,
-          error: {
-            code: 'VALIDATION_ERROR',
-            message: 'Request body must contain a non-empty "commands" array',
-          },
-        }
-      }
-
-      if (commands.length > MAX_PUSH_COMMANDS) {
-        set.status = 400
-        return {
-          success: false as const,
-          error: {
-            code: 'VALIDATION_ERROR',
-            message: `Too many commands in one sync push. Max allowed: ${MAX_PUSH_COMMANDS}`,
-          },
-        }
-      }
-
-      const results = await executeSyncPushCommands({
-        commands,
-        userId: user.id,
-        db,
-        kv,
-        syncChannel,
-        executeCommandFn: executeCommand,
-      })
-
-      incrementMetric('sync_push_total', {
-        status: results.every((r) => r.status === 'success') ? 'success' : 'mixed',
-      })
-      return {
-        success: true as const,
-        data: { results },
-      }
-    },
-    {
-      auth: true,
-      body: t.Object({
-        commands: t.Array(
-          t.Object({
-            type: t.String(),
-            payload: t.Record(t.String(), t.Unknown()),
-            actor: t.Optional(
-              t.Object({
-                userId: t.String(),
-                source: t.String(),
-              })
-            ),
-            timestamp: t.Optional(t.String()),
-            optimisticVersion: t.Optional(t.Number()),
-            dryRun: t.Optional(t.Boolean()),
-            transactionId: t.Optional(t.String()),
-          })
-        ),
-      }),
+  .post('/push', {
+    auth: true,
+    body: t.Object({
+      commands: t.Array(
+        t.Object({
+          type: t.String(),
+          payload: t.Record(t.String(), t.Unknown()),
+          actor: t.Optional(
+            t.Object({
+              userId: t.String(),
+              source: t.String(),
+            })
+          ),
+          timestamp: t.Optional(t.String()),
+          optimisticVersion: t.Optional(t.Number()),
+          dryRun: t.Optional(t.Boolean()),
+          transactionId: t.Optional(t.String()),
+        })
+      ),
+    }),
+  }, async (elysiaCtx) => {
+    const { body, user, set, db, kv, tenantCtx } = elysiaCtx
+    const syncChannel = tenantCtx?.tenant.id ?? 'global'
+    const { commands } = body
+  
+    if (!commands || commands.length === 0) {
+      set.status = 400
+      return createErrorEnvelope(
+        'VALIDATION_ERROR',
+        'Request body must contain a non-empty "commands" array'
+      )
     }
-  )
+
+    if (commands.length > MAX_PUSH_COMMANDS) {
+      set.status = 400
+      return createErrorEnvelope(
+        'VALIDATION_ERROR',
+        `Too many commands in one sync push. Max allowed: ${MAX_PUSH_COMMANDS}`
+      )
+    }
+  
+    const results = await executeSyncPushCommands({
+      commands,
+      userId: user.id,
+      db,
+      kv,
+      syncChannel,
+      executeCommandFn: executeCommand,
+    })
+  
+    incrementMetric('sync_push_total', {
+      status: results.every((r) => r.status === 'success') ? 'success' : 'mixed',
+    })
+    return {
+      success: true as const,
+      data: { results },
+    }
+  })

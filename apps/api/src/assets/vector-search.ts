@@ -75,24 +75,28 @@ async function createEmbedding(workerEnv: Env, input: string): Promise<number[] 
     return null
   }
 
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${workerEnv.CLOUDFLARE_ACCOUNT_ID}/ai/run/${EMBEDDING_MODEL}`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${workerEnv.CF_API_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ text: [input] }),
-    }
-  )
+  try {
+    const response = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${workerEnv.CLOUDFLARE_ACCOUNT_ID}/ai/run/${EMBEDDING_MODEL}`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${workerEnv.CF_API_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text: [input] }),
+      }
+    )
 
-  if (!response.ok) {
+    if (!response.ok) {
+      return null
+    }
+
+    const payload = (await response.json()) as unknown
+    return extractEmbedding(payload)
+  } catch {
     return null
   }
-
-  const payload = (await response.json()) as unknown
-  return extractEmbedding(payload)
 }
 
 function buildSearchText(asset: Pick<AssetRow, 'filename' | 'mimeType'>): string {
@@ -174,11 +178,15 @@ export async function searchAssetVectorIds(
     ) => Promise<{ matches?: Array<{ id: string; score?: number }> }>
   }
 
-  const result = await index.query(embedding, {
-    topK: input.topK,
-    returnMetadata: false,
-    filter: { tenantId: tenantId ?? 'global' },
-  })
+  try {
+    const result = await index.query(embedding, {
+      topK: input.topK,
+      returnMetadata: false,
+      filter: { tenantId: tenantId ?? 'global' },
+    })
 
-  return (result.matches ?? []).filter((match) => typeof match.id === 'string')
+    return (result?.matches ?? []).filter((match) => typeof match?.id === 'string')
+  } catch {
+    return []
+  }
 }

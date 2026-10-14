@@ -1,4 +1,4 @@
-import { type } from 'arktype'
+import { Type, createSchema } from '@/shared/schemas/typebox'
 import { id, timestamp } from '@/shared/schemas'
 
 /**
@@ -12,10 +12,12 @@ export const schedulePublishTool = {
   name: 'schedulePublish',
   description:
     'Schedule an entry to be published at a specific future date and time. Use this when the user wants to publish content later (e.g., "publish this post tomorrow at 9am", "schedule this announcement for next Monday", "make this live on Friday").',
-  parameters: type({
-    entryId: id,
-    publishAt: timestamp,
-  }),
+  parameters: createSchema(
+    Type.Object({
+      entryId: id,
+      publishAt: timestamp,
+    })
+  ),
 }
 
 export type SchedulePublishToolParams = typeof schedulePublishTool.parameters.infer

@@ -46,7 +46,7 @@ describe('versioningRepository', () => {
       const result = await versioningRepository.findEntryById(db, 'entry-1')
 
       expect(result).toEqual(entry)
-      expect(mockEntriesRepository.findById).toHaveBeenCalledWith(db, 'entry-1')
+      expect(mockEntriesRepository.findById).toHaveBeenCalledWith(db, 'entry-1', undefined)
     })
 
     it('returns undefined when entry does not exist', async () => {

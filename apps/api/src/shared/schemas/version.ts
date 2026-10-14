@@ -1,4 +1,4 @@
-import { type } from 'arktype'
+import { Type, createSchema } from './typebox'
 import { id, timestamp } from './common'
 
 /**
@@ -10,55 +10,69 @@ import { id, timestamp } from './common'
 /**
  * A version snapshot of an entry at a specific point in time.
  */
-export const entryVersion = type({
-  id,
-  entryId: id,
-  version: 'number.integer >= 1',
-  data: 'Record<string, unknown> | null',
-  createdBy: type('string | null'),
-  createdAt: timestamp,
-})
+export const entryVersion = createSchema(
+  Type.Object({
+    id,
+    entryId: id,
+    version: Type.Integer({ minimum: 1 }),
+    data: Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()]),
+    createdBy: Type.Union([Type.String(), Type.Null()]),
+    createdAt: timestamp,
+  })
+)
 
 export type EntryVersion = typeof entryVersion.infer
 
 /**
  * Diff action type.
  */
-export const diffAction = type("'add' | 'update' | 'remove'")
+export const diffAction = createSchema(
+  Type.Union([
+    Type.Literal('add'),
+    Type.Literal('update'),
+    Type.Literal('remove'),
+  ])
+)
 
 export type DiffAction = typeof diffAction.infer
 
 /**
  * A single field-level diff entry between two versions.
  */
-export const versionDiffEntry = type({
-  field: 'string',
-  before: 'unknown',
-  after: 'unknown',
-  action: diffAction,
-})
+export const versionDiffEntry = createSchema(
+  Type.Object({
+    field: Type.String(),
+    before: Type.Unknown(),
+    after: Type.Unknown(),
+    action: diffAction,
+  })
+)
 
 export type VersionDiffEntry = typeof versionDiffEntry.infer
 
 /**
  * Paginated list of versions.
  */
-export const versionListResponse = type({
-  versions: entryVersion.array(),
-  total: 'number.integer >= 0',
-  page: 'number.integer >= 1',
-  perPage: 'number.integer >= 1',
-})
+export const versionListResponse = createSchema(
+  Type.Object({
+    versions: Type.Array(entryVersion),
+    total: Type.Integer({ minimum: 0 }),
+    page: Type.Integer({ minimum: 1 }),
+    perPage: Type.Integer({ minimum: 1 }),
+  })
+)
 
 export type VersionListResponse = typeof versionListResponse.infer
 
 /**
  * Response for rollback operation.
  */
-export const rollbackResponse = type({
-  entry: 'Record<string, unknown>',
-  newVersion: entryVersion,
-  message: 'string',
-})
+export const rollbackResponse = createSchema(
+  Type.Object({
+    entry: Type.Record(Type.String(), Type.Unknown()),
+    newVersion: entryVersion,
+    message: Type.String(),
+  })
+)
 
 export type RollbackResponse = typeof rollbackResponse.infer

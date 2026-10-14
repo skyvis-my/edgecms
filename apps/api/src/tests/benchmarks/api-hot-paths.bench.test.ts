@@ -542,8 +542,8 @@ function installBenchmarkModuleMocks(): void {
     },
   }))
 
-  mock.module('@/plugins/plugin-registry', () => ({
-    pluginRegistry: {
+  mock.module('@/plugins/plugin-registry', () => {
+    const mockReg = {
       register: vi.fn(),
       execute: vi.fn(async () => undefined),
       isPluginEnabled: vi.fn(async () => true),
@@ -551,8 +551,12 @@ function installBenchmarkModuleMocks(): void {
       setHookTimeoutMs: vi.fn(),
       getHookTimeoutMs: vi.fn(() => 250),
       clear: vi.fn(),
-    },
-  }))
+    }
+    return {
+      createPluginRegistry: vi.fn(() => mockReg),
+      pluginRegistry: mockReg,
+    }
+  })
 
   mock.module('@/sync/sync.service', () => mockSyncService)
 
@@ -563,6 +567,7 @@ function installBenchmarkModuleMocks(): void {
 
 type AppInstance = {
   handle: (request: Request) => Promise<Response>
+  routes?: Array<{ method: string; path: string }>
   router?: {
     history?: Array<{ method: string; path: string }>
   }
@@ -583,7 +588,8 @@ async function importCreateApp(): Promise<() => AppInstance> {
 }
 
 function routeSignatures(app: AppInstance): string[] {
-  return (app.router?.history ?? []).map((route) => `${route.method} ${route.path}`)
+  const routes = app.routes ?? app.router?.history ?? []
+  return routes.map((route) => `${route.method} ${route.path}`)
 }
 
 function sampleManifestPath(path: string): string {
@@ -822,7 +828,7 @@ describe('API in-process benchmark contract', () => {
       {
         name: 'GET /api/admin/entries mocked admin read full app',
         expectedStatus: 200,
-        request: () => new Request('http://localhost/api/admin/entries?populate=author&depth=1'),
+        request: () => new Request('http://localhost/api/tenants/acme/api/admin/entries?populate=author&depth=1'),
         assertResponse: (_response, body) => {
           expectSuccessEnvelope(body)
           expect(mockEntriesService.findAllWithLocaleAndPopulate).toHaveBeenCalled()
@@ -839,7 +845,7 @@ describe('API in-process benchmark contract', () => {
       {
         name: 'GET /api/admin/entries/:entryId mocked admin read full app',
         expectedStatus: 200,
-        request: () => new Request('http://localhost/api/admin/entries/entry-1'),
+        request: () => new Request('http://localhost/api/tenants/acme/api/admin/entries/entry-1'),
       },
       {
         name: 'POST /api/admin/entries mocked admin create full app',
@@ -883,7 +889,7 @@ describe('API in-process benchmark contract', () => {
       {
         name: 'GET /api/admin/collections mocked admin read full app',
         expectedStatus: 200,
-        request: () => new Request('http://localhost/api/admin/collections'),
+        request: () => new Request('http://localhost/api/tenants/acme/api/admin/collections'),
         assertResponse: (_response, body) => {
           expectSuccessEnvelope(body)
           expect(mockCollectionsService.findAll).toHaveBeenCalled()
@@ -892,7 +898,7 @@ describe('API in-process benchmark contract', () => {
       {
         name: 'GET /api/admin/collections/:collectionIdOrSlug mocked admin read full app',
         expectedStatus: 200,
-        request: () => new Request('http://localhost/api/admin/collections/collection-1'),
+        request: () => new Request('http://localhost/api/tenants/acme/api/admin/collections/collection-1'),
       },
       {
         name: 'POST /api/admin/collections mocked admin create full app',
@@ -1053,12 +1059,12 @@ describe('API in-process benchmark contract', () => {
       {
         name: 'GET /api/admin/assets mocked metadata read full app',
         expectedStatus: 200,
-        request: () => new Request('http://localhost/api/admin/assets'),
+        request: () => new Request('http://localhost/api/tenants/acme/api/admin/assets'),
       },
       {
         name: 'GET /api/admin/assets/:assetId mocked metadata read full app',
         expectedStatus: 200,
-        request: () => new Request('http://localhost/api/admin/assets/asset-1'),
+        request: () => new Request('http://localhost/api/tenants/acme/api/admin/assets/asset-1'),
       },
       {
         name: 'PUT /api/admin/assets/:assetId mocked metadata update full app',

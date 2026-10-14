@@ -56,7 +56,7 @@ export const aiImportSources = sqliteTable(
     createdAt: text('created_at').notNull(),
   },
   (table) => [
-    index('ai_import_sources_tenant_batch_idx').on(table.tenantId, table.batchId),
+    index('ai_import_sources_batch_tenant_idx').on(table.batchId, table.tenantId, table.createdAt),
     index('ai_import_sources_tenant_hash_idx').on(table.tenantId, table.hash),
   ]
 )
@@ -83,7 +83,7 @@ export const aiSuggestionSets = sqliteTable(
     updatedAt: text('updated_at').notNull(),
   },
   (table) => [
-    index('ai_suggestion_sets_tenant_batch_idx').on(table.tenantId, table.batchId),
+    index('ai_suggestion_sets_batch_tenant_idx').on(table.batchId, table.tenantId, table.createdAt),
     index('ai_suggestion_sets_tenant_status_idx').on(table.tenantId, table.status),
   ]
 )
@@ -115,7 +115,12 @@ export const aiSuggestions = sqliteTable(
     updatedAt: text('updated_at').notNull(),
   },
   (table) => [
-    index('ai_suggestions_tenant_set_idx').on(table.tenantId, table.suggestionSetId),
+    index('ai_suggestions_set_tenant_idx').on(
+      table.suggestionSetId,
+      table.tenantId,
+      table.status,
+      table.createdAt
+    ),
     index('ai_suggestions_tenant_status_idx').on(table.tenantId, table.status),
   ]
 )
@@ -136,7 +141,7 @@ export const aiToolInvocations = sqliteTable(
     createdAt: text('created_at').notNull(),
   },
   (table) => [
-    index('ai_tool_invocations_tenant_batch_idx').on(table.tenantId, table.batchId),
+    index('ai_tool_invocations_batch_tenant_idx').on(table.batchId, table.tenantId),
     index('ai_tool_invocations_tenant_tool_idx').on(table.tenantId, table.toolName),
   ]
 )

@@ -1,71 +1,97 @@
-import { type } from 'arktype'
+import { Type, createSchema } from './typebox'
 
-export const editorialStatus = type("'draft' | 'review' | 'scheduled' | 'published' | 'archived'")
+export const editorialStatus = createSchema(
+  Type.Union([
+    Type.Literal('draft'),
+    Type.Literal('review'),
+    Type.Literal('scheduled'),
+    Type.Literal('published'),
+    Type.Literal('archived'),
+  ])
+)
 
-export const duplicateEntryRequest = type({
-  sourceEntryId: 'string > 0',
-  tenantSlug: 'string > 0',
-  targetSlug: 'string > 0',
-  'copyReviewAssignment?': 'boolean',
-})
+export const duplicateEntryRequest = createSchema(
+  Type.Object({
+    sourceEntryId: Type.String({ minLength: 1 }),
+    tenantSlug: Type.String({ minLength: 1 }),
+    targetSlug: Type.String({ minLength: 1 }),
+    copyReviewAssignment: Type.Optional(Type.Boolean()),
+  })
+)
 
-export const autosaveDraftRequest = type({
-  entryId: 'string > 0',
-  tenantSlug: 'string > 0',
-  baseVersion: 'number.integer >= 0',
-  draftVersion: 'number.integer >= 0',
-  data: 'Record<string, unknown>',
-})
+export const autosaveDraftRequest = createSchema(
+  Type.Object({
+    entryId: Type.String({ minLength: 1 }),
+    tenantSlug: Type.String({ minLength: 1 }),
+    baseVersion: Type.Integer({ minimum: 0 }),
+    draftVersion: Type.Integer({ minimum: 0 }),
+    data: Type.Record(Type.String(), Type.Unknown()),
+  })
+)
 
-export const autosaveDraftConflict = type({
-  entryId: 'string > 0',
-  tenantSlug: 'string > 0',
-  clientBaseVersion: 'number.integer >= 0',
-  serverDraftVersion: 'number.integer >= 0',
-})
+export const autosaveDraftConflict = createSchema(
+  Type.Object({
+    entryId: Type.String({ minLength: 1 }),
+    tenantSlug: Type.String({ minLength: 1 }),
+    clientBaseVersion: Type.Integer({ minimum: 0 }),
+    serverDraftVersion: Type.Integer({ minimum: 0 }),
+  })
+)
 
-export const previewTokenRequest = type({
-  entryId: 'string > 0',
-  tenantSlug: 'string > 0',
-  expiresAt: 'string.date.iso',
-  secretRef: 'string > 0',
-})
+export const previewTokenRequest = createSchema(
+  Type.Object({
+    entryId: Type.String({ minLength: 1 }),
+    tenantSlug: Type.String({ minLength: 1 }),
+    expiresAt: Type.String({ minLength: 1 }),
+    secretRef: Type.String({ minLength: 1 }),
+  })
+)
 
-export const reviewAssignment = type({
-  entryId: 'string > 0',
-  tenantSlug: 'string > 0',
-  reviewerId: 'string > 0',
-  'note?': 'string',
-})
+export const reviewAssignment = createSchema(
+  Type.Object({
+    entryId: Type.String({ minLength: 1 }),
+    tenantSlug: Type.String({ minLength: 1 }),
+    reviewerId: Type.String({ minLength: 1 }),
+    note: Type.Optional(Type.String()),
+  })
+)
 
-export const reviewTransition = type({
-  entryId: 'string > 0',
-  tenantSlug: 'string > 0',
-  fromStatus: editorialStatus,
-  toStatus: editorialStatus,
-  actorId: 'string > 0',
-})
+export const reviewTransition = createSchema(
+  Type.Object({
+    entryId: Type.String({ minLength: 1 }),
+    tenantSlug: Type.String({ minLength: 1 }),
+    fromStatus: editorialStatus,
+    toStatus: editorialStatus,
+    actorId: Type.String({ minLength: 1 }),
+  })
+)
 
-export const scheduleWindow = type({
-  entryId: 'string > 0',
-  tenantSlug: 'string > 0',
-  'publishAt?': 'string.date.iso',
-  'unpublishAt?': 'string.date.iso',
-})
+export const scheduleWindow = createSchema(
+  Type.Object({
+    entryId: Type.String({ minLength: 1 }),
+    tenantSlug: Type.String({ minLength: 1 }),
+    publishAt: Type.Optional(Type.String({ minLength: 1 })),
+    unpublishAt: Type.Optional(Type.String({ minLength: 1 })),
+  })
+)
 
-export const versionRestoreRequest = type({
-  entryId: 'string > 0',
-  tenantSlug: 'string > 0',
-  actorId: 'string > 0',
-  version: 'number.integer > 0',
-})
+export const versionRestoreRequest = createSchema(
+  Type.Object({
+    entryId: Type.String({ minLength: 1 }),
+    tenantSlug: Type.String({ minLength: 1 }),
+    actorId: Type.String({ minLength: 1 }),
+    version: Type.Integer({ minimum: 1 }),
+  })
+)
 
-export const versionDiffRequest = type({
-  entryId: 'string > 0',
-  tenantSlug: 'string > 0',
-  fromVersion: 'number.integer > 0',
-  toVersion: 'number.integer > 0',
-})
+export const versionDiffRequest = createSchema(
+  Type.Object({
+    entryId: Type.String({ minLength: 1 }),
+    tenantSlug: Type.String({ minLength: 1 }),
+    fromVersion: Type.Integer({ minimum: 1 }),
+    toVersion: Type.Integer({ minimum: 1 }),
+  })
+)
 
 export type EditorialStatus = typeof editorialStatus.infer
 export type AutosaveDraftRequest = typeof autosaveDraftRequest.infer

@@ -20,10 +20,7 @@ const mockGenerateText = vi.fn()
 vi.mock('ai', () => ({
   generateText: mockGenerateText,
   tool: vi.fn((opts) => opts),
-}))
-
-vi.mock('../../ai/adapters/arktype-to-zod', () => ({
-  arktypeToZod: vi.fn(() => ({})),
+  jsonSchema: vi.fn((opts) => opts),
 }))
 
 vi.mock('../../ai/providers/registry', () => ({

@@ -7,6 +7,14 @@ import { tenantsRepository } from './tenants.repository'
  */
 const CF_API_BASE = 'https://api.cloudflare.com/client/v4'
 
+/** 404 / not-found from CF API means the resource is already gone — treat as success. */
+function isNotFoundError(data: CloudflareApiResponse, httpStatus: number): boolean {
+  if (httpStatus === 404) return true
+  return (data.errors ?? []).some(
+    (e) => e.code === 10006 || e.code === 404 || /not found|no such|does not exist/i.test(e.message ?? '')
+  )
+}
+
 /**
  * Cloudflare API response structure.
  */
@@ -319,6 +327,9 @@ export async function deprovisionD1(
 
   if (!data.success) {
     const errorMsg = data.errors?.[0]?.message || 'Unknown error'
+    // Idempotent delete: already-gone resources (404) count as success so
+    // retries never get stuck half-deprovisioned.
+    if (isNotFoundError(data, response.status)) return
     throw new Error(`Failed to deprovision D1 database: ${errorMsg}`)
   }
 }
@@ -345,6 +356,7 @@ export async function deprovisionKV(
 
   if (!data.success) {
     const errorMsg = data.errors?.[0]?.message || 'Unknown error'
+    if (isNotFoundError(data, response.status)) return
     throw new Error(`Failed to deprovision KV namespace: ${errorMsg}`)
   }
 }
@@ -371,6 +383,7 @@ export async function deprovisionR2(
 
   if (!data.success) {
     const errorMsg = data.errors?.[0]?.message || 'Unknown error'
+    if (isNotFoundError(data, response.status)) return
     throw new Error(`Failed to deprovision R2 bucket: ${errorMsg}`)
   }
 }

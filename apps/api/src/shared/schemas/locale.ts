@@ -1,4 +1,4 @@
-import { type } from 'arktype'
+import { Type, createSchema } from './typebox'
 
 /**
  * Locale-related schemas for EdgeCMS i18n support.
@@ -18,7 +18,9 @@ import { type } from 'arktype'
  *
  * Pattern: lowercase letters, followed by optional hyphen-separated segments.
  */
-export const locale = type(/^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2})?$/)
+export const locale = createSchema(
+  Type.RegExp(/^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2})?$/)
+)
 
 export type Locale = typeof locale.infer
 
@@ -30,7 +32,9 @@ export type Locale = typeof locale.infer
  * Used for fields with localizable: true in the collection definition.
  * The keys should be BCP 47 locale codes from the collection's supportedLocales.
  */
-export const localizedValue = type('Record<string, unknown>')
+export const localizedValue = createSchema(
+  Type.Record(Type.String(), Type.Unknown())
+)
 
 export type LocalizedValue = typeof localizedValue.infer
 
@@ -40,6 +44,8 @@ export type LocalizedValue = typeof localizedValue.infer
  * When provided, the API will flatten localized fields to show only
  * the requested locale's values, falling back to the collection's defaultLocale.
  */
-export const localeQueryParam = type('string | undefined')
+export const localeQueryParam = createSchema(
+  Type.Optional(Type.String())
+)
 
 export type LocaleQueryParam = typeof localeQueryParam.infer

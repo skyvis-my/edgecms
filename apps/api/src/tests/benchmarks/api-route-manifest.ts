@@ -79,7 +79,7 @@ export const API_ROUTE_MANIFEST: ApiRouteManifestEntry[] = [
   { method: 'OPTIONS', path: '/*', source: 'apps/api/src/app.ts', routeClass: 'core', benchmarkStatus: 'included' },
   { method: 'GET', path: '/api', source: 'apps/api/src/app.ts', routeClass: 'core', benchmarkStatus: 'included' },
   { method: 'GET', path: '/api/health', source: 'apps/api/src/app.ts', routeClass: 'core', benchmarkStatus: 'included' },
-  { method: 'GET', path: '/api/docs', source: '@elysiajs/openapi', routeClass: 'core', benchmarkStatus: 'special-class', security: { authRequired: false, authorizationCheckRequired: false, csrfRequired: false, corsSurface: 'admin' }, notes: 'OpenAPI plugin route.' },
+  { method: 'GET', path: '/api/docs', source: '@elysia/openapi', routeClass: 'core', benchmarkStatus: 'special-class', security: { authRequired: false, authorizationCheckRequired: false, csrfRequired: false, corsSurface: 'admin' }, notes: 'OpenAPI plugin route.' },
   { method: 'GET', path: '/api/csrf', source: 'apps/api/src/app.ts', routeClass: 'auth-generated', benchmarkStatus: 'included', notes: 'Mints signed double-submit token for admin client writes.' },
   { method: 'GET', path: '/api/bootstrap/status', source: 'apps/api/src/app.ts', routeClass: 'core', benchmarkStatus: 'included', security: { authRequired: false, authorizationCheckRequired: false, csrfRequired: false, corsSurface: 'admin' } },
   { method: 'POST', path: '/api/bootstrap/provision-tenant', source: 'apps/api/src/app.ts', routeClass: 'admin', benchmarkStatus: 'included', security: { authRequired: true, authorizationCheckRequired: false, csrfRequired: false, corsSurface: 'admin' } },

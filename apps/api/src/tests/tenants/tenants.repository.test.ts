@@ -245,26 +245,34 @@ function createDbMock(opts: { selectResults: unknown[]; returningResults: unknow
       return Promise.resolve(result)
     }
 
-    return {
-      from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          limit: vi.fn().mockImplementation(resolveResult),
-          all: vi.fn().mockImplementation(resolveResult),
-        }),
-        innerJoin: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            all: vi.fn().mockImplementation(resolveResult),
-          }),
-        }),
-        leftJoin: vi.fn().mockReturnValue({
-          all: vi.fn().mockImplementation(resolveResult),
-        }),
-        groupBy: vi.fn().mockReturnValue({
-          as: vi.fn().mockReturnValue({}),
-        }),
-        all: vi.fn().mockImplementation(resolveResult),
-      }),
+    // Fully chainable thenable: every clause returns the chain itself so any
+    // Drizzle clause order (where/orderBy/limit/offset/innerJoin/leftJoin/
+    // groupBy, awaited directly or via .all()) resolves to the canned rows.
+    const chainBase = {
+      from: vi.fn(),
+      where: vi.fn(),
+      orderBy: vi.fn(),
+      limit: vi.fn(),
+      offset: vi.fn(),
+      innerJoin: vi.fn(),
+      leftJoin: vi.fn(),
+      groupBy: vi.fn(),
+      all: vi.fn().mockImplementation(resolveResult),
+      as: vi.fn().mockReturnValue({}),
     }
+    const awaitable = result instanceof Error ? Promise.reject(result) : Promise.resolve(result)
+    // Avoid unhandled-rejection noise when only .all() is awaited.
+    awaitable.catch(() => {})
+    const chain = Object.assign(awaitable, chainBase)
+    chainBase.from.mockReturnValue(chain)
+    chainBase.where.mockReturnValue(chain)
+    chainBase.orderBy.mockReturnValue(chain)
+    chainBase.limit.mockReturnValue(chain)
+    chainBase.offset.mockReturnValue(chain)
+    chainBase.innerJoin.mockReturnValue(chain)
+    chainBase.leftJoin.mockReturnValue(chain)
+    chainBase.groupBy.mockReturnValue(chain)
+    return chain
   })
 
   const mutationChain = {

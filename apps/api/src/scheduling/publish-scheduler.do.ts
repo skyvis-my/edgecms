@@ -218,6 +218,10 @@ export class PublishScheduler {
           source: 'scheduler' as const,
         },
         kv: this.env.CACHE,
+        env: this.env,
+        // Thread tenant scope + sync channel from the queued transition.
+        tenantScope: transition.tenantScope,
+        syncChannel: transition.tenantScope ?? 'global',
       },
       {
         type: commandType,
@@ -229,19 +233,23 @@ export class PublishScheduler {
           source: 'scheduler',
         },
         timestamp: new Date().toISOString(),
+        // Idempotency: same entry+time+type retries collapse to one execution.
+        idempotencyKey: `sched_${transition.entryId}_${transition.scheduledAt}_${transition.transitionType}`,
       }
     )
 
     if (transition.collectionSlug) {
       const locales = transition.locales && transition.locales.length > 0 ? transition.locales : ['en']
-      for (const locale of locales) {
-        await kvService.incrementVersion(
-          this.env.CACHE,
-          transition.collectionSlug,
-          locale,
-          transition.tenantScope
+      await Promise.all(
+        locales.map((locale) =>
+          kvService.incrementVersion(
+            this.env.CACHE,
+            transition.collectionSlug as string,
+            locale,
+            transition.tenantScope
+          )
         )
-      }
+      )
     }
   }
 

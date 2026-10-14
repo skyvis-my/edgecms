@@ -1,4 +1,4 @@
-import { generateText, tool } from 'ai'
+import { generateText, jsonSchema, tool } from 'ai'
 import { type CommandContext, executeCommand } from '@/commands/engine'
 import type { Database } from '@/database/db'
 import type { Env } from '@/env'
@@ -8,7 +8,7 @@ import type { PluginHookContext } from '@/plugins/plugin-hooks'
 import { getLoadedPluginAiTools } from '@/plugins/plugin-loader'
 import { pluginRegistry } from '@/plugins/plugin-registry'
 import type { CommandEnvelope, CommandResult } from '@edgecms/schemas/commands'
-import { arktypeToZod } from './adapters/arktype-to-zod'
+import { unwrapSchema, SchemaError, type TSchema } from '@/shared/schemas/typebox'
 import { aiRepository } from './ai.repository'
 import { buildSystemPrompt } from './prompts/system'
 import { AI_TOOLS } from './prompts/tools'
@@ -133,7 +133,7 @@ async function runBeforeAiHookSafely(context: PluginHookContext): Promise<void> 
 type RuntimeAiToolDefinition = {
   name: string
   description: string
-  parameters: Parameters<typeof arktypeToZod>[0]
+  parameters: TSchema
   toCommands: (args: Record<string, unknown>) => Array<{
     type: CommandEnvelope['type']
     payload: Record<string, unknown>
@@ -206,10 +206,10 @@ export async function generateCommands(
   )
   const tools: Record<string, ReturnType<typeof tool<unknown, never>>> = {}
   for (const toolDef of runtimeToolDefinitions) {
-    const zodSchema = arktypeToZod(toolDef.parameters)
+    const rawSchema = unwrapSchema(toolDef.parameters)
     tools[toolDef.name] = tool({
       description: toolDef.description,
-      inputSchema: zodSchema,
+      inputSchema: jsonSchema(rawSchema as any),
     })
   }
 
@@ -253,24 +253,33 @@ export async function generateCommands(
             throw new Error(`Unknown tool call: ${toolCall.toolName}`)
           }
 
-          // Validate the tool arguments against the ArkType schema
-          // oxlint-disable-next-line lint/suspicious/noExplicitAny: Tool call args are dynamic
-          const validationResult = toolDefinition.parameters((toolCall as any).args)
+          const toolCallArgs =
+            'args' in toolCall ? (toolCall as { args: unknown }).args : undefined
 
-          // oxlint-disable-next-line lint/suspicious/noExplicitAny: ArkType validation result is dynamic
-          if (validationResult instanceof Error || (validationResult as any).problems) {
-            throw new Error(
-              `Invalid tool arguments for ${toolCall.toolName}: ${
-                validationResult instanceof Error
-                  ? validationResult.message
-                  : // oxlint-disable-next-line lint/suspicious/noExplicitAny: ArkType validation result is dynamic
-                    JSON.stringify((validationResult as any).problems)
-              }`
-            )
+          // Validate the tool arguments against the tool schema/validator
+          if (typeof toolDefinition.parameters === 'function') {
+            const validationResult = (toolDefinition.parameters as (data: unknown) => unknown)(toolCallArgs)
+            if (validationResult instanceof SchemaError) {
+              throw new Error(`Invalid tool arguments for ${toolCall.toolName}: ${validationResult.toString()}`)
+            }
+            if (typeof validationResult === 'object' && validationResult !== null) {
+              const errRecord = validationResult as {
+                problems?: Array<{ message?: string }>
+                issues?: Array<{ message?: string }>
+              }
+              const issueList = errRecord.problems ?? errRecord.issues
+              if (issueList && issueList.length > 0) {
+                const message = issueList.map((item) => item.message ?? 'Validation failed').join(', ')
+                throw new Error(`Invalid tool arguments for ${toolCall.toolName}: ${message}`)
+              }
+            }
           }
 
-          // oxlint-disable-next-line lint/suspicious/noExplicitAny: Tool call args are dynamic
-          const mappedCommands = toolDefinition.toCommands((toolCall as any).args as Record<string, unknown>)
+          const toolArgs =
+            typeof toolCallArgs === 'object' && toolCallArgs !== null
+              ? (toolCallArgs as Record<string, unknown>)
+              : {}
+          const mappedCommands = toolDefinition.toCommands(toolArgs)
           for (const mappedCommand of mappedCommands) {
             const envelope: CommandEnvelope = {
               type: mappedCommand.type,

@@ -1,4 +1,4 @@
-import { index, sqliteTable, text, integer } from 'drizzle-orm/sqlite-core'
+import { index, sqliteTable, text, integer, uniqueIndex } from 'drizzle-orm/sqlite-core'
 import { tenants } from './tenants.schema'
 
 /**
@@ -18,8 +18,7 @@ export const roles = sqliteTable('roles', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 }, (table) => [
-  index('roles_tenant_id_idx').on(table.tenantId),
-  index('roles_tenant_name_idx').on(table.tenantId, table.name),
+  uniqueIndex('roles_tenant_name_unique').on(table.tenantId, table.name),
 ])
 
 /**

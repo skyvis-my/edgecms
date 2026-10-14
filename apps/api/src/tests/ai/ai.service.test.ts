@@ -32,9 +32,7 @@ vi.mock('@/shared/schemas/version', () => ({
 vi.mock('ai', () => ({
   generateText: vi.fn(),
   tool: vi.fn((opts) => opts),
-}))
-vi.mock('../../ai/adapters/arktype-to-zod', () => ({
-  arktypeToZod: vi.fn(() => ({})),
+  jsonSchema: vi.fn((opts) => opts),
 }))
 vi.mock('@/commands/engine', () => ({
   executeCommand: vi.fn(),

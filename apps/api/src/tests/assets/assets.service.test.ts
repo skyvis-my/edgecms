@@ -10,6 +10,8 @@ vi.mock('../../assets/assets.repository', () => ({
     findVariant: vi.fn(),
     updateFilename: vi.fn(),
     findByIds: vi.fn(),
+    findByIdsIncludingDeleted: vi.fn(),
+    findSoftDeletedBefore: vi.fn(),
     softDeleteByIds: vi.fn(),
     deleteByIds: vi.fn(),
   },
@@ -34,6 +36,8 @@ const mockRepo = assetsRepository as unknown as {
   findVariant: ReturnType<typeof vi.fn>
   updateFilename: ReturnType<typeof vi.fn>
   findByIds: ReturnType<typeof vi.fn>
+  findByIdsIncludingDeleted: ReturnType<typeof vi.fn>
+  findSoftDeletedBefore: ReturnType<typeof vi.fn>
   softDeleteByIds: ReturnType<typeof vi.fn>
   deleteByIds: ReturnType<typeof vi.fn>
 }
@@ -285,19 +289,34 @@ describe('assetsService', () => {
     )
     expect(avif).toEqual({
       success: true,
-      data: { key: 'assets/a1/medium.avif', contentType: 'image/avif' },
+      data: {
+        key: 'assets/a1/medium.avif',
+        contentType: 'image/avif',
+        fallbackKey: 'assets/a1/original.jpg',
+        fallbackContentType: 'image/jpeg',
+      },
     })
 
     const webp = await assetsService.resolvePublicVariant(db, 'a1', 'medium', 'image/webp')
     expect(webp).toEqual({
       success: true,
-      data: { key: 'assets/a1/medium.webp', contentType: 'image/webp' },
+      data: {
+        key: 'assets/a1/medium.webp',
+        contentType: 'image/webp',
+        fallbackKey: 'assets/a1/original.jpg',
+        fallbackContentType: 'image/jpeg',
+      },
     })
 
     const original = await assetsService.resolvePublicVariant(db, 'a1', 'medium', 'image/png')
     expect(original).toEqual({
       success: true,
-      data: { key: 'assets/a1/original.jpg', contentType: 'image/jpeg' },
+      data: {
+        key: 'assets/a1/original.jpg',
+        contentType: 'image/jpeg',
+        fallbackKey: 'assets/a1/original.jpg',
+        fallbackContentType: 'image/jpeg',
+      },
     })
   })
 
@@ -341,5 +360,129 @@ describe('assetsService', () => {
 
     expect(result).toEqual({ deletedIds: ['a1'] })
     expect(mockRepo.softDeleteByIds).toHaveBeenCalledWith(db, ['a1'], 'global')
+  })
+
+  it('hardDelete removes DB rows and deletes R2 original + variant keys', async () => {
+    mockRepo.findByIdsIncludingDeleted.mockResolvedValueOnce([
+      {
+        id: 'a1',
+        tenantId: 't1',
+        originalKey: 'tenants/t1/assets/a1/photo.jpg',
+        variants: [{ objectKey: 'tenants/t1/assets/a1/thumb.webp' }],
+      },
+    ])
+    mockRepo.deleteByIds.mockResolvedValueOnce(['a1'])
+    ;(r2.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+
+    const result = await assetsService.hardDelete(db, r2, ['a1'], 't1')
+
+    expect(mockRepo.deleteByIds).toHaveBeenCalledWith(db, ['a1'], 't1')
+    const deletedKeys = (
+      r2.delete as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.map(([key]) => key)
+    expect(deletedKeys).toContain('tenants/t1/assets/a1/photo.jpg')
+    expect(deletedKeys).toContain('tenants/t1/assets/a1/thumb.webp')
+    expect(result).toEqual({ deletedIds: ['a1'], r2Failures: [] })
+  })
+
+  it('hardDelete lists R2 failures without throwing after DB commit', async () => {
+    mockRepo.findByIdsIncludingDeleted.mockResolvedValueOnce([
+      {
+        id: 'a1',
+        tenantId: 't1',
+        originalKey: 'tenants/t1/assets/a1/photo.jpg',
+        variants: [{ objectKey: 'tenants/t1/assets/a1/thumb.webp' }],
+      },
+    ])
+    mockRepo.deleteByIds.mockResolvedValueOnce(['a1'])
+    const deleteMock = r2.delete as unknown as ReturnType<typeof vi.fn>
+    deleteMock.mockRejectedValueOnce(new Error('R2 boom'))
+    deleteMock.mockResolvedValueOnce(undefined)
+
+    const result = await assetsService.hardDelete(db, r2, ['a1'], 't1')
+
+    expect(result.deletedIds).toEqual(['a1'])
+    expect(result.r2Failures).toContain('tenants/t1/assets/a1/photo.jpg')
+    expect(result.r2Failures).not.toContain('tenants/t1/assets/a1/thumb.webp')
+  })
+
+  it('hardDelete leaves other-tenant assets untouched', async () => {
+    mockRepo.findByIdsIncludingDeleted.mockResolvedValueOnce([
+      {
+        id: 'a1',
+        tenantId: 't1',
+        originalKey: 'tenants/t1/assets/a1/photo.jpg',
+        variants: [],
+      },
+    ])
+    mockRepo.deleteByIds.mockResolvedValueOnce(['a1'])
+    ;(r2.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+
+    const result = await assetsService.hardDelete(db, r2, ['a1', 'other-tenant-id'], 't1')
+
+    expect(mockRepo.findByIdsIncludingDeleted).toHaveBeenCalledWith(
+      db,
+      ['a1', 'other-tenant-id'],
+      't1'
+    )
+    // Repository tenant scoping drops the foreign id; only scoped rows reach delete + R2.
+    expect(mockRepo.deleteByIds).toHaveBeenCalledWith(db, ['a1'], 't1')
+    const deletedKeys = (
+      r2.delete as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls.map(([key]) => key)
+    expect(deletedKeys).toEqual(['tenants/t1/assets/a1/photo.jpg'])
+    expect(result.deletedIds).toEqual(['a1'])
+  })
+
+  it('hardDelete with empty ids touches neither DB nor R2', async () => {
+    const result = await assetsService.hardDelete(db, r2, ['  '], 't1')
+
+    expect(mockRepo.findByIdsIncludingDeleted).not.toHaveBeenCalled()
+    expect(mockRepo.deleteByIds).not.toHaveBeenCalled()
+    expect(r2.delete).not.toHaveBeenCalled()
+    expect(result).toEqual({ deletedIds: [], r2Failures: [] })
+  })
+
+  it('gcSoftDeleted collects only rows older than the cutoff', async () => {
+    const before = Date.now()
+    mockRepo.findSoftDeletedBefore.mockResolvedValueOnce([
+      { id: 'old', originalKey: 'k-old', tenantId: 't1' },
+    ])
+    mockRepo.findByIdsIncludingDeleted.mockResolvedValueOnce([
+      { id: 'old', tenantId: 't1', originalKey: 'k-old', variants: [] },
+    ])
+    mockRepo.deleteByIds.mockResolvedValueOnce(['old'])
+    ;(r2.delete as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
+
+    const result = await assetsService.gcSoftDeleted(
+      db,
+      r2,
+      { olderThanDays: 30, limit: 10, tenantId: 't1' }
+    )
+
+    const firstGcCall = mockRepo.findSoftDeletedBefore.mock.calls[0] as unknown as
+      | [unknown, { cutoffIso: string; limit: number; tenantId?: string }]
+      | undefined
+    expect(firstGcCall).toBeDefined()
+    const cutoffIso = (firstGcCall?.[1]?.cutoffIso ?? '') as string
+    const cutoffMs = new Date(cutoffIso).getTime()
+    expect(cutoffMs).toBeLessThanOrEqual(before)
+    expect(before - cutoffMs).toBeGreaterThan(29 * 24 * 60 * 60 * 1000)
+    expect(before - cutoffMs).toBeLessThan(31 * 24 * 60 * 60 * 1000)
+    expect(mockRepo.findSoftDeletedBefore).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ limit: 10, tenantId: 't1' })
+    )
+    expect(result.deletedIds).toEqual(['old'])
+  })
+
+  it('gcSoftDeleted returns empty when nothing is older than the cutoff', async () => {
+    mockRepo.findSoftDeletedBefore.mockResolvedValueOnce([])
+
+    const result = await assetsService.gcSoftDeleted(db, r2, { olderThanDays: 30 })
+
+    expect(result).toEqual({ deletedIds: [], r2Failures: [] })
+    expect(mockRepo.deleteByIds).not.toHaveBeenCalled()
+    expect(r2.delete).not.toHaveBeenCalled()
   })
 })

@@ -1,4 +1,4 @@
-import { type } from 'arktype'
+import { Type, createSchema } from '@/shared/schemas/typebox'
 import { id } from '@/shared/schemas'
 
 /**
@@ -11,9 +11,11 @@ export const deleteEntryTool = {
   name: 'deleteEntry',
   description:
     'Delete an entry permanently. Use this when the user explicitly requests deletion (e.g., "delete this post", "remove the product"). This operation is irreversible — use only when clearly intended.',
-  parameters: type({
-    entryId: id,
-  }),
+  parameters: createSchema(
+    Type.Object({
+      entryId: id,
+    })
+  ),
 }
 
 export type DeleteEntryToolParams = typeof deleteEntryTool.parameters.infer

@@ -24,7 +24,18 @@ export type VerificationResult = {
 const DEFAULT_PRICE = 100 // Default 100 satoshis or cents
 const DEFAULT_CURRENCY = 'SATS'
 const DEFAULT_TTL_SECONDS = 900 // 15 minutes
-const FALLBACK_SECRET = 'edgecms_x402_default_secret_key_32bytes_minimum'
+
+const x402Encoder = new TextEncoder()
+const x402Decoder = new TextDecoder()
+const x402HmacKeyCache = new Map<string, Promise<CryptoKey>>()
+
+function assertX402Secret(secret: string): void {
+  if (!secret || secret.trim().length === 0) {
+    const err = new Error('x402 secret is not configured') as Error & { status: number }
+    err.status = 500
+    throw err
+  }
+}
 
 function toBase64Url(bytes: Uint8Array): string {
   let binary = ''
@@ -49,29 +60,32 @@ function fromBase64Url(str: string): Uint8Array<ArrayBuffer> {
 }
 
 async function getHmacKey(secret: string): Promise<CryptoKey> {
-  const enc = new TextEncoder()
-  return crypto.subtle.importKey(
-    'raw',
-    enc.encode(secret || FALLBACK_SECRET),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign', 'verify']
-  )
+  assertX402Secret(secret)
+  let cached = x402HmacKeyCache.get(secret)
+  if (!cached) {
+    cached = crypto.subtle.importKey(
+      'raw',
+      x402Encoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign', 'verify']
+    )
+    x402HmacKeyCache.set(secret, cached)
+  }
+  return cached
 }
 
 async function signString(secret: string, data: string): Promise<string> {
   const key = await getHmacKey(secret)
-  const enc = new TextEncoder()
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(data))
+  const sig = await crypto.subtle.sign('HMAC', key, x402Encoder.encode(data))
   return toBase64Url(new Uint8Array(sig))
 }
 
 async function verifySignature(secret: string, data: string, signatureB64: string): Promise<boolean> {
   try {
     const key = await getHmacKey(secret)
-    const enc = new TextEncoder()
     const sigBytes = fromBase64Url(signatureB64)
-    return await crypto.subtle.verify('HMAC', key, sigBytes, enc.encode(data))
+    return await crypto.subtle.verify('HMAC', key, sigBytes, x402Encoder.encode(data))
   } catch {
     return false
   }
@@ -85,6 +99,7 @@ export async function createL402Challenge(
   resource: string,
   options: X402Options = {}
 ): Promise<L402Challenge> {
+  assertX402Secret(secret)
   const challengeId = crypto.randomUUID()
   const price = options.price ?? DEFAULT_PRICE
   const currency = options.currency ?? DEFAULT_CURRENCY
@@ -92,7 +107,7 @@ export async function createL402Challenge(
   const expiresAt = Date.now() + ttl * 1000
 
   const payload = JSON.stringify({ id: challengeId, res: resource, p: price, c: currency, exp: expiresAt })
-  const payloadB64 = toBase64Url(new TextEncoder().encode(payload))
+  const payloadB64 = toBase64Url(x402Encoder.encode(payload))
   const sig = await signString(secret, payloadB64)
   const macaroon = `${payloadB64}.${sig}`
   const invoice = `lnbc${price}n1_edgecms_${challengeId.slice(0, 8)}`
@@ -116,12 +131,13 @@ export async function createSettlementToken(
   challengeId: string,
   resource: string
 ): Promise<string> {
+  assertX402Secret(secret)
   const payload = JSON.stringify({
     cid: challengeId,
     res: resource,
     settledAt: Date.now(),
   })
-  const payloadB64 = toBase64Url(new TextEncoder().encode(payload))
+  const payloadB64 = toBase64Url(x402Encoder.encode(payload))
   const sig = await signString(secret, payloadB64)
   return `${payloadB64}.${sig}`
 }
@@ -135,6 +151,7 @@ export async function verifyL402Token(
   expectedResource: string,
   kv?: KVNamespace
 ): Promise<VerificationResult> {
+  assertX402Secret(secret)
   if (!token) {
     return { valid: false, settled: false, reason: 'missing_token' }
   }
@@ -170,7 +187,7 @@ export async function verifyL402Token(
   }
 
   try {
-    const rawJson = new TextDecoder().decode(fromBase64Url(payloadB64))
+    const rawJson = x402Decoder.decode(fromBase64Url(payloadB64))
     const data = JSON.parse(rawJson)
 
     // Check expiration if present
@@ -200,7 +217,7 @@ export type X402Context = {
   request: Request
   set: {
     status?: number | string
-    headers: Record<string, string | number | undefined>
+    headers: Record<string, string | number | string[] | undefined>
   }
 }
 
@@ -247,6 +264,8 @@ export async function handleX402Gate(
   if (!isMonetizedRequest(request, options.collectionSlug)) {
     return null
   }
+
+  assertX402Secret(options.secret)
 
   // Check for payment token in headers
   const authHeader = request.headers.get('authorization')

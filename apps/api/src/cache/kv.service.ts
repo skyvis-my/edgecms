@@ -4,16 +4,30 @@ import { LRUMemoryCache } from '@/cache/memory-cache'
 import { logger } from '@/observability/logger'
 import { incrementMetric } from '@/observability/metrics'
 
-const MEMORY_CACHE_MAX_BYTES = 25 * 1024 * 1024 // 25 MB
+const MEMORY_CACHE_MAX_BYTES = 8 * 1024 * 1024 // 8 MB: well clear of the 128 MB isolate limit
 
 const memorySnapshotCache = new LRUMemoryCache({ maxSizeBytes: MEMORY_CACHE_MAX_BYTES })
 
-function writeMemorySnapshot(key: string, value: unknown, ttlSeconds: number): void {
-  memorySnapshotCache.set(key, value, ttlSeconds)
+/** Short-TTL L1 for collection/locale version counters (avoids a KV read per request). */
+const VERSION_CACHE_TTL_SECONDS = 10
+
+function versionCacheKey(collectionSlug: string, locale: string, tenantScope?: string): string {
+  return tenantScope
+    ? `__ver:${tenantScope}:${collectionSlug}:${locale}`
+    : `__ver:global:${collectionSlug}:${locale}`
+}
+
+function writeFrozenMemorySnapshot(
+  key: string,
+  value: unknown,
+  ttlSeconds: number,
+  sizeBytes: number
+): void {
+  memorySnapshotCache.setFrozen(key, value, ttlSeconds, sizeBytes)
 }
 
 function readMemorySnapshot(key: string): unknown | null {
-  return memorySnapshotCache.get(key)
+  return memorySnapshotCache.getFrozen(key)
 }
 
 /**
@@ -64,11 +78,19 @@ export const kvService = {
     locale: string,
     tenantScope?: string
   ): Promise<number> {
+    const cacheKey = versionCacheKey(collectionSlug, locale, tenantScope)
+    const cached = memorySnapshotCache.getFrozen(cacheKey)
+    if (typeof cached === 'number' && Number.isInteger(cached) && cached >= 1) {
+      return cached
+    }
     const versionKey = tenantScope
       ? `${tenantScope}:version:${collectionSlug}:${locale}`
       : `version:${collectionSlug}:${locale}`
     const versionStr = await kv.get(versionKey)
-    return versionStr ? Number.parseInt(versionStr, 10) : 1
+    const version = versionStr ? Number.parseInt(versionStr, 10) : 1
+    const normalized = Number.isInteger(version) && version >= 1 ? version : 1
+    memorySnapshotCache.setFrozen(cacheKey, normalized, VERSION_CACHE_TTL_SECONDS, 16)
+    return normalized
   },
 
   /**
@@ -95,8 +117,18 @@ export const kvService = {
       ? `${tenantScope}:version:${collectionSlug}:${locale}`
       : `version:${collectionSlug}:${locale}`
 
-    // Store the new version number (no TTL — version counters persist indefinitely)
+    // Store the new version number (no TTL — version counters persist indefinitely).
+    // This is intentional: versioning IS the invalidation mechanism (readers
+    // always request the current version, so stale versioned snapshot keys age
+    // out via their own TTLs). Expiring a version key would reset it to 1 and
+    // resurrect stale snapshots — worse than the few bytes of counter storage.
     await kv.put(versionKey, newVersion.toString())
+    memorySnapshotCache.setFrozen(
+      versionCacheKey(collectionSlug, locale, tenantScope),
+      newVersion,
+      VERSION_CACHE_TTL_SECONDS,
+      16
+    )
     return newVersion
   },
 
@@ -146,8 +178,9 @@ export const kvService = {
 
     try {
       const parsed = JSON.parse(value)
-      // Use 30s default TTL for memory cache (will be overridden by per-namespace TTLs in Task 2)
-      writeMemorySnapshot(key, parsed, getMemoryTTL(namespace))
+      // Single stringify for size accounting: reuse the KV payload length
+      // instead of re-serializing inside the LRU cache.
+      writeFrozenMemorySnapshot(key, parsed, getMemoryTTL(namespace), value.length * 2)
       return parsed
     } catch {
       logger.error('snapshot_json_parse_failed', { key })
@@ -179,9 +212,10 @@ export const kvService = {
   ): Promise<void> {
     // Clamp TTL between min (60s) and max (3600s) for safety
     const boundedTTL = Math.max(60, Math.min(ttl, 3600))
+    // Stringify once: the same payload serves KV and LRU size accounting.
     const serialized = JSON.stringify(data)
     await kv.put(key, serialized, { expirationTtl: boundedTTL })
-    memorySnapshotCache.set(key, data, getMemoryTTL(namespace))
+    writeFrozenMemorySnapshot(key, data, getMemoryTTL(namespace), serialized.length * 2)
   },
 
   /**

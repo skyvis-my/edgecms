@@ -42,8 +42,9 @@ mock.module('@/auth/auth.middleware', () => ({
   betterAuthPlugin: new MockElysia({ name: 'better-auth' }),
 }))
 
-// Import after mocking
-const { tenantMiddleware } = await import('../../tenants/tenant.middleware')
+// Cache-busted import: @/app (loaded by app/main tests) binds the real
+// tenant.middleware; a plain import would reuse that copy with real deps.
+const { tenantMiddleware } = await import(`../../tenants/tenant.middleware?bypass=${Date.now()}`)
 
 describe('Tenant Middleware', () => {
   beforeEach(() => {

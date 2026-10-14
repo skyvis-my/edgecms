@@ -1,4 +1,4 @@
-import { type } from 'arktype'
+import { Type, createSchema } from '@/shared/schemas/typebox'
 import { commandEnvelope } from '@/shared/schemas'
 
 /**
@@ -13,9 +13,11 @@ export const transactionTool = {
   name: 'transaction',
   description:
     'Execute multiple commands as a single atomic transaction. Use this when the user requests a complex operation that involves multiple steps that must all succeed together (e.g., "create a blog post and link it to an author", "duplicate this entry and publish it", "move all products from category A to category B"). If any command in the transaction fails, all changes are rolled back.',
-  parameters: type({
-    commands: commandEnvelope.array(),
-  }),
+  parameters: createSchema(
+    Type.Object({
+      commands: Type.Array(commandEnvelope),
+    })
+  ),
 }
 
 export type TransactionToolParams = typeof transactionTool.parameters.infer

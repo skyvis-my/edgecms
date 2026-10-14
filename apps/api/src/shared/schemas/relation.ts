@@ -1,4 +1,5 @@
-import { type } from 'arktype'
+import { relationType } from '@edgecms/schemas/commands'
+import { Type, createSchema } from './typebox'
 import { id, timestamp } from './common'
 
 /**
@@ -15,8 +16,7 @@ import { id, timestamp } from './common'
  * - one-to-many:  source field can reference multiple target entries
  * - many-to-many: multiple source entries can reference multiple target entries
  */
-export const relationType = type("'one-to-one' | 'one-to-many' | 'many-to-many'")
-
+export { relationType }
 export type RelationType = typeof relationType.infer
 
 /**
@@ -30,43 +30,49 @@ export type RelationType = typeof relationType.infer
  * - fieldName: the field on the source entry that defines this relation
  * - sortOrder: ordering for relation arrays (0-based)
  */
-export const relation = type({
-  id,
-  sourceEntryId: id,
-  targetEntryId: id,
-  sourceCollectionId: id,
-  targetCollectionId: id,
-  relationType,
-  fieldName: 'string',
-  sortOrder: 'number.integer >= 0',
-  createdAt: timestamp,
-  updatedAt: timestamp,
-})
+export const relation = createSchema(
+  Type.Object({
+    id,
+    sourceEntryId: id,
+    targetEntryId: id,
+    sourceCollectionId: id,
+    targetCollectionId: id,
+    relationType,
+    fieldName: Type.String(),
+    sortOrder: Type.Integer({ minimum: 0 }),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  })
+)
 
 export type Relation = typeof relation.infer
 
 /**
  * Input for linking two entries.
  */
-export const linkRelationInput = type({
-  sourceEntryId: id,
-  targetEntryId: id,
-  sourceCollectionId: id,
-  targetCollectionId: id,
-  relationType,
-  fieldName: 'string',
-  'sortOrder?': 'number.integer >= 0',
-})
+export const linkRelationInput = createSchema(
+  Type.Object({
+    sourceEntryId: id,
+    targetEntryId: id,
+    sourceCollectionId: id,
+    targetCollectionId: id,
+    relationType,
+    fieldName: Type.String(),
+    sortOrder: Type.Optional(Type.Integer({ minimum: 0 })),
+  })
+)
 
 export type LinkRelationInput = typeof linkRelationInput.infer
 
 /**
  * Input for unlinking two entries.
  */
-export const unlinkRelationInput = type({
-  sourceEntryId: id,
-  targetEntryId: id,
-  fieldName: 'string',
-})
+export const unlinkRelationInput = createSchema(
+  Type.Object({
+    sourceEntryId: id,
+    targetEntryId: id,
+    fieldName: Type.String(),
+  })
+)
 
 export type UnlinkRelationInput = typeof unlinkRelationInput.infer

@@ -1,57 +1,73 @@
-import { type } from 'arktype'
+import { Type, createSchema } from './typebox'
 
-export const localeFallbackPolicy = type({
-  tenantSlug: 'string > 0',
-  requestedLocale: 'string > 0',
-  fallbackLocale: 'string > 0',
-  fallbackEnabled: 'boolean',
-})
+export const localeFallbackPolicy = createSchema(
+  Type.Object({
+    tenantSlug: Type.String({ minLength: 1 }),
+    requestedLocale: Type.String({ minLength: 1 }),
+    fallbackLocale: Type.String({ minLength: 1 }),
+    fallbackEnabled: Type.Boolean(),
+  })
+)
 
-export const localeCompletenessRow = type({
-  locale: 'string > 0',
-  requiredFields: type('string > 0').array(),
-  missingFields: type('string > 0').array(),
-})
+export const localeCompletenessRow = createSchema(
+  Type.Object({
+    locale: Type.String({ minLength: 1 }),
+    requiredFields: Type.Array(Type.String({ minLength: 1 })),
+    missingFields: Type.Array(Type.String({ minLength: 1 })),
+  })
+)
 
-export const localeCacheKeyParts = type({
-  tenantSlug: 'string > 0',
-  collectionSlug: 'string > 0',
-  requestedLocale: 'string > 0',
-  status: "'published'",
-  filterHash: 'string > 0',
-})
+export const localeCacheKeyParts = createSchema(
+  Type.Object({
+    tenantSlug: Type.String({ minLength: 1 }),
+    collectionSlug: Type.String({ minLength: 1 }),
+    requestedLocale: Type.String({ minLength: 1 }),
+    status: Type.Literal('published'),
+    filterHash: Type.String({ minLength: 1 }),
+  })
+)
 
-export const publicFilterAllowlist = type({
-  topLevelFields: type('string > 0').array(),
-  dataFieldPattern: 'string > 0',
-})
+export const publicFilterAllowlist = createSchema(
+  Type.Object({
+    topLevelFields: Type.Array(Type.String({ minLength: 1 })),
+    dataFieldPattern: Type.String({ minLength: 1 }),
+  })
+)
 
-export const revalidationPayloadContract = type({
-  tenantSlug: 'string > 0',
-  collectionSlug: 'string > 0',
-  event: 'string > 0',
-  paths: type('string > 0').array(),
-  tags: type('string > 0').array(),
-})
+export const revalidationPayloadContract = createSchema(
+  Type.Object({
+    tenantSlug: Type.String({ minLength: 1 }),
+    collectionSlug: Type.String({ minLength: 1 }),
+    event: Type.String({ minLength: 1 }),
+    paths: Type.Array(Type.String({ minLength: 1 })),
+    tags: Type.Array(Type.String({ minLength: 1 })),
+  })
+)
 
-export const publicCacheTagParts = type({
-  collectionSlug: 'string > 0',
-  locale: 'string > 0',
-  'entryId?': 'string > 0',
-})
+export const publicCacheTagParts = createSchema(
+  Type.Object({
+    collectionSlug: Type.String({ minLength: 1 }),
+    locale: Type.String({ minLength: 1 }),
+    entryId: Type.Optional(Type.String({ minLength: 1 })),
+  })
+)
 
-export const publicReadPerfFixture = type({
-  path: 'string > 0',
-  tenantSlug: 'string > 0',
-  collectionSlug: 'string > 0',
-  entrySlug: 'string > 0',
-})
+export const publicReadPerfFixture = createSchema(
+  Type.Object({
+    path: Type.String({ minLength: 1 }),
+    tenantSlug: Type.String({ minLength: 1 }),
+    collectionSlug: Type.String({ minLength: 1 }),
+    entrySlug: Type.String({ minLength: 1 }),
+  })
+)
 
-export const publicReadPerfThreshold = type({
-  mode: "'local' | 'remote'",
-  p95Ms: 'number >= 0',
-  thresholdMs: 'number > 0',
-})
+export const publicReadPerfThreshold = createSchema(
+  Type.Object({
+    mode: Type.Union([Type.Literal('local'), Type.Literal('remote')]),
+    p95Ms: Type.Number({ minimum: 0 }),
+    thresholdMs: Type.Number({ minimum: 1 }),
+  })
+)
 
 export type LocaleFallbackPolicy = typeof localeFallbackPolicy.infer
 export type LocaleCompletenessRow = typeof localeCompletenessRow.infer

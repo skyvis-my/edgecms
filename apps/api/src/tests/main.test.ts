@@ -367,6 +367,7 @@ describe('Main API app (Elysia integration)', () => {
   it('registers assets upload route exactly once', async () => {
     const app = await importApp()
     const routeSignatures = (
+      (app as { routes?: Array<{ method: string; path: string }>; router?: { history?: Array<{ method: string; path: string }> } }).routes ??
       (app as { router?: { history?: Array<{ method: string; path: string }> } }).router?.history ??
       []
     ).map((route) => `${route.method} ${route.path}`)
@@ -381,11 +382,14 @@ describe('Main API app (Elysia integration)', () => {
     mockWorkerEnv.EDGE_PLUGINS_JSON = JSON.stringify([{ name: 'audit-trace', enabled: true }])
     const appModule = await importAppModule()
     const app = appModule.createApp() as AppInstance & {
+      routes?: Array<{ method: string; path: string }>
       router?: { history?: Array<{ method: string; path: string }> }
     }
 
     const routeSignatures = (
-      app.router?.history ?? []
+      app.routes ??
+      app.router?.history ??
+      []
     ).map((route) => `${route.method} ${route.path}`)
 
     expect(routeSignatures).toContain('GET /api/admin/plugins/audit-trace/health')

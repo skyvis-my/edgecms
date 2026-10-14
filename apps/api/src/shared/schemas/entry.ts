@@ -1,4 +1,5 @@
-import { type } from 'arktype'
+import { entryStatus } from '@edgecms/schemas/commands'
+import { Type, createSchema } from './typebox'
 import { id, slug, timestamp } from './common'
 
 /**
@@ -30,7 +31,8 @@ export const publicEntryStatuses = ['published', 'scheduled'] as const
  */
 export const commandLifecycleEntryStatuses = ['scheduled', 'published'] as const
 
-export const entryStatus = type("'draft' | 'scheduled' | 'published' | 'archived'")
+export { entryStatus }
+export type EntryStatus = typeof entryStatus.infer
 
 /**
  * Runtime type guard for entry status values.
@@ -47,8 +49,6 @@ export function isCommandLifecycleStatus(status: string): status is
   return (commandLifecycleEntryStatuses as readonly string[]).includes(status)
 }
 
-export type EntryStatus = typeof entryStatus.infer
-
 /**
  * A content entry within a collection.
  *
@@ -58,15 +58,17 @@ export type EntryStatus = typeof entryStatus.infer
  * - data: the actual field values, keyed by field name
  * - version: monotonically increasing version for optimistic locking
  */
-export const entry = type({
-  id,
-  collectionId: id,
-  slug,
-  status: entryStatus,
-  data: 'Record<string, unknown>',
-  version: 'number.integer >= 1',
-  createdAt: timestamp,
-  updatedAt: timestamp,
-})
+export const entry = createSchema(
+  Type.Object({
+    id,
+    collectionId: id,
+    slug,
+    status: entryStatus,
+    data: Type.Record(Type.String(), Type.Unknown()),
+    version: Type.Integer({ minimum: 1 }),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  })
+)
 
 export type Entry = typeof entry.infer

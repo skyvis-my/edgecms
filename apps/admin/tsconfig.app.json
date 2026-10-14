@@ -21,7 +21,9 @@
       "@/*": ["./src/*"],
       "edgecms-api/contract": ["./src/types/edgecms-api-contract.d.ts"],
       "@edgecms/schemas": ["../../packages/schemas/src/index.ts"],
-      "@edgecms/schemas/*": ["../../packages/schemas/src/*"]
+      "@edgecms/schemas/*": ["../../packages/schemas/src/*"],
+      "@edgecms/client": ["../../packages/client/src/index.ts"],
+      "@edgecms/client/*": ["../../packages/client/src/*"]
     },
 
     /* Linting */

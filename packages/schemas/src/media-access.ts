@@ -1,59 +1,88 @@
-import { type } from 'arktype'
+import { Type, createSchema } from './typebox'
 
-export const contentApiTokenMode = type("'unsupported' | 'server-only'")
-
-export const permissionSurface = type(
-  "'admin:collections' | 'admin:entries' | 'admin:assets' | 'admin:plugins' | 'admin:settings' | 'public:content' | 'public:assets'"
+export const contentApiTokenMode = createSchema(
+  Type.Union([Type.Literal('unsupported'), Type.Literal('server-only')])
 )
 
-export const roleCapabilityMatrix = type({
-  role: "'viewer' | 'editor' | 'admin' | 'owner'",
-  surface: permissionSurface,
-  canRead: 'boolean',
-  canMutate: 'boolean',
-  canManage: 'boolean',
-})
+export const permissionSurface = createSchema(
+  Type.Union([
+    Type.Literal('admin:collections'),
+    Type.Literal('admin:entries'),
+    Type.Literal('admin:assets'),
+    Type.Literal('admin:plugins'),
+    Type.Literal('admin:settings'),
+    Type.Literal('public:content'),
+    Type.Literal('public:assets'),
+  ])
+)
 
-export const mediaAltTextMetadata = type({
-  tenantSlug: 'string > 0',
-  assetId: 'string > 0',
-  altText: 'string > 0',
-  'caption?': 'string',
-  'credit?': 'string',
-})
+export const roleCapabilityMatrix = createSchema(
+  Type.Object({
+    role: Type.Union([
+      Type.Literal('viewer'),
+      Type.Literal('editor'),
+      Type.Literal('admin'),
+      Type.Literal('owner'),
+    ]),
+    surface: permissionSurface,
+    canRead: Type.Boolean(),
+    canMutate: Type.Boolean(),
+    canManage: Type.Boolean(),
+  })
+)
 
-export const mediaFocalPointMetadata = type({
-  tenantSlug: 'string > 0',
-  assetId: 'string > 0',
-  x: 'number >= 0 <= 1',
-  y: 'number >= 0 <= 1',
-})
+export const mediaAltTextMetadata = createSchema(
+  Type.Object({
+    tenantSlug: Type.String({ minLength: 1 }),
+    assetId: Type.String({ minLength: 1 }),
+    altText: Type.String({ minLength: 1 }),
+    caption: Type.Optional(Type.String()),
+    credit: Type.Optional(Type.String()),
+  })
+)
 
-export const mediaUploadPolicy = type({
-  tenantSlug: 'string > 0',
-  maxUploadBytes: 'number > 0',
-  allowedMimeTypes: type('string > 0').array(),
-})
+export const mediaFocalPointMetadata = createSchema(
+  Type.Object({
+    tenantSlug: Type.String({ minLength: 1 }),
+    assetId: Type.String({ minLength: 1 }),
+    x: Type.Number({ minimum: 0, maximum: 1 }),
+    y: Type.Number({ minimum: 0, maximum: 1 }),
+  })
+)
 
-export const publicAssetCachePolicy = type({
-  cacheControl: 'string > 0',
-  cdnCacheControl: 'string > 0',
-  immutable: 'boolean',
-})
+export const mediaUploadPolicy = createSchema(
+  Type.Object({
+    tenantSlug: Type.String({ minLength: 1 }),
+    maxUploadBytes: Type.Number({ minimum: 1 }),
+    allowedMimeTypes: Type.Array(Type.String({ minLength: 1 })),
+  })
+)
 
-export const signedAssetAccessPolicy = type({
-  tenantSlug: 'string > 0',
-  assetId: 'string > 0',
-  private: 'boolean',
-  expiresAt: 'string.date.iso',
-  signatureRef: 'string > 0',
-})
+export const publicAssetCachePolicy = createSchema(
+  Type.Object({
+    cacheControl: Type.String({ minLength: 1 }),
+    cdnCacheControl: Type.String({ minLength: 1 }),
+    immutable: Type.Boolean(),
+  })
+)
 
-export const versionRetentionPolicy = type({
-  tenantSlug: 'string > 0',
-  retainVersions: 'number > 0',
-  archiveAfterDays: 'number > 0',
-})
+export const signedAssetAccessPolicy = createSchema(
+  Type.Object({
+    tenantSlug: Type.String({ minLength: 1 }),
+    assetId: Type.String({ minLength: 1 }),
+    private: Type.Boolean(),
+    expiresAt: Type.String({ minLength: 1 }),
+    signatureRef: Type.String({ minLength: 1 }),
+  })
+)
+
+export const versionRetentionPolicy = createSchema(
+  Type.Object({
+    tenantSlug: Type.String({ minLength: 1 }),
+    retainVersions: Type.Number({ minimum: 1 }),
+    archiveAfterDays: Type.Number({ minimum: 1 }),
+  })
+)
 
 export type ContentApiTokenMode = typeof contentApiTokenMode.infer
 export type PermissionSurface = typeof permissionSurface.infer

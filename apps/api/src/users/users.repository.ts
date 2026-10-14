@@ -13,7 +13,13 @@ export type AdminUserListingRow = {
 }
 
 export const usersRepository = {
-  async findForAdminListing(db: Database, tenantId?: string): Promise<AdminUserListingRow[]> {
+  async findForAdminListing(
+    db: Database,
+    tenantId?: string,
+    options: { limit?: number; offset?: number } = {}
+  ): Promise<AdminUserListingRow[]> {
+    const limit = Math.min(100, Math.max(1, options.limit ?? 100))
+    const offset = Math.max(0, options.offset ?? 0)
     const selection = {
       id: user.id,
       name: user.name,
@@ -32,6 +38,8 @@ export const usersRepository = {
           tenantUsers,
           and(eq(tenantUsers.userId, user.id), eq(tenantUsers.tenantId, tenantId))
         )
+        .limit(limit)
+        .offset(offset)
         .all()
     }
 
@@ -39,6 +47,8 @@ export const usersRepository = {
       .select(selection)
       .from(user)
       .leftJoin(tenantUsers, eq(tenantUsers.userId, user.id))
+      .limit(limit)
+      .offset(offset)
       .all()
   },
 

@@ -23,7 +23,14 @@ vi.mock('@/entries/entries.repository', () => ({
   },
 }))
 
+vi.mock('@/collections/collections.repository', () => ({
+  collectionsRepository: {
+    findById: vi.fn(),
+  },
+}))
+
 import { entriesRepository } from '@/entries/entries.repository'
+import { collectionsRepository } from '@/collections/collections.repository'
 import { relationsRepository } from '../../relations/relations.repository'
 
 const mockRelRepo = relationsRepository as unknown as {
@@ -36,6 +43,9 @@ const mockRelRepo = relationsRepository as unknown as {
   countBySourceEntryAndField: ReturnType<typeof vi.fn>
 }
 const mockEntriesRepo = entriesRepository as unknown as {
+  findById: ReturnType<typeof vi.fn>
+}
+const mockCollectionsRepo = collectionsRepository as unknown as {
   findById: ReturnType<typeof vi.fn>
 }
 
@@ -169,6 +179,67 @@ describe('relationsService', () => {
         'Database connection lost'
       )
     })
+
+    it('rejects a cross-tenant target when tenant-scoped (H2)', async () => {
+      mockEntriesRepo.findById
+        .mockResolvedValueOnce(makeEntryRow({ id: 'e1' }))
+        .mockResolvedValueOnce(undefined)
+
+      const result = await relationsService.link(db, baseLinkInput, 't1')
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.code).toBe('NOT_FOUND')
+        expect(result.error.message).toContain('Target entry')
+      }
+      expect(mockRelRepo.link).not.toHaveBeenCalled()
+      expect(mockEntriesRepo.findById).toHaveBeenCalledWith(db, 'e1', 't1')
+      expect(mockEntriesRepo.findById).toHaveBeenCalledWith(db, 'e2', 't1')
+    })
+
+    it('stamps the explicit tenant on the created row', async () => {
+      mockEntriesRepo.findById
+        .mockResolvedValueOnce(makeEntryRow({ id: 'e1' }))
+        .mockResolvedValueOnce(makeEntryRow({ id: 'e2' }))
+      mockRelRepo.link.mockResolvedValue(makeRelationRow())
+
+      const result = await relationsService.link(db, baseLinkInput, 't1')
+      expect(result.success).toBe(true)
+      expect(mockRelRepo.link).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ tenantId: 't1' })
+      )
+    })
+
+    it('resolves tenant from the source collection when unscoped', async () => {
+      mockEntriesRepo.findById
+        .mockResolvedValueOnce(makeEntryRow({ id: 'e1' }))
+        .mockResolvedValueOnce(makeEntryRow({ id: 'e2' }))
+      mockCollectionsRepo.findById.mockResolvedValue({ id: 'c1', tenantId: 'acme' })
+      mockRelRepo.link.mockResolvedValue(makeRelationRow())
+
+      const result = await relationsService.link(db, baseLinkInput)
+      expect(result.success).toBe(true)
+      expect(mockCollectionsRepo.findById).toHaveBeenCalledWith(db, 'c1')
+      expect(mockRelRepo.link).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ tenantId: 'acme' })
+      )
+    })
+
+    it('defaults tenant to global when unscoped and collection unknown', async () => {
+      mockEntriesRepo.findById
+        .mockResolvedValueOnce(makeEntryRow({ id: 'e1' }))
+        .mockResolvedValueOnce(makeEntryRow({ id: 'e2' }))
+      mockCollectionsRepo.findById.mockResolvedValue(undefined)
+      mockRelRepo.link.mockResolvedValue(makeRelationRow())
+
+      const result = await relationsService.link(db, baseLinkInput)
+      expect(result.success).toBe(true)
+      expect(mockRelRepo.link).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ tenantId: 'global' })
+      )
+    })
   })
 
   describe('unlink', () => {
@@ -201,6 +272,42 @@ describe('relationsService', () => {
         expect(result.error.code).toBe('NOT_FOUND')
       }
     })
+
+    it('rejects unlink of another tenant source without deleting (H1)', async () => {
+      mockEntriesRepo.findById.mockResolvedValue(undefined)
+
+      const result = await relationsService.unlink(
+        db,
+        { sourceEntryId: 'e1', targetEntryId: 'e2', fieldName: 'author' },
+        'other-tenant'
+      )
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.code).toBe('NOT_FOUND')
+      }
+      expect(mockRelRepo.unlinkByEntries).not.toHaveBeenCalled()
+    })
+
+    it('passes tenant through to unlinkByEntries', async () => {
+      mockEntriesRepo.findById.mockResolvedValue(makeEntryRow({ id: 'e1' }))
+      mockRelRepo.unlinkByEntries.mockResolvedValue(true)
+
+      const result = await relationsService.unlink(
+        db,
+        { sourceEntryId: 'e1', targetEntryId: 'e2', fieldName: 'author' },
+        't1'
+      )
+
+      expect(result.success).toBe(true)
+      expect(mockRelRepo.unlinkByEntries).toHaveBeenCalledWith(
+        db,
+        'e1',
+        'e2',
+        'author',
+        't1'
+      )
+    })
   })
 
   describe('getRelationsForEntry', () => {
@@ -219,7 +326,14 @@ describe('relationsService', () => {
       mockRelRepo.findBySourceEntry.mockResolvedValue([])
 
       await relationsService.getRelationsForEntry(db, 'e1', 'tags')
-      expect(mockRelRepo.findBySourceEntry).toHaveBeenCalledWith(db, 'e1', 'tags')
+      expect(mockRelRepo.findBySourceEntry).toHaveBeenCalledWith(db, 'e1', 'tags', undefined)
+    })
+
+    it('passes tenant through to findBySourceEntry', async () => {
+      mockRelRepo.findBySourceEntry.mockResolvedValue([])
+
+      await relationsService.getRelationsForEntry(db, 'e1', 'tags', 't1')
+      expect(mockRelRepo.findBySourceEntry).toHaveBeenCalledWith(db, 'e1', 'tags', 't1')
     })
   })
 
@@ -233,6 +347,13 @@ describe('relationsService', () => {
       if (result.success) {
         expect(result.data).toEqual(relations)
       }
+    })
+
+    it('passes tenant through to findByTargetEntry', async () => {
+      mockRelRepo.findByTargetEntry.mockResolvedValue([])
+
+      await relationsService.getRelationsForTarget(db, 'e2', 't1')
+      expect(mockRelRepo.findByTargetEntry).toHaveBeenCalledWith(db, 'e2', 't1')
     })
   })
 })
@@ -260,6 +381,7 @@ function makeEntryRow(overrides: Partial<EntryRow> = {}): EntryRow {
 function makeRelationRow(overrides: Partial<RelationRow> = {}): RelationRow {
   return {
     id: 'test-relation-id',
+    tenantId: 'test-tenant-id',
     sourceEntryId: 'e1',
     targetEntryId: 'e2',
     sourceCollectionId: 'c1',

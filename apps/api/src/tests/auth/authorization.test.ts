@@ -290,4 +290,18 @@ describe('authorizeApiRequest', () => {
 
     expect(decision).toEqual({ allowed: true })
   })
+
+  it('exempts GraphQL endpoints from admin authorization checks', () => {
+    const globalGet = authorizeApiRequest({ pathname: '/api/graphql', method: 'GET', principal: {} })
+    const globalPost = authorizeApiRequest({ pathname: '/api/graphql', method: 'POST', principal: {} })
+    const tenantGet = authorizeApiRequest({ pathname: '/api/tenants/acme/graphql', method: 'GET', principal: {} })
+    const tenantPost = authorizeApiRequest({ pathname: '/api/tenants/acme/graphql', method: 'POST', principal: {} })
+    const tenantApiPost = authorizeApiRequest({ pathname: '/api/tenants/acme/api/graphql', method: 'POST', principal: {} })
+
+    expect(globalGet).toEqual({ allowed: true })
+    expect(globalPost).toEqual({ allowed: true })
+    expect(tenantGet).toEqual({ allowed: true })
+    expect(tenantPost).toEqual({ allowed: true })
+    expect(tenantApiPost).toEqual({ allowed: true })
+  })
 })

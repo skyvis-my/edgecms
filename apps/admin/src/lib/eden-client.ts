@@ -1,7 +1,13 @@
-import { treaty } from '@elysiajs/eden'
+import { treaty } from '@elysia/eden'
 import type { App } from 'edgecms-api/contract'
 import { resolveApiBasePath } from './api-base-path'
 import { ApiClientError, toApiClientError } from './api-error'
+import {
+  clearAccessTokens,
+  ensureAccessToken,
+  getCachedAccessToken,
+  refreshAccessTokenIfExpiring,
+} from './access-token'
 import { getCookie } from './cookies'
 import {
   ACTIVE_TENANT_STORAGE_KEY,
@@ -58,6 +64,9 @@ if (typeof window !== 'undefined') {
   window.addEventListener(TENANT_SWITCH_EVENT, (event) => {
     const detail = (event as CustomEvent<{ slug: string | null }>).detail
     cachedTenantSlug = detail?.slug ?? null
+    // Drop the previous scope's token; the next request mints lazily and the
+    // authenticated layout prefetches. Never the old tenant's token.
+    clearAccessTokens()
   })
   window.addEventListener('storage', (event) => {
     if (event.key === ACTIVE_TENANT_STORAGE_KEY) {
@@ -97,6 +106,52 @@ function isApiEnvelope(value: unknown): value is ApiEnvelope<unknown> {
   return typeof value === 'object' && value !== null && 'success' in value
 }
 
+function isTokenStalePayload(payload: unknown): boolean {
+  return isApiEnvelope(payload) && !payload.success && payload.error.code === 'TOKEN_STALE'
+}
+
+async function readPayload(response: Response): Promise<unknown> {
+  if (response.status === 204 || response.status === 205) return null
+  const text = await response.text()
+  if (!text) return null
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return text
+  }
+}
+
+async function fetchWithAccessToken(
+  url: string,
+  fetchOptions: RequestInit,
+  headers: Record<string, string>,
+  tenantSlug: string | null
+): Promise<{ response: Response; payload: unknown }> {
+  const token = getCachedAccessToken(tenantSlug)
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  } else {
+    refreshAccessTokenIfExpiring(tenantSlug)
+  }
+  const response = await fetch(url, { ...fetchOptions, headers: { ...headers } })
+  const payload = await readPayload(response)
+
+  if (response.status === 401 && isTokenStalePayload(payload)) {
+    clearAccessTokens(tenantSlug)
+    const freshToken = await ensureAccessToken(tenantSlug, { force: true }).catch(() => null)
+    const retryHeaders = { ...headers }
+    if (freshToken) {
+      retryHeaders['Authorization'] = `Bearer ${freshToken}`
+    } else {
+      delete retryHeaders['Authorization']
+    }
+    const retry = await fetch(url, { ...fetchOptions, headers: retryHeaders })
+    return { response: retry, payload: await readPayload(retry) }
+  }
+
+  return { response, payload }
+}
+
 async function request<T>(
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   path: string,
@@ -131,19 +186,12 @@ async function request<T>(
   if (!SAFE_METHODS.has(method) && body !== undefined) {
     fetchOptions.body = bodyType === 'multipart' ? (body as FormData) : JSON.stringify(body)
   }
-  const response = await fetch(`${resolveApiBasePath()}${tenantPath}`, fetchOptions)
-
-  let payload: unknown = null
-  if (response.status !== 204 && response.status !== 205) {
-    const text = await response.text()
-    if (text) {
-      try {
-        payload = JSON.parse(text) as unknown
-      } catch {
-        payload = text
-      }
-    }
-  }
+  const { response, payload } = await fetchWithAccessToken(
+    `${resolveApiBasePath()}${tenantPath}`,
+    fetchOptions,
+    headers,
+    tenantSlug
+  )
 
   if (!response.ok) {
     if (isApiEnvelope(payload) && !payload.success) {

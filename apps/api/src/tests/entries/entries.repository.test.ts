@@ -92,7 +92,7 @@ describe('entriesRepository', () => {
       const mockDb = createChainableDb({
         selectResults: [
           [{ count: 2 }], // count query
-          mockRows, // rows query
+          mockRows.map((entry) => ({ entry })), // rows query (tenant join shape)
         ],
       })
 
@@ -103,7 +103,7 @@ describe('entriesRepository', () => {
 
     it('applies collectionId filter', async () => {
       const mockDb = createChainableDb({
-        selectResults: [[{ count: 1 }], [makeEntryRow({ collectionId: 'c1' })]],
+        selectResults: [[{ count: 1 }], [{ entry: makeEntryRow({ collectionId: 'c1' }) }]],
       })
 
       const result = await entriesRepository.findAll(mockDb as unknown as Database, {

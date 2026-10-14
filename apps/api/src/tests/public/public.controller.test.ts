@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'bun:test'
 import { Elysia } from 'elysia'
+import {
+  DEFAULT_ASSET_ALLOWED_MIME_TYPES,
+  normalizeAllowedAssetMimeTypes,
+} from '@/assets/file-policy'
 import { applyPublicAssetFormatAliases } from '@/public/public-assets-path-normalizer'
 
 const mockDb = {} as D1Database
@@ -54,7 +58,13 @@ const assetsService = {
   getPublicVariant: vi.fn(),
   resolvePublicVariant: vi.fn(),
 }
-vi.mock('@/assets/assets.service', () => ({ assetsService }))
+vi.mock('@/assets/assets.service', () => ({
+  assetsService,
+  DEFAULT_ASSET_UPLOAD_MAX_BYTES: 5 * 1024 * 1024,
+  DEFAULT_ASSET_UPLOAD_MAX_DIMENSION: 2048,
+  DEFAULT_ASSET_ALLOWED_MIME_TYPES,
+  normalizeAllowedAssetMimeTypes,
+}))
 vi.mock('@/cache/kv.service', () => ({ kvService }))
 vi.mock('@/cache/snapshot.service', () => ({ snapshotService }))
 vi.mock('@/collections/collections.repository', () => ({ collectionsRepository }))
@@ -546,5 +556,43 @@ describe('publicController', () => {
       fit: 'cover',
       format: 'webp',
     })
+  })
+
+  it('POST /preview-token generates ephemeral preview token', async () => {
+    const response = await app.handle(
+      new Request('http://localhost/api/public/preview-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenantSlug: 'acme-corp',
+          entrySlug: 'launch-announcement',
+          collectionSlug: 'posts',
+          ttlSeconds: 1800,
+        }),
+      })
+    )
+
+    expect(response.status).toBe(200)
+    const json = (await response.json()) as { token: string; tenantSlug: string; exp: number }
+    expect(json.token).toBeDefined()
+    expect(json.tenantSlug).toBe('acme-corp')
+    expect(json.exp).toBeGreaterThan(Math.floor(Date.now() / 1000))
+
+    // Verify token via verification endpoint
+    const verifyResponse = await app.handle(
+      new Request('http://localhost/api/public/preview-token/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: json.token,
+          tenantSlug: 'acme-corp',
+        }),
+      })
+    )
+
+    expect(verifyResponse.status).toBe(200)
+    const verifyJson = (await verifyResponse.json()) as { valid: boolean; payload: { tenantSlug: string } }
+    expect(verifyJson.valid).toBe(true)
+    expect(verifyJson.payload.tenantSlug).toBe('acme-corp')
   })
 })

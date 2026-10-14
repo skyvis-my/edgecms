@@ -100,14 +100,14 @@ export async function invalidateByTags(
     return { invalidatedKeys: [] }
   }
 
-  // Step 1: Collect all unique snapshot keys affected by these tags
-  const affectedKeys = new Set<string>()
-  for (const tag of tags) {
-    const keys = await snapshotService.getSnapshotKeysByTag(db, tag)
-    for (const key of keys) {
-      affectedKeys.add(key)
-    }
-  }
+  // Step 1: Collect all unique snapshot keys affected by these tags in a single batch query
+  const affectedKeysList =
+    typeof snapshotService.getSnapshotKeysByTags === 'function'
+      ? await snapshotService.getSnapshotKeysByTags(db, tags)
+      : (
+          await Promise.all(tags.map((tag) => snapshotService.getSnapshotKeysByTag(db, tag)))
+        ).flat()
+  const affectedKeys = new Set<string>(affectedKeysList)
 
   // Step 2: Parse keys to extract unique tenant+collection+locale tuples
   const tuples = new Set<string>()
@@ -123,13 +123,14 @@ export async function invalidateByTags(
     }
   }
 
-  // Step 3: Increment version counter for each tenant+collection+locale tuple
+  // Step 3: Increment version counter for each tenant+collection+locale tuple in parallel.
   const invalidatedKeys: string[] = []
-  for (const tuple of tuples) {
-    const parts = tuple.split(':')
-    let tenantSlug: string | undefined
-    let collectionSlug: string
-    let locale: string
+  await Promise.all(
+    [...tuples].map(async (tuple) => {
+      const parts = tuple.split(':')
+      let tenantSlug: string | undefined
+      let collectionSlug: string
+      let locale: string
 
     if (parts.length === 3) {
       // Multi-tenant: tenantSlug:collectionSlug:locale
@@ -141,7 +142,7 @@ export async function invalidateByTags(
       collectionSlug = parts[0] as string
       locale = parts[1] as string
     } else {
-      continue
+      return
     }
 
     try {
@@ -167,7 +168,8 @@ export async function invalidateByTags(
       })
       // Continue with remaining invalidations even if one fails
     }
-  }
+    })
+  )
 
   return { invalidatedKeys }
 }
@@ -259,7 +261,7 @@ export async function extractCacheTagsFromCommand(
 
     case 'bulkUpdate': {
       if (Array.isArray(payload.entryIds)) {
-        for (const entryId of payload.entryIds) {
+        for (const entryId of payload.entryIds.slice(0, 100)) {
           if (typeof entryId === 'string') {
             tags.add(`entry:${entryId}`)
           }

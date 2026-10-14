@@ -144,8 +144,9 @@ describe('collectionsService', () => {
 
       const result = await collectionsService.findByIdOrSlug(db, 'blog-posts')
       expect(result).toEqual({ success: true, data: row })
-      expect(mockRepo.findById).toHaveBeenCalledWith(db, 'blog-posts')
+      // Slug-shaped input resolves slug-first (single query on hit).
       expect(mockRepo.findBySlug).toHaveBeenCalledWith(db, 'blog-posts')
+      expect(mockRepo.findById).not.toHaveBeenCalled()
     })
 
     it('returns NOT_FOUND when neither ID nor slug matches', async () => {
@@ -185,8 +186,53 @@ describe('collectionsService', () => {
       )
     })
 
-    it('preserves content modeling field semantics when creating collections', async () => {
+    it('accepts searchFields naming declared fields', async () => {
       mockRepo.findSlugsByPrefix.mockResolvedValue([])
+      const created = makeRow({ id: 'mock-uuid', slug: 'blog-posts' })
+      mockRepo.create.mockResolvedValue(created)
+
+      const result = await collectionsService.create(db, {
+        name: 'Blog Posts',
+        fields: [{ name: 'title', type: 'text', required: true, localizable: false }],
+        searchFields: ['title'],
+      })
+
+      expect(result).toEqual({ success: true, data: created })
+      expect(mockRepo.create).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({ searchFields: ['title'] })
+      )
+    })
+
+    it('rejects searchFields naming undeclared fields', async () => {
+      const result = await collectionsService.create(db, {
+        name: 'Blog Posts',
+        fields: [{ name: 'title', type: 'text', required: true, localizable: false }],
+        searchFields: ['body'],
+      })
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.code).toBe('VALIDATION_ERROR')
+      }
+      expect(mockRepo.create).not.toHaveBeenCalled()
+    })
+
+    it('rejects malformed searchFields entries', async () => {
+      const result = await collectionsService.create(db, {
+        name: 'Blog Posts',
+        fields: [{ name: 'title', type: 'text', required: true, localizable: false }],
+        searchFields: ['data.[bad]'],
+      })
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.code).toBe('VALIDATION_ERROR')
+      }
+      expect(mockRepo.create).not.toHaveBeenCalled()
+    })
+
+    it('preserves content modeling field semantics when creating collections', async () => {      mockRepo.findSlugsByPrefix.mockResolvedValue([])
       mockRepo.create.mockResolvedValue(makeRow({ id: 'mock-uuid', slug: 'landing-pages' }))
       const fields = [
         {
@@ -649,6 +695,51 @@ describe('collectionsService', () => {
         })
       )
       consoleSpy.mockRestore()
+    })
+  })
+
+  describe('managed-schema mode locking', () => {
+    it('blocks field modifications on Git-managed collection without bypass', async () => {
+      mockRepo.findById.mockResolvedValue(
+        makeRow({
+          id: 'managed-col',
+          description: 'Production schema @managed:git',
+          fields: [{ name: 'title', type: 'text', required: true, localizable: false }],
+        })
+      )
+
+      const result = await collectionsService.update(db, 'managed-col', {
+        fields: [
+          { name: 'title', type: 'text', required: true, localizable: false },
+          { name: 'newField', type: 'text', required: false, localizable: false },
+        ],
+      })
+
+      expect(result.success).toBe(false)
+      expect(result.error?.code).toBe('MANAGED_SCHEMA_IMMUTABLE')
+      expect(mockRepo.update).not.toHaveBeenCalled()
+    })
+
+    it('allows field modifications on Git-managed collection when bypassManagedLock is true', async () => {
+      mockRepo.findById.mockResolvedValue(
+        makeRow({
+          id: 'managed-col',
+          description: 'Production schema @managed:git',
+          fields: [{ name: 'title', type: 'text', required: true, localizable: false }],
+        })
+      )
+      mockRepo.update.mockResolvedValue(makeRow({ id: 'managed-col' }))
+
+      const result = await collectionsService.update(db, 'managed-col', {
+        fields: [
+          { name: 'title', type: 'text', required: true, localizable: false },
+          { name: 'newField', type: 'text', required: false, localizable: false },
+        ],
+        bypassManagedLock: true,
+      })
+
+      expect(result.success).toBe(true)
+      expect(mockRepo.update).toHaveBeenCalled()
     })
   })
 })

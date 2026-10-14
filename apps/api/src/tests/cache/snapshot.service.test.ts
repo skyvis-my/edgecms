@@ -24,6 +24,7 @@ vi.mock('@/entries/entries.repository', () => ({
 vi.mock('@/relations/relations.resolver', () => ({
   relationsResolver: {
     populate: vi.fn(),
+    populateMany: vi.fn(),
   },
 }))
 
@@ -47,6 +48,7 @@ describe('snapshotService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mockResolver.populateMany.mockResolvedValue([])
   })
 
   describe('generateListSnapshot', () => {
@@ -79,10 +81,12 @@ describe('snapshotService', () => {
       mockEntriesRepo.findVisibleByCollection.mockResolvedValue({ rows: [entry], total: 1 })
 
       // Resolver returns populated entry (no additional relations)
-      mockResolver.populate.mockResolvedValue({
-        ...entry,
-        data: { title: { en: 'Hello', fr: 'Bonjour' }, count: 42 },
-      })
+      mockResolver.populateMany.mockResolvedValue([
+        {
+          ...entry,
+          data: { title: { en: 'Hello', fr: 'Bonjour' }, count: 42 },
+        },
+      ])
 
       const result = await snapshotService.generateListSnapshot(db, 'articles', 'fr')
 
@@ -117,7 +121,7 @@ describe('snapshotService', () => {
         unpublishAt: new Date(now + 60_000).toISOString(),
       })
       mockEntriesRepo.findVisibleByCollection.mockResolvedValue({ rows: [entry], total: 1 })
-      mockResolver.populate.mockResolvedValue({ ...entry, data: {} })
+      mockResolver.populateMany.mockResolvedValue([{ ...entry, data: {} }])
 
       const result = await snapshotService.generateListSnapshot(db, 'articles', 'en')
       expect(result?.entries).toHaveLength(1)
@@ -145,7 +149,7 @@ describe('snapshotService', () => {
     it('returns null when entry is not published', async () => {
       const collection = makeCollection({ id: 'c1' })
       mockCollRepo.findBySlug.mockResolvedValue(collection)
-      mockEntriesRepo.findById.mockResolvedValue(
+      mockEntriesRepo.findByCollectionAndSlug.mockResolvedValue(
         makeEntry({ id: 'e1', collectionId: 'c1', status: 'draft' })
       )
 
@@ -169,11 +173,13 @@ describe('snapshotService', () => {
         status: 'published',
         data: { title: { en: 'Hello', fr: 'Bonjour' } },
       })
-      mockEntriesRepo.findById.mockResolvedValue(entry)
-      mockResolver.populate.mockResolvedValue({
-        ...entry,
-        data: { title: { en: 'Hello', fr: 'Bonjour' } },
-      })
+      mockEntriesRepo.findByCollectionAndSlug.mockResolvedValue(entry)
+      mockResolver.populateMany.mockResolvedValue([
+        {
+          ...entry,
+          data: { title: { en: 'Hello', fr: 'Bonjour' } },
+        },
+      ])
 
       const result = await snapshotService.generateEntrySnapshot(db, 'articles', 'e1', 'en')
 
@@ -196,7 +202,7 @@ describe('snapshotService', () => {
       })
 
       mockCollRepo.findBySlug.mockResolvedValue(collection)
-      mockEntriesRepo.findById.mockResolvedValue(entry)
+      mockEntriesRepo.findByCollectionAndSlug.mockResolvedValue(entry)
 
       const result = await snapshotService.generateEntrySnapshot(db, 'articles', 'e1', 'en', undefined, {
         populate: [],
@@ -204,7 +210,7 @@ describe('snapshotService', () => {
       })
 
       expect(result).not.toBeNull()
-      expect(mockResolver.populate).not.toHaveBeenCalled()
+      expect(mockResolver.populateMany).not.toHaveBeenCalled()
     })
 
     it('applies query pattern populate fields and depth when provided', async () => {
@@ -222,15 +228,23 @@ describe('snapshotService', () => {
       })
 
       mockCollRepo.findBySlug.mockResolvedValue(collection)
-      mockEntriesRepo.findById.mockResolvedValue(entry)
-      mockResolver.populate.mockResolvedValue(entry)
+      mockEntriesRepo.findByCollectionAndSlug.mockResolvedValue(entry)
+      mockResolver.populateMany.mockResolvedValue([entry])
 
       await snapshotService.generateEntrySnapshot(db, 'articles', 'e1', 'en', undefined, {
         populate: ['author'],
         depth: 3,
       })
 
-      expect(mockResolver.populate).toHaveBeenCalledWith(db, entry, ['author'], 1, 3, new Set(), undefined)
+      expect(mockResolver.populateMany).toHaveBeenCalledWith(
+        db,
+        [entry],
+        ['author'],
+        1,
+        3,
+        new Set(),
+        undefined
+      )
     })
 
     it('excludes published entry when unpublishAt has passed', async () => {
@@ -243,18 +257,15 @@ describe('snapshotService', () => {
         unpublishAt: new Date(now - 30_000).toISOString(),
       })
       mockCollRepo.findBySlug.mockResolvedValue(collection)
-      mockEntriesRepo.findById.mockResolvedValue(expiredEntry)
+      mockEntriesRepo.findByCollectionAndSlug.mockResolvedValue(expiredEntry)
 
       const result = await snapshotService.generateEntrySnapshot(db, 'articles', 'e-expired', 'en')
       expect(result).toBeNull()
     })
 
-    it('falls back to slug lookup when entry ID does not match collection', async () => {
+    it('resolves non-UUID identifiers via slug lookup without probing findById', async () => {
       const collection = makeCollection({ id: 'c1', slug: 'articles' })
       mockCollRepo.findBySlug.mockResolvedValue(collection)
-      mockEntriesRepo.findById.mockResolvedValue(
-        makeEntry({ id: 'e1', collectionId: 'other-collection' })
-      )
       const entryBySlug = makeEntry({
         id: 'e2',
         collectionId: 'c1',
@@ -263,17 +274,56 @@ describe('snapshotService', () => {
         data: {},
       })
       mockEntriesRepo.findByCollectionAndSlug.mockResolvedValue(entryBySlug)
-      mockResolver.populate.mockResolvedValue({ ...entryBySlug, data: {} })
+      mockResolver.populateMany.mockResolvedValue([{ ...entryBySlug, data: {} }])
 
       const result = await snapshotService.generateEntrySnapshot(db, 'articles', 'hello', 'en')
       expect(result).not.toBeNull()
       expect(result?.entry.id).toBe('e2')
+      expect(mockEntriesRepo.findById).not.toHaveBeenCalled()
+      expect(mockEntriesRepo.findByCollectionAndSlug).toHaveBeenCalledWith(
+        db,
+        'c1',
+        'hello',
+        undefined
+      )
     })
 
-    it('passes tenantId through entry id and slug lookups', async () => {
+    it('resolves UUID identifiers via findById without slug lookup', async () => {
+      const collection = makeCollection({ id: 'c1', slug: 'articles' })
+      mockCollRepo.findBySlug.mockResolvedValue(collection)
+      const uuid = '123e4567-e89b-12d3-a456-426614174000'
+      const entryById = makeEntry({
+        id: uuid,
+        collectionId: 'c1',
+        slug: 'hello',
+        status: 'published',
+        data: {},
+      })
+      mockEntriesRepo.findById.mockResolvedValue(entryById)
+      mockResolver.populateMany.mockResolvedValue([{ ...entryById, data: {} }])
+
+      const result = await snapshotService.generateEntrySnapshot(db, 'articles', uuid, 'en')
+      expect(result).not.toBeNull()
+      expect(result?.entry.id).toBe(uuid)
+      expect(mockEntriesRepo.findById).toHaveBeenCalledWith(db, uuid, undefined)
+      expect(mockEntriesRepo.findByCollectionAndSlug).not.toHaveBeenCalled()
+    })
+
+    it('returns null when a UUID belongs to another collection', async () => {
+      const collection = makeCollection({ id: 'c1', slug: 'articles' })
+      mockCollRepo.findBySlug.mockResolvedValue(collection)
+      const uuid = '123e4567-e89b-12d3-a456-426614174000'
+      mockEntriesRepo.findById.mockResolvedValue(
+        makeEntry({ id: uuid, collectionId: 'other-collection' })
+      )
+
+      const result = await snapshotService.generateEntrySnapshot(db, 'articles', uuid, 'en')
+      expect(result).toBeNull()
+    })
+
+    it('passes tenantId through the scoped slug lookup', async () => {
       const collection = makeCollection({ id: 'c1', slug: 'articles', tenantId: 'tenant-smoke' })
       mockCollRepo.findBySlug.mockResolvedValue(collection)
-      mockEntriesRepo.findById.mockResolvedValue(undefined)
       const entryBySlug = makeEntry({
         id: 'e-tenant',
         collectionId: 'c1',
@@ -282,7 +332,7 @@ describe('snapshotService', () => {
         data: {},
       })
       mockEntriesRepo.findByCollectionAndSlug.mockResolvedValue(entryBySlug)
-      mockResolver.populate.mockResolvedValue({ ...entryBySlug, data: {} })
+      mockResolver.populateMany.mockResolvedValue([{ ...entryBySlug, data: {} }])
 
       const result = await snapshotService.generateEntrySnapshot(
         db,
@@ -293,7 +343,8 @@ describe('snapshotService', () => {
       )
 
       expect(result).not.toBeNull()
-      expect(mockEntriesRepo.findById).toHaveBeenCalledWith(db, 'hello', 'tenant-smoke')
+      // Slug-shaped input resolves slug-first (single query on hit).
+      expect(mockEntriesRepo.findById).not.toHaveBeenCalled()
       expect(mockEntriesRepo.findByCollectionAndSlug).toHaveBeenCalledWith(
         db,
         'c1',

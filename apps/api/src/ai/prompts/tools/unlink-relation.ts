@@ -1,4 +1,4 @@
-import { type } from 'arktype'
+import { Type, createSchema } from '@/shared/schemas/typebox'
 import { id } from '@/shared/schemas'
 
 /**
@@ -11,11 +11,13 @@ export const unlinkRelationTool = {
   name: 'unlinkRelation',
   description:
     'Remove a relationship between two entries. Use this when the user wants to unlink content (e.g., "remove the author from this post", "unlink this product from the category", "remove the association"). Specify the source entry (the one that owns the relation), the target entry (what it currently references), and the field name.',
-  parameters: type({
-    sourceEntryId: id,
-    targetEntryId: id,
-    fieldName: 'string',
-  }),
+  parameters: createSchema(
+    Type.Object({
+      sourceEntryId: id,
+      targetEntryId: id,
+      fieldName: Type.String(),
+    })
+  ),
 }
 
 export type UnlinkRelationToolParams = typeof unlinkRelationTool.parameters.infer

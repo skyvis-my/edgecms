@@ -147,4 +147,58 @@ describe('F07 — Move bootstrap work behind the application boundary', () => {
     expect(runtime.getLoadedPlugins()).toHaveLength(1)
     expect(runtime.getLoadedPlugins()[0]?.name).toBe('preview-revalidation')
   })
+
+  it('handles CORS, security headers, 415, and error envelopes across app runtime', async () => {
+    const {
+      classifyCorsSurface,
+      warmPublicCacheInBackground,
+      resetPublicCacheWarmingState,
+    } = await import('@/app')
+
+    expect(classifyCorsSurface('/api/me')).toBe('admin')
+    expect(classifyCorsSurface('/api/public/entries')).toBe('public')
+    expect(classifyCorsSurface('/api/health')).toBe('none')
+
+    resetPublicCacheWarmingState()
+    warmPublicCacheInBackground({
+      DB: {} as unknown as D1Database,
+      CACHE: {} as unknown as KVNamespace,
+    } as unknown as Env)
+
+    const app = createApp()
+
+    // 404 route
+    const resNotFound = await app.handle(new Request('http://localhost/api/missing-page-404'))
+    expect(resNotFound.status).toBe(404)
+    const errBody = (await resNotFound.json()) as { error: { code: string } }
+    expect(errBody.error.code).toBe('NOT_FOUND')
+
+    // 415 Unsupported Media Type
+    const res415 = await app.handle(
+      new Request('http://localhost/api/admin/collections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: 'data',
+      })
+    )
+    expect(res415.status).toBe(415)
+
+    // CORS preflight OPTIONS
+    const resCors = await app.handle(
+      new Request('http://localhost/api/admin/collections', {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'http://localhost:5173',
+          'Access-Control-Request-Method': 'GET',
+        },
+      })
+    )
+    expect(resCors.status).toBe(204)
+
+    // Security headers
+    const resHealth = await app.handle(new Request('http://localhost/api/health'))
+    expect(resHealth.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(resHealth.headers.get('content-security-policy')).toBe("default-src 'none'; frame-ancestors 'none'")
+  })
 })
+

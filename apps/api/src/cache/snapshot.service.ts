@@ -1,9 +1,9 @@
-import { eq, type SQL } from 'drizzle-orm'
+import { eq, inArray, type SQL } from 'drizzle-orm'
 import { collectionsRepository } from '@/collections/collections.repository'
 import type { Database } from '@/database/db'
 import { cacheTags } from '@/database/schema'
-import { entriesRepository } from '@/entries/entries.repository'
-import { relationsResolver } from '@/relations/relations.resolver'
+import { entriesRepository, type EntryRow } from '@/entries/entries.repository'
+import { relationsResolver, type PopulatedEntry } from '@/relations/relations.resolver'
 import { flattenLocaleFields } from '@/shared/locale'
 
 /**
@@ -28,6 +28,7 @@ export interface ListSnapshot {
   generatedAt: string
   total: number
   tenantId?: string
+  cache?: SnapshotCacheTtls
 }
 
 /**
@@ -51,9 +52,20 @@ export interface EntrySnapshot {
   }
   generatedAt: string
   tenantId?: string
+  cache?: SnapshotCacheTtls
 }
 
-type CollectionSnapshotSeed = {
+/**
+ * Header TTLs embedded in a snapshot on write so KV-hit responses can reuse
+ * them without recomputing (avoids D1 reads on the hot path).
+ */
+export interface SnapshotCacheTtls {
+  dynamicTTL: number
+  browserTTL: number
+  cdnTTL: number
+}
+
+export type CollectionSnapshotSeed = {
   id: string
   slug: string
   name: string
@@ -61,6 +73,32 @@ type CollectionSnapshotSeed = {
   defaultLocale: string
 }
 
+/**
+ * Populate relations for a single entry via the batch populateMany API.
+ * Even for one entry this avoids the per-target sequential recursion of
+ * populate(): nested relations resolve across all targets per depth level.
+ */
+async function populateSingleEntry(
+  db: Database,
+  entry: EntryRow,
+  fieldNames: string[],
+  maxDepth: number,
+  tenantId?: string
+): Promise<PopulatedEntry> {
+  if (typeof relationsResolver.populateMany === 'function') {
+    const [populated] = await relationsResolver.populateMany(
+      db,
+      [entry],
+      fieldNames,
+      1,
+      maxDepth,
+      new Set(),
+      tenantId
+    )
+    return populated ?? entry
+  }
+  return relationsResolver.populate(db, entry, fieldNames, 1, maxDepth, new Set(), tenantId)
+}
 
 function isEntryVisibleAtRequestTime(
   entry: {
@@ -150,33 +188,46 @@ export const snapshotService = {
       collectionId: collectionData.id,
       page: Math.max(1, pagination?.page ?? 1),
       perPage: Math.min(100, Math.max(1, pagination?.perPage ?? 20)),
+      skipCount: true,
       ...queryOptions,
     })
 
-    // Process each entry: flatten localized fields and resolve relations
-    const processedEntries = await Promise.all(
-      visibleEntries.map(async (entry) => {
-        // Resolve relation fields (depth 1 for list snapshots)
-        const populated = await relationsResolver.populate(db, entry, [], 1, 1, new Set(), tenantId)
+    // Resolve relation fields in batch across all visible entries (depth 1 for list snapshots)
+    const populatedEntries =
+      typeof relationsResolver.populateMany === 'function'
+        ? await relationsResolver.populateMany(
+            db,
+            visibleEntries,
+            [],
+            1,
+            1,
+            new Set(),
+            tenantId
+          )
+        : await Promise.all(
+            visibleEntries.map((entry) =>
+              relationsResolver.populate(db, entry, [], 1, 1, new Set(), tenantId)
+            )
+          )
 
-        // Flatten localized fields to the target locale
-        const flattenedData = flattenLocaleFields(
-          populated.data,
-          collectionData.fields,
-          locale,
-          collectionData.defaultLocale
-        )
+    // Flatten localized fields to the target locale
+    const processedEntries = populatedEntries.map((populated) => {
+      const flattenedData = flattenLocaleFields(
+        populated.data,
+        collectionData.fields,
+        locale,
+        collectionData.defaultLocale
+      )
 
-        return {
-          id: entry.id,
-          slug: entry.slug,
-          data: flattenedData,
-          version: entry.version,
-          createdAt: entry.createdAt,
-          updatedAt: entry.updatedAt,
-        }
-      })
-    )
+      return {
+        id: populated.id,
+        slug: populated.slug,
+        data: flattenedData,
+        version: populated.version,
+        createdAt: populated.createdAt,
+        updatedAt: populated.updatedAt,
+      }
+    })
 
     return {
       collection: {
@@ -230,15 +281,32 @@ export const snapshotService = {
       return null
     }
 
-    // Try to find entry by ID first, then by slug
-    let entry = await entriesRepository.findById(db, entryIdOrSlug, tenantId)
-    if (!entry || entry.collectionId !== collectionData.id) {
-      entry = await entriesRepository.findByCollectionAndSlug(
-        db,
-        collectionData.id,
-        entryIdOrSlug,
-        tenantId
-      )
+    // Lookup: UUIDs prefer findById, slugs prefer slug lookup (1 query on hit),
+    // with a miss fallback for legacy short ids. Non-UUID callers (e.g. "e1"
+    // in tests, singleton entry.id which is a UUID) resolve in one trip.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const isUuid = UUID_RE.test(entryIdOrSlug)
+    let entry = isUuid
+      ? await entriesRepository.findById(db, entryIdOrSlug, tenantId)
+      : await entriesRepository.findByCollectionAndSlug(
+          db,
+          collectionData.id,
+          entryIdOrSlug,
+          tenantId
+        )
+    if (!entry) {
+      // Miss fallback: the other shape (covers legacy short ids).
+      entry = isUuid
+        ? await entriesRepository.findByCollectionAndSlug(
+            db,
+            collectionData.id,
+            entryIdOrSlug,
+            tenantId
+          )
+        : await entriesRepository.findById(db, entryIdOrSlug, tenantId)
+    }
+    if (entry && entry.collectionId !== collectionData.id) {
+      entry = undefined
     }
 
     if (!entry) {
@@ -256,13 +324,11 @@ export const snapshotService = {
       if (requestedFields.length > 0) {
         const relationFields =
           requestedFields.length === 1 && requestedFields[0] === '*' ? [] : requestedFields
-        populated = await relationsResolver.populate(
-          db, entry, relationFields, 1, maxDepth, new Set(), tenantId
-        )
+        populated = await populateSingleEntry(db, entry, relationFields, maxDepth, tenantId)
       }
     } else {
       // Preserve historical behavior when no explicit query pattern is provided.
-      populated = await relationsResolver.populate(db, entry, [], 1, 2, new Set(), tenantId)
+      populated = await populateSingleEntry(db, entry, [], 2, tenantId)
     }
 
     // Flatten localized fields to the target locale
@@ -335,21 +401,31 @@ export const snapshotService = {
    * @param tags - Array of cache tag strings to associate with this snapshot
    */
   async storeCacheTags(db: Database, snapshotKey: string, tags: string[]): Promise<void> {
-    // Delete existing cache tags for this snapshot key
-    await db.delete(cacheTags).where(eq(cacheTags.snapshotKey, snapshotKey))
-
-    // Insert new cache tag rows
-    if (tags.length > 0) {
-      const now = new Date().toISOString()
-      const rows = tags.map((tag) => ({
-        id: crypto.randomUUID(),
-        tag,
-        snapshotKey,
-        createdAt: now,
-      }))
-
-      await db.insert(cacheTags).values(rows)
+    const hasBatch = typeof (db as unknown as { batch?: unknown }).batch === 'function'
+    const now = new Date().toISOString()
+    const rows = tags.map((tag) => ({
+      id: crypto.randomUUID(),
+      tag,
+      snapshotKey,
+      createdAt: now,
+    }))
+    const deleteBuilder = db.delete(cacheTags).where(eq(cacheTags.snapshotKey, snapshotKey))
+    if (rows.length === 0) {
+      await deleteBuilder
+      return
     }
+    const insertBuilder = db.insert(cacheTags).values(rows)
+    // Atomic replace when the driver supports batch; else sequential delete-then-insert.
+    if (hasBatch) {
+      await (db as unknown as { batch: (q: unknown[]) => Promise<unknown> }).batch([
+        deleteBuilder,
+        insertBuilder,
+      ])
+      return
+    }
+    // Delete existing cache tags for this snapshot key
+    await deleteBuilder
+    await insertBuilder
   },
 
   /**
@@ -363,10 +439,30 @@ export const snapshotService = {
    * @returns Array of unique snapshot keys
    */
   async getSnapshotKeysByTag(db: Database, tag: string): Promise<string[]> {
-    const rows = await db.select().from(cacheTags).where(eq(cacheTags.tag, tag))
+    const rows = await db
+      .select({ snapshotKey: cacheTags.snapshotKey })
+      .from(cacheTags)
+      .where(eq(cacheTags.tag, tag))
 
-    // Return unique snapshot keys (a snapshot may have multiple tags)
     const uniqueKeys = new Set(rows.map((row) => row.snapshotKey))
+    return Array.from(uniqueKeys)
+  },
+
+  /**
+   * Get all snapshot keys associated with any of the provided cache tags in a single query.
+   * Tags are chunked (50/query) to respect D1/SQLite variable limits.
+   */
+  async getSnapshotKeysByTags(db: Database, tags: string[]): Promise<string[]> {
+    if (tags.length === 0) return []
+    const uniqueKeys = new Set<string>()
+    for (let i = 0; i < tags.length; i += 50) {
+      const chunk = tags.slice(i, i + 50)
+      const rows = await db
+        .select({ snapshotKey: cacheTags.snapshotKey })
+        .from(cacheTags)
+        .where(inArray(cacheTags.tag, chunk))
+      for (const row of rows) uniqueKeys.add(row.snapshotKey)
+    }
     return Array.from(uniqueKeys)
   },
 }

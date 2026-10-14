@@ -650,7 +650,7 @@ describe('executeCommand', () => {
       expect(mockEventBusEmit).toHaveBeenCalledWith('entry.created', {
         before: null,
         after: { id: 'e1', collectionId: 'c1' },
-        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global' },
+        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
       })
     })
 
@@ -671,7 +671,7 @@ describe('executeCommand', () => {
       expect(mockEventBusEmit).toHaveBeenCalledWith('entry.updated', {
         before: null,
         after: { id: 'e1', data: { title: 'Updated' } },
-        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global' },
+        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
       })
     })
 
@@ -692,7 +692,7 @@ describe('executeCommand', () => {
       expect(mockEventBusEmit).toHaveBeenCalledWith('entry.deleted', {
         before: null,
         after: { id: 'e1' },
-        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global' },
+        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
       })
     })
 
@@ -713,7 +713,7 @@ describe('executeCommand', () => {
       expect(mockEventBusEmit).toHaveBeenCalledWith('entry.published', {
         before: null,
         after: { id: 'e1', status: 'published' },
-        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global' },
+        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
       })
     })
 
@@ -734,7 +734,7 @@ describe('executeCommand', () => {
       expect(mockEventBusEmit).toHaveBeenCalledWith('relation.linked', {
         before: null,
         after: { sourceId: 'e1', targetId: 'e2' },
-        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global' },
+        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
       })
     })
 
@@ -995,6 +995,126 @@ describe('executeCommand', () => {
       expect(mockCreateEntry).not.toHaveBeenCalled()
 
       verifyReceiptSpy.mockRestore()
+    })
+
+    it('recovers gracefully and returns committed result when concurrent duplicate command hits unique constraint collision on recordCommand', async () => {
+      const { commandsRepository } = await import('../../commands/commands.repository')
+      let findCount = 0
+      const findByIdSpy = vi.spyOn(commandsRepository, 'findById').mockImplementation(async () => {
+        findCount++
+        // On initial check, no record exists (concurrent execution in progress)
+        if (findCount === 1) return null
+        // On retry check after recordCommand collision, the concurrent command has committed
+        return {
+          id: 'idem_concurrent-key',
+          commandType: 'createEntry',
+          payload: { collectionId: 'c1', data: { title: 'Concurrent' } },
+          actor: { userId: 'user1', source: 'admin' },
+          result: { id: 'e1', title: 'Concurrent' },
+          status: 'success',
+          tenantScope: null,
+          executedAt: '2026-06-08T00:00:00.000Z',
+        }
+      })
+
+      mockCreateEntry.mockResolvedValue({
+        success: true,
+        data: { id: 'e1', title: 'Concurrent' },
+        auditEntries: [],
+      })
+
+      // Simulate insert collision on processedCommands
+      const insertProcessedSpy = vi
+        .spyOn(commandsRepository, 'insertProcessedCommand')
+        .mockRejectedValue(new Error('UNIQUE constraint failed: processed_commands.id'))
+
+      const result = await executeCommand(ctx, {
+        type: 'createEntry',
+        payload: { collectionId: 'c1', data: { title: 'Concurrent' } },
+        actor: { userId: 'user1', source: 'admin' },
+        idempotencyKey: 'concurrent-key',
+        timestamp: new Date().toISOString(),
+      })
+
+      expect(result.status).toBe('success')
+      expect(result.commandId).toBe('idem_concurrent-key')
+      expect(result.data).toEqual({ id: 'e1', title: 'Concurrent' })
+
+      findByIdSpy.mockRestore()
+      insertProcessedSpy.mockRestore()
+    })
+
+    it('returns IDEMPOTENCY_CONFLICT when concurrent collision occurs with different payload', async () => {
+      const { commandsRepository } = await import('../../commands/commands.repository')
+      let findCount = 0
+      const findByIdSpy = vi.spyOn(commandsRepository, 'findById').mockImplementation(async () => {
+        findCount++
+        if (findCount === 1) return null
+        return {
+          id: 'idem_concurrent-conflict',
+          commandType: 'createEntry',
+          payload: { collectionId: 'c1', data: { title: 'FirstPayload' } },
+          actor: { userId: 'user1', source: 'admin' },
+          result: { id: 'e1' },
+          status: 'success',
+          tenantScope: null,
+          executedAt: '2026-06-08T00:00:00.000Z',
+        }
+      })
+
+      mockCreateEntry.mockResolvedValue({
+        success: true,
+        data: { id: 'e2' },
+        auditEntries: [],
+      })
+
+      const insertProcessedSpy = vi
+        .spyOn(commandsRepository, 'insertProcessedCommand')
+        .mockRejectedValue(new Error('UNIQUE constraint failed: processed_commands.id'))
+
+      const result = await executeCommand(ctx, {
+        type: 'createEntry',
+        payload: { collectionId: 'c1', data: { title: 'DifferentPayload' } },
+        actor: { userId: 'user1', source: 'admin' },
+        idempotencyKey: 'concurrent-conflict',
+        timestamp: new Date().toISOString(),
+      })
+
+      expect(result.status).toBe('failed')
+      expect(result.error?.code).toBe('IDEMPOTENCY_CONFLICT')
+
+      findByIdSpy.mockRestore()
+      insertProcessedSpy.mockRestore()
+    })
+
+    it('returns cached dry_run outcome when idempotency key is reused for dry run', async () => {
+      const { commandsRepository } = await import('../../commands/commands.repository')
+      const findByIdSpy = vi.spyOn(commandsRepository, 'findById').mockResolvedValue({
+        id: 'idem_dry-run-key',
+        commandType: 'createEntry',
+        payload: { collectionId: 'c1' },
+        actor: { userId: 'user1', source: 'admin' },
+        result: { diff: [{ field: 'status', action: 'add', before: null, after: 'draft' }], previewReceipt: 'rcpt-preview-1' },
+        status: 'dry_run',
+        tenantScope: null,
+        executedAt: '2026-06-08T00:00:00.000Z',
+      })
+
+      const result = await executeCommand(ctx, {
+        type: 'createEntry',
+        payload: { collectionId: 'c1' },
+        actor: { userId: 'user1', source: 'admin' },
+        idempotencyKey: 'dry-run-key',
+        dryRun: true,
+        timestamp: new Date().toISOString(),
+      })
+
+      expect(result.status).toBe('dry_run')
+      expect(result.commandId).toBe('idem_dry-run-key')
+      expect(result.diff).toEqual([{ field: 'status', action: 'add', before: null, after: 'draft' }])
+      expect(result.previewReceipt).toBe('rcpt-preview-1')
+
+      findByIdSpy.mockRestore()
     })
   })
 })

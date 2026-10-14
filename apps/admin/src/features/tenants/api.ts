@@ -26,9 +26,6 @@ export const tenantsKeys = {
   current: ['tenant-current'] as const,
 }
 
-/** @deprecated Use tenantsKeys */
-export const tenantKeys = tenantsKeys
-
 /**
  * Type definitions for tenant entities
  */
@@ -177,7 +174,7 @@ export function setCurrentTenantSlug(slug: string | null) {
  */
 export function useCurrentTenantSlug() {
   return useQuery({
-    queryKey: tenantKeys.current,
+    queryKey: tenantsKeys.current,
     queryFn: () => getCurrentTenantSlug(),
     staleTime: Number.POSITIVE_INFINITY,
   })
@@ -188,7 +185,7 @@ export function useCurrentTenantSlug() {
  */
 export function useTenants() {
   return useQuery({
-    queryKey: tenantKeys.all,
+    queryKey: tenantsKeys.all,
     queryFn: async () => edenGet<Tenant[]>('/admin/tenants'),
     staleTime: 10 * 60 * 1000,
   })
@@ -199,7 +196,7 @@ export function useTenants() {
  */
 export function useTenant(slug: string) {
   return useQuery({
-    queryKey: tenantKeys.detail(slug),
+    queryKey: tenantsKeys.detail(slug),
     queryFn: async () => edenGet<TenantDetail>(`/admin/tenants/${slug}`),
     enabled: !!slug,
     staleTime: 10 * 60 * 1000,
@@ -215,17 +212,17 @@ export function useCreateTenant() {
     runOnline: (input) => edenPost<Tenant>('/admin/tenants', input),
     buildOfflineResult: (_queryClient, input) => buildOptimisticTenant(input),
     onMutateOptimistic: async (queryClient, input) => {
-      const previousTenants = await snapshotListQuery<Tenant>(queryClient, tenantKeys.all)
-      appendListItem(queryClient, tenantKeys.all, buildOptimisticTenant(input))
+      const previousTenants = await snapshotListQuery<Tenant>(queryClient, tenantsKeys.all)
+      appendListItem(queryClient, tenantsKeys.all, buildOptimisticTenant(input))
       return { previousTenants }
     },
     onRollbackOptimistic: (queryClient, context) => {
       if (context?.previousTenants) {
-        restoreQuerySnapshot(queryClient, tenantKeys.all, context.previousTenants)
+        restoreQuerySnapshot(queryClient, tenantsKeys.all, context.previousTenants)
       }
     },
     onMutationSuccess: (queryClient) => {
-      queryClient.invalidateQueries({ queryKey: tenantKeys.all })
+      queryClient.invalidateQueries({ queryKey: tenantsKeys.all })
     },
   })
 }
@@ -242,7 +239,7 @@ export function useUpdateTenant() {
     descriptor: updateTenantDescriptor,
     runOnline: ({ slug, input }) => edenPut<Tenant>(`/admin/tenants/${slug}`, input),
     buildOfflineResult: (queryClient, { slug, input }) => {
-      const cached = queryClient.getQueryData<TenantDetail>(tenantKeys.detail(slug))
+      const cached = queryClient.getQueryData<TenantDetail>(tenantsKeys.detail(slug))
       return {
         ...(cached ?? buildOptimisticTenant({ name: slug, slug })),
         ...input,
@@ -251,16 +248,16 @@ export function useUpdateTenant() {
       } as Tenant
     },
     onMutateOptimistic: async (queryClient, { slug, input }) => {
-      const previousTenants = await snapshotListQuery<Tenant>(queryClient, tenantKeys.all)
+      const previousTenants = await snapshotListQuery<Tenant>(queryClient, tenantsKeys.all)
       const previousDetail = await snapshotDetailQuery<TenantDetail>(
         queryClient,
-        tenantKeys.detail(slug)
+        tenantsKeys.detail(slug)
       )
 
-      mapListItems(queryClient, tenantKeys.all, (tenant: Tenant) =>
+      mapListItems(queryClient, tenantsKeys.all, (tenant: Tenant) =>
         tenant.slug === slug ? { ...tenant, ...input, updatedAt: new Date().toISOString() } : tenant
       )
-      patchDetail(queryClient, tenantKeys.detail(slug), (detail: TenantDetail) => ({
+      patchDetail(queryClient, tenantsKeys.detail(slug), (detail: TenantDetail) => ({
         ...detail,
         ...input,
         updatedAt: new Date().toISOString(),
@@ -270,15 +267,15 @@ export function useUpdateTenant() {
     },
     onRollbackOptimistic: (queryClient, context) => {
       if (context?.previousTenants) {
-        restoreQuerySnapshot(queryClient, tenantKeys.all, context.previousTenants)
+        restoreQuerySnapshot(queryClient, tenantsKeys.all, context.previousTenants)
       }
       if (context?.slug && context.previousDetail) {
-        restoreQuerySnapshot(queryClient, tenantKeys.detail(context.slug), context.previousDetail)
+        restoreQuerySnapshot(queryClient, tenantsKeys.detail(context.slug), context.previousDetail)
       }
     },
     onMutationSuccess: (queryClient, data) => {
-      queryClient.invalidateQueries({ queryKey: tenantKeys.all })
-      queryClient.invalidateQueries({ queryKey: tenantKeys.detail(data.slug) })
+      queryClient.invalidateQueries({ queryKey: tenantsKeys.all })
+      queryClient.invalidateQueries({ queryKey: tenantsKeys.detail(data.slug) })
     },
   })
 }
@@ -292,17 +289,17 @@ export function useDeleteTenant() {
     runOnline: (slug) => edenDelete(`/admin/tenants/${slug}`),
     buildOfflineResult: () => undefined,
     onMutateOptimistic: async (queryClient, slug) => {
-      const previousTenants = await snapshotListQuery<Tenant>(queryClient, tenantKeys.all)
-      filterListItems(queryClient, tenantKeys.all, (tenant: Tenant) => tenant.slug !== slug)
+      const previousTenants = await snapshotListQuery<Tenant>(queryClient, tenantsKeys.all)
+      filterListItems(queryClient, tenantsKeys.all, (tenant: Tenant) => tenant.slug !== slug)
       return { previousTenants }
     },
     onRollbackOptimistic: (queryClient, context) => {
       if (context?.previousTenants) {
-        restoreQuerySnapshot(queryClient, tenantKeys.all, context.previousTenants)
+        restoreQuerySnapshot(queryClient, tenantsKeys.all, context.previousTenants)
       }
     },
     onMutationSuccess: (queryClient) => {
-      queryClient.invalidateQueries({ queryKey: tenantKeys.all })
+      queryClient.invalidateQueries({ queryKey: tenantsKeys.all })
     },
   })
 }
@@ -332,9 +329,9 @@ export function useAddTenantUser() {
       const role = parseTenantUserRole(input.role)
       const previousDetail = await snapshotDetailQuery<TenantDetail>(
         queryClient,
-        tenantKeys.detail(slug)
+        tenantsKeys.detail(slug)
       )
-      patchDetail(queryClient, tenantKeys.detail(slug), (detail: TenantDetail) => ({
+      patchDetail(queryClient, tenantsKeys.detail(slug), (detail: TenantDetail) => ({
         ...detail,
         users: [...detail.users, { id: input.userId, email: '', name: '', role }],
       }))
@@ -342,11 +339,11 @@ export function useAddTenantUser() {
     },
     onRollbackOptimistic: (queryClient, context) => {
       if (context?.slug && context.previousDetail) {
-        restoreQuerySnapshot(queryClient, tenantKeys.detail(context.slug), context.previousDetail)
+        restoreQuerySnapshot(queryClient, tenantsKeys.detail(context.slug), context.previousDetail)
       }
     },
     onMutationSuccess: (queryClient, _data, variables) => {
-      queryClient.invalidateQueries({ queryKey: tenantKeys.detail(variables.slug) })
+      queryClient.invalidateQueries({ queryKey: tenantsKeys.detail(variables.slug) })
     },
   })
 }
@@ -366,9 +363,9 @@ export function useRemoveTenantUser() {
     onMutateOptimistic: async (queryClient, { slug, userId }) => {
       const previousDetail = await snapshotDetailQuery<TenantDetail>(
         queryClient,
-        tenantKeys.detail(slug)
+        tenantsKeys.detail(slug)
       )
-      patchDetail(queryClient, tenantKeys.detail(slug), (detail: TenantDetail) => ({
+      patchDetail(queryClient, tenantsKeys.detail(slug), (detail: TenantDetail) => ({
         ...detail,
         users: detail.users.filter((user) => user.id !== userId),
       }))
@@ -376,11 +373,11 @@ export function useRemoveTenantUser() {
     },
     onRollbackOptimistic: (queryClient, context) => {
       if (context?.slug && context.previousDetail) {
-        restoreQuerySnapshot(queryClient, tenantKeys.detail(context.slug), context.previousDetail)
+        restoreQuerySnapshot(queryClient, tenantsKeys.detail(context.slug), context.previousDetail)
       }
     },
     onMutationSuccess: (queryClient, _data, variables) => {
-      queryClient.invalidateQueries({ queryKey: tenantKeys.detail(variables.slug) })
+      queryClient.invalidateQueries({ queryKey: tenantsKeys.detail(variables.slug) })
     },
   })
 }
@@ -406,9 +403,9 @@ export function useUpdateTenantUserRole() {
     onMutateOptimistic: async (queryClient, { slug, userId, role }) => {
       const previousDetail = await snapshotDetailQuery<TenantDetail>(
         queryClient,
-        tenantKeys.detail(slug)
+        tenantsKeys.detail(slug)
       )
-      patchDetail(queryClient, tenantKeys.detail(slug), (detail: TenantDetail) => ({
+      patchDetail(queryClient, tenantsKeys.detail(slug), (detail: TenantDetail) => ({
         ...detail,
         users: detail.users.map((u) => (u.id === userId ? { ...u, role } : u)),
       }))
@@ -416,11 +413,11 @@ export function useUpdateTenantUserRole() {
     },
     onRollbackOptimistic: (queryClient, context) => {
       if (context?.slug && context.previousDetail) {
-        restoreQuerySnapshot(queryClient, tenantKeys.detail(context.slug), context.previousDetail)
+        restoreQuerySnapshot(queryClient, tenantsKeys.detail(context.slug), context.previousDetail)
       }
     },
     onMutationSuccess: (queryClient, _data, variables) => {
-      queryClient.invalidateQueries({ queryKey: tenantKeys.detail(variables.slug) })
+      queryClient.invalidateQueries({ queryKey: tenantsKeys.detail(variables.slug) })
       queryClient.invalidateQueries({ queryKey: ['users'] })
     },
   })

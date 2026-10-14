@@ -1,9 +1,7 @@
-import { env } from 'cloudflare:workers'
 import { Elysia, t } from 'elysia'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
-import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
-import { hasTenantContext, resolveTenantBindings } from '@/tenants/tenant-context'
+import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import {
   DEFAULT_ASSET_UPLOAD_MAX_BYTES,
   DEFAULT_ASSET_UPLOAD_MAX_DIMENSION,
@@ -12,6 +10,7 @@ import {
   normalizeAllowedAssetMimeTypes,
   type UploadAssetInput,
 } from './assets.service'
+import { createErrorEnvelope } from '@/shared/utils/service-response'
 
 function buildUploadTooLargeMessage(maxUploadBytes: number) {
   return `Asset upload exceeds maximum size of ${maxUploadBytes} bytes`
@@ -189,278 +188,261 @@ function getDeferredWorkScheduler(ctx: unknown) {
     : undefined
 }
 
-export const assetsController = new Elysia()
+export const assetsController = new Elysia({ prefix: '/api/admin/assets' })
   .use(betterAuthPlugin)
-  .group('/api/admin/assets', (app) =>
-    app
-      .post(
-        '/upload',
-        async (ctx) => {
-          const workerEnv = env as unknown as Env
-          const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-          const { db, r2 } = resolveTenantBindings(tenantCtx, workerEnv)
-          const maxUploadBytes =
-            tenantCtx?.tenant.mediaUploadMaxBytes ?? DEFAULT_ASSET_UPLOAD_MAX_BYTES
-          const maxUploadDimension =
-            tenantCtx?.tenant.mediaUploadMaxDimension ?? DEFAULT_ASSET_UPLOAD_MAX_DIMENSION
-          const allowedMimeTypes = normalizeAllowedAssetMimeTypes(
-            tenantCtx?.tenant.mediaAllowedMimeTypes ?? [...DEFAULT_ASSET_ALLOWED_MIME_TYPES]
-          )
-
-          let uploadInput: UploadAssetInput
-          try {
-            uploadInput = await normalizeUploadInput({ ...ctx, maxUploadBytes })
-          } catch (error) {
-            const isPayloadTooLarge =
-              error instanceof Error && error.message.includes('Asset upload exceeds maximum size')
-            ctx.set.status = isPayloadTooLarge ? 413 : 400
-            return {
-              success: false as const,
-              error: {
-                code: isPayloadTooLarge ? 'PAYLOAD_TOO_LARGE' : 'BAD_REQUEST',
-                message: isPayloadTooLarge
-                  ? buildUploadTooLargeMessage(maxUploadBytes)
-                  : error instanceof Error
-                    ? error.message
-                    : 'Invalid upload payload',
-              },
-            }
-          }
-
-          try {
-            const actorId =
-              typeof (ctx as { user?: { id?: unknown } }).user?.id === 'string'
-                ? ((ctx as { user?: { id?: string } }).user?.id ?? undefined)
-                : undefined
-            const asset = await assetsService.upload(
-              db,
-              r2,
-              uploadInput,
-              tenantCtx?.tenant.id,
-              workerEnv,
-              actorId,
-              getDeferredWorkScheduler(ctx),
-              maxUploadBytes,
-              maxUploadDimension,
-              allowedMimeTypes
-            )
-            ctx.set.status = 201
-            return { success: true as const, data: asset }
-          } catch (error) {
-            if (
-              error instanceof Error &&
-              error.message.includes('Asset upload exceeds maximum size')
-            ) {
-              ctx.set.status = 413
-              return {
-                success: false as const,
-                error: {
-                  code: 'PAYLOAD_TOO_LARGE',
-                  message: buildUploadTooLargeMessage(maxUploadBytes),
-                },
-              }
-            }
-            if (isUploadTypeBlockedError(error)) {
-              ctx.set.status = 415
-              return {
-                success: false as const,
-                error: {
-                  code: 'UNSUPPORTED_MEDIA_TYPE',
-                  message: error.message,
-                },
-              }
-            }
-
-            const uploadError = classifyUploadServiceError(error)
-            logger.error('asset_upload_failed', {
-              code: uploadError.code,
-              status: uploadError.status,
-              reason: uploadError.details.reason,
-              tenantId: tenantCtx?.tenant.id ?? 'global',
-              filename: uploadInput.filename,
-              mimeType: uploadInput.mimeType,
-              sizeBase64Length: uploadInput.contentBase64.length,
-            })
-            ctx.set.status = uploadError.status
-            return {
-              success: false as const,
-              error: {
-                code: uploadError.code,
-                message: uploadError.message,
-                details: uploadError.details,
-              },
-            }
-          }
-        },
-        {
-          auth: true,
-          body: t.Any(),
-        }
+  .use(withTenantBindings)
+  .post('/upload', {
+    auth: true,
+    body: t.Any(),
+  }, async (ctx) => {
+    const { db, r2, tenantCtx, workerEnv } = ctx
+    const maxUploadBytes =
+      tenantCtx?.tenant.mediaUploadMaxBytes ?? DEFAULT_ASSET_UPLOAD_MAX_BYTES
+    const maxUploadDimension =
+      tenantCtx?.tenant.mediaUploadMaxDimension ?? DEFAULT_ASSET_UPLOAD_MAX_DIMENSION
+    const allowedMimeTypes = normalizeAllowedAssetMimeTypes(
+      tenantCtx?.tenant.mediaAllowedMimeTypes ?? [...DEFAULT_ASSET_ALLOWED_MIME_TYPES]
+    )
+  
+    let uploadInput: UploadAssetInput
+    try {
+      uploadInput = await normalizeUploadInput({ ...ctx, maxUploadBytes })
+    } catch (error) {
+      const isPayloadTooLarge =
+        error instanceof Error && error.message.includes('Asset upload exceeds maximum size')
+      ctx.set.status = isPayloadTooLarge ? 413 : 400
+      return createErrorEnvelope(
+        isPayloadTooLarge ? 'PAYLOAD_TOO_LARGE' : 'BAD_REQUEST',
+        isPayloadTooLarge
+          ? buildUploadTooLargeMessage(maxUploadBytes)
+          : error instanceof Error
+            ? error.message
+            : 'Invalid upload payload'
       )
-      .get(
-        '/',
-        async (ctx) => {
-          const workerEnv = env as unknown as Env
-          const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-          const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-          const assets = await assetsService.list(db, tenantCtx?.tenant.id)
-          return { success: true as const, data: assets }
-        },
-        { auth: true }
-      )
-      .get(
-        '/config',
-        async (ctx) => {
-          const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-          return {
-            success: true as const,
-            data: {
-              maxUploadBytes:
-                tenantCtx?.tenant.mediaUploadMaxBytes ?? DEFAULT_ASSET_UPLOAD_MAX_BYTES,
-              maxUploadDimension:
-                tenantCtx?.tenant.mediaUploadMaxDimension ?? DEFAULT_ASSET_UPLOAD_MAX_DIMENSION,
-              allowedMimeTypes: normalizeAllowedAssetMimeTypes(
-                tenantCtx?.tenant.mediaAllowedMimeTypes ?? [...DEFAULT_ASSET_ALLOWED_MIME_TYPES]
-              ),
-            },
-          }
-        },
-        { auth: true }
-      )
-      .get(
-        '/usage',
-        async (ctx) => {
-          const workerEnv = env as unknown as Env
-          const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-          const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-          const usage = await assetsService.usage(db, tenantCtx?.tenant.id)
-          return { success: true as const, data: usage }
-        },
-        { auth: true }
-      )
-      .get(
-        '/:assetId',
-        async (ctx) => {
-          const workerEnv = env as unknown as Env
-          const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-          const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-          const asset = await assetsService.getById(db, ctx.params.assetId, tenantCtx?.tenant.id)
-          if (!asset) {
-            ctx.set.status = 404
-            return {
-              success: false as const,
-              error: { code: 'NOT_FOUND', message: 'Asset not found' },
-            }
-          }
-          return { success: true as const, data: asset }
-        },
-        { auth: true }
-      )
-      .put(
-        '/:assetId',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const updated = await assetsService.updateFilename(
-        db,
-        ctx.params.assetId,
-        ctx.body.filename,
-        tenantCtx?.tenant.id,
-        workerEnv,
-        getDeferredWorkScheduler(ctx)
-      )
-
-      if (!updated) {
-        ctx.set.status = 400
-        return {
-          success: false as const,
-          error: { code: 'BAD_REQUEST', message: 'Invalid filename' },
-        }
-      }
-
-      return { success: true as const, data: updated }
-    },
-    {
-      auth: true,
-      body: t.Object({
-        filename: t.String(),
-      }),
     }
-  )
-      .delete(
-        '/:assetId',
-        async (ctx) => {
-          const workerEnv = env as unknown as Env
-          const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-          const { db, r2 } = resolveTenantBindings(tenantCtx, workerEnv)
-
-          const result = await assetsService.softDelete(
+      
+        try {
+          const actorId =
+            typeof (ctx as { user?: { id?: unknown } }).user?.id === 'string'
+              ? ((ctx as { user?: { id?: string } }).user?.id ?? undefined)
+              : undefined
+          const asset = await assetsService.upload(
             db,
             r2,
-            ctx.params.assetId,
+            uploadInput,
             tenantCtx?.tenant.id,
             workerEnv,
-            getDeferredWorkScheduler(ctx)
+            actorId,
+            getDeferredWorkScheduler(ctx),
+            maxUploadBytes,
+            maxUploadDimension,
+            allowedMimeTypes
           )
-
-          if (result.deletedIds.length === 0) {
-            ctx.set.status = 404
-            return {
-              success: false as const,
-              error: { code: 'NOT_FOUND', message: 'Asset not found' },
-            }
+          ctx.set.status = 201
+          return { success: true as const, data: asset }
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message.includes('Asset upload exceeds maximum size')
+          ) {
+            ctx.set.status = 413
+            return createErrorEnvelope(
+              'PAYLOAD_TOO_LARGE',
+              buildUploadTooLargeMessage(maxUploadBytes)
+            )
           }
+          if (isUploadTypeBlockedError(error)) {
+            ctx.set.status = 415
+            return createErrorEnvelope('UNSUPPORTED_MEDIA_TYPE', error.message)
+          }
+      
+          const uploadError = classifyUploadServiceError(error)
+          logger.error('asset_upload_failed', {
+            code: uploadError.code,
+            status: uploadError.status,
+            reason: uploadError.details.reason,
+            tenantId: tenantCtx?.tenant.id ?? 'global',
+            filename: uploadInput.filename,
+            mimeType: uploadInput.mimeType,
+            sizeBase64Length: uploadInput.contentBase64.length,
+          })
+          ctx.set.status = uploadError.status
+          return {
+            success: false as const,
+            error: {
+              code: uploadError.code,
+              message: uploadError.message,
+              details: uploadError.details,
+            },
+          }
+        }
+      })
+      .get('/', { auth: true }, async ({ db, set, tenantCtx }) => {
+        if (!tenantCtx?.tenant) {
+          set.status = 400
+          return createErrorEnvelope('TENANT_REQUIRED', 'Tenant context is required')
+        }
+        const assets = await assetsService.list(db, tenantCtx?.tenant.id)
+        return { success: true as const, data: assets }
+      })
+      .get('/config', { auth: true }, async ({ tenantCtx }) => {
+        return {
+          success: true as const,
+          data: {
+            maxUploadBytes:
+              tenantCtx?.tenant.mediaUploadMaxBytes ?? DEFAULT_ASSET_UPLOAD_MAX_BYTES,
+            maxUploadDimension:
+              tenantCtx?.tenant.mediaUploadMaxDimension ?? DEFAULT_ASSET_UPLOAD_MAX_DIMENSION,
+            allowedMimeTypes: normalizeAllowedAssetMimeTypes(
+              tenantCtx?.tenant.mediaAllowedMimeTypes ?? [...DEFAULT_ASSET_ALLOWED_MIME_TYPES]
+            ),
+          },
+        }
+      })
+      .get('/usage', { auth: true }, async ({ db, set, tenantCtx }) => {
+        if (!tenantCtx?.tenant) {
+          set.status = 400
+          return createErrorEnvelope('TENANT_REQUIRED', 'Tenant context is required')
+        }
+        const usage = await assetsService.usage(db, tenantCtx?.tenant.id)
+        return { success: true as const, data: usage }
+      })
+      .get('/:assetId', { auth: true }, async ({ db, params, set, tenantCtx }) => {
+        if (!tenantCtx?.tenant) {
+          set.status = 400
+          return createErrorEnvelope('TENANT_REQUIRED', 'Tenant context is required')
+        }
+        const asset = await assetsService.getById(db, params.assetId, tenantCtx?.tenant.id)
+        if (!asset) {
+          set.status = 404
+          return createErrorEnvelope('NOT_FOUND', 'Asset not found')
+        }
+        return { success: true as const, data: asset }
+      })
+      .put('/:assetId', {
+        auth: true,
+        body: t.Object({
+          filename: t.String(),
+        }),
+      }, async (ctx) => {
+        const { db, params, body, set, tenantCtx, workerEnv } = ctx
+        const updated = await assetsService.updateFilename(
+          db,
+          params.assetId,
+          body.filename,
+          tenantCtx?.tenant.id,
+          workerEnv,
+          getDeferredWorkScheduler(ctx)
+        )
 
-          return { success: true as const, data: result }
-        },
-        { auth: true }
-      )
-      .post(
-        '/delete',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db, r2 } = resolveTenantBindings(tenantCtx, workerEnv)
-      const result = await assetsService.deleteMany(
-        db,
-        r2,
-        ctx.body.ids,
-        tenantCtx?.tenant.id,
-        workerEnv,
-        getDeferredWorkScheduler(ctx)
-      )
-      return { success: true as const, data: result }
-    },
-    {
-      auth: true,
-      body: t.Object({
-        ids: t.Array(t.String()),
-      }),
-    }
-  )
-      .post(
-        '/search',
-    async (ctx) => {
-      const workerEnv = env as unknown as Env
-      const tenantCtx = hasTenantContext(ctx) ? ctx.tenant : undefined
-      const { db } = resolveTenantBindings(tenantCtx, workerEnv)
-      const assets = await assetsService.semanticSearch(
-        db,
-        ctx.body,
-        tenantCtx?.tenant.id,
-        workerEnv
-      )
-      return { success: true as const, data: assets }
-    },
-    {
-      auth: true,
-      body: t.Object({
-        query: t.String(),
-        limit: t.Optional(t.Number()),
-        folder: t.Optional(t.String()),
-        mimeTypePrefix: t.Optional(t.String()),
-      }),
-    }
-  )
-  )
+        if (!updated) {
+          set.status = 400
+          return createErrorEnvelope('BAD_REQUEST', 'Invalid filename')
+        }
+
+        return { success: true as const, data: updated }
+      })
+      .delete('/:assetId', { auth: true }, async (ctx) => {
+        const { db, r2, params, set, tenantCtx, workerEnv } = ctx
+        const result = await assetsService.softDelete(
+          db,
+          r2,
+          params.assetId,
+          tenantCtx?.tenant.id,
+          workerEnv,
+          getDeferredWorkScheduler(ctx)
+        )
+
+        if (result.deletedIds.length === 0) {
+          set.status = 404
+          return createErrorEnvelope('NOT_FOUND', 'Asset not found')
+        }
+
+        return { success: true as const, data: result }
+      })
+      .post('/delete', {
+        auth: true,
+        body: t.Object({
+          ids: t.Array(t.String()),
+        }),
+      }, async (ctx) => {
+        const { db, r2, body, set, tenantCtx, workerEnv } = ctx
+        if (!tenantCtx?.tenant) {
+          set.status = 400
+          return createErrorEnvelope('TENANT_REQUIRED', 'Tenant context is required')
+        }
+        const result = await assetsService.deleteMany(
+          db,
+          r2,
+          body.ids,
+          tenantCtx?.tenant.id,
+          workerEnv,
+          getDeferredWorkScheduler(ctx)
+        )
+        return { success: true as const, data: result }
+      })
+      .post('/search', {
+        auth: true,
+        body: t.Object({
+          query: t.String(),
+          limit: t.Optional(t.Number()),
+          folder: t.Optional(t.String()),
+          mimeTypePrefix: t.Optional(t.String()),
+        }),
+      }, async ({ db, body, set, tenantCtx, workerEnv }) => {
+        if (!tenantCtx?.tenant) {
+          set.status = 400
+          return createErrorEnvelope('TENANT_REQUIRED', 'Tenant context is required')
+        }
+        const assets = await assetsService.semanticSearch(
+          db,
+          body,
+          tenantCtx?.tenant.id,
+          workerEnv
+        )
+        return { success: true as const, data: assets }
+      })
+      .post('/gc', {
+        auth: true,
+        body: t.Object({
+          olderThanDays: t.Optional(t.Number()),
+          limit: t.Optional(t.Number()),
+          tenantId: t.Optional(t.String()),
+        }),
+      }, async (ctx) => {
+        const { db, r2, body, set, tenantCtx, workerEnv } = ctx
+        if (!tenantCtx?.tenant) {
+          set.status = 400
+          return createErrorEnvelope('TENANT_REQUIRED', 'Tenant context is required')
+        }
+        const result = await assetsService.gcSoftDeleted(
+          db,
+          r2,
+          {
+            olderThanDays: body.olderThanDays,
+            limit: body.limit,
+            tenantId: tenantCtx.tenant.id,
+          },
+          workerEnv,
+          getDeferredWorkScheduler(ctx)
+        )
+        return { success: true as const, data: result }
+      })
+      .delete('/:assetId/permanent', { auth: true }, async (ctx) => {
+        const { db, r2, params, set, tenantCtx, workerEnv } = ctx
+        const result = await assetsService.hardDelete(
+          db,
+          r2,
+          [params.assetId],
+          tenantCtx?.tenant.id,
+          workerEnv,
+          getDeferredWorkScheduler(ctx)
+        )
+
+        if (result.deletedIds.length === 0) {
+          set.status = 404
+          return createErrorEnvelope('NOT_FOUND', 'Asset not found')
+        }
+
+        return { success: true as const, data: result }
+      })

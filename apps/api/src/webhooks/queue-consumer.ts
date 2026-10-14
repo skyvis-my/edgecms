@@ -7,7 +7,7 @@
  */
 
 import { drizzle } from 'drizzle-orm/d1'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { webhooks, webhookDeliveries } from '@/database/schema/webhooks.schema'
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
@@ -20,6 +20,7 @@ import {
   parseAllowedWebhookHosts,
   validateWebhookDestination,
 } from './webhook-destination-policy'
+import { isUniqueConstraintViolation } from './outbox.repository'
 import { calculateBackoffDelay, signPayload } from './webhook-delivery.service'
 
 const QUEUE_MAX_RETRIES = 5
@@ -45,6 +46,103 @@ function clampRetryMaxRetries(value: number): number {
 function clampWebhookTimeoutSeconds(value: number): number {
   if (!Number.isFinite(value)) return 30
   return Math.min(MAX_WEBHOOK_TIMEOUT_SECONDS, Math.max(MIN_WEBHOOK_TIMEOUT_SECONDS, Math.trunc(value)))
+}
+
+type DeliveryRow = typeof webhookDeliveries.$inferSelect
+
+type DeliveryValues = {
+  id: string
+  webhookId: string
+  eventId: string
+  eventType: string
+  payload: Record<string, unknown>
+  status: string
+  attempts: number
+  lastAttemptAt: string
+  nextRetryAt: string | null
+  responseStatus: number
+  responseBody: string
+  createdAt: string
+}
+
+/**
+ * H2 dedup: find an existing delivery row for (eventId, webhookId).
+ * Fail-open (undefined) on mock drivers that cannot serve the query —
+ * delivery then proceeds and the insert path still dedups via UNIQUE.
+ */
+async function findExistingDelivery(
+  orm: ReturnType<typeof drizzle>,
+  eventId: string,
+  webhookId: string
+): Promise<DeliveryRow | undefined> {
+  try {
+    const chain = orm
+      .select()
+      .from(webhookDeliveries)
+      .where(and(eq(webhookDeliveries.eventId, eventId), eq(webhookDeliveries.webhookId, webhookId)))
+      .limit(1) as unknown as {
+      all?: () => Promise<DeliveryRow[]>
+    } & PromiseLike<DeliveryRow[]>
+    const rows = typeof chain.all === 'function' ? await chain.all() : await chain
+    return rows[0]
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * H2 dedup: insert a delivery row, collapsing queue at-least-once
+ * redelivery into an update of the existing (eventId, webhookId) row
+ * instead of inflating retry accounting with duplicate rows.
+ */
+async function recordDelivery(
+  orm: ReturnType<typeof drizzle>,
+  values: DeliveryValues
+): Promise<void> {
+  try {
+    await orm.insert(webhookDeliveries).values(values)
+    return
+  } catch (err) {
+    if (!isUniqueConstraintViolation(err)) throw err
+  }
+  // UNIQUE hit: update the existing row (race or redelivery).
+  try {
+    const updateFn = (orm as unknown as { update?: unknown }).update
+    if (typeof updateFn !== 'function') return
+    const chain = (
+      updateFn as (table: typeof webhookDeliveries) => {
+        set: (v: Record<string, unknown>) => unknown
+      }
+    )(webhookDeliveries).set({
+      eventType: values.eventType,
+      payload: values.payload,
+      status: values.status,
+      attempts: values.attempts,
+      lastAttemptAt: values.lastAttemptAt,
+      nextRetryAt: values.nextRetryAt,
+      responseStatus: values.responseStatus,
+      responseBody: values.responseBody,
+    }) as unknown as {
+      where?: (cond: unknown) => Promise<unknown> | unknown
+      run?: () => Promise<unknown>
+    } & PromiseLike<unknown>
+    if (chain && typeof chain.where === 'function') {
+      await chain.where(
+        and(
+          eq(webhookDeliveries.eventId, values.eventId),
+          eq(webhookDeliveries.webhookId, values.webhookId)
+        )
+      )
+      return
+    }
+    if (chain && typeof chain.run === 'function') {
+      await chain.run()
+      return
+    }
+    await chain
+  } catch {
+    // Best-effort dedup update; the row already exists.
+  }
 }
 
 /**
@@ -200,6 +298,23 @@ export async function handleQueue(
         timeout: clampWebhookTimeoutSeconds(webhook.retryTimeout),
       }
 
+      // H2 dedup (idempotency key = eventId): queue at-least-once redelivery
+      // of an already-delivered (event, webhook) pair acks without re-POST.
+      const existingDelivery = await findExistingDelivery(
+        orm,
+        message.eventPayload.id,
+        message.webhookId
+      )
+      if (existingDelivery && existingDelivery.status === 'delivered') {
+        logger.info('webhook_delivery_duplicate_skipped', {
+          webhookId: message.webhookId,
+          eventId: message.eventPayload.id,
+          eventType: message.eventPayload.event,
+        })
+        msg.ack()
+        return
+      }
+
       // Attempt delivery
       const result = await deliverWebhook(effectiveMessage)
 
@@ -208,7 +323,7 @@ export async function handleQueue(
 
       if (result.success) {
         // Delivery succeeded — record as 'delivered'
-        await orm.insert(webhookDeliveries).values({
+        await recordDelivery(orm, {
           id: crypto.randomUUID(),
           webhookId: message.webhookId,
           eventId: message.eventPayload.id,
@@ -233,7 +348,7 @@ export async function handleQueue(
           const nextRetryAt = new Date(Date.now() + delaySeconds * 1000).toISOString()
 
           // Record the failed attempt
-          await orm.insert(webhookDeliveries).values({
+          await recordDelivery(orm, {
             id: crypto.randomUUID(),
             webhookId: message.webhookId,
             eventId: message.eventPayload.id,
@@ -252,7 +367,7 @@ export async function handleQueue(
           msg.retry({ delaySeconds })
         } else {
           // Max retries exhausted — mark as 'failed'
-          await orm.insert(webhookDeliveries).values({
+          await recordDelivery(orm, {
             id: crypto.randomUUID(),
             webhookId: message.webhookId,
             eventId: message.eventPayload.id,

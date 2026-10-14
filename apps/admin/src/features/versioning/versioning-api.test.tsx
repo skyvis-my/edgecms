@@ -117,7 +117,7 @@ describe('versioning api hooks', () => {
   })
 
   it('rolls back a version and invalidates related caches', async () => {
-    const { versionKeys, useRollback } = await import(`./api?bypass=${Date.now()}`)
+    const { versionsKeys, useRollback } = await import(`./api?bypass=${Date.now()}`)
     edenPost.mockResolvedValueOnce({
       id: 'version_2',
       entryId: 'entry_1',
@@ -136,7 +136,7 @@ describe('versioning api hooks', () => {
     await hook.result.current.mutateAsync({ entryId: 'entry_1', versionId: 'version_1' })
 
     expect(edenPost).toHaveBeenCalledWith('/admin/entries/entry_1/versions/version_1/rollback')
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: versionKeys.lists() })
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: versionsKeys.lists() })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['entries', 'detail', 'entry_1'] })
   })
 

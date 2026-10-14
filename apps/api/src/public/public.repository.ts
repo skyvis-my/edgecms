@@ -12,6 +12,7 @@ export const publicRepository = {
       collectionId,
       page: 1,
       perPage: 1,
+      skipCount: true,
     })
     return rows[0]
   },

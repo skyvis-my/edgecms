@@ -34,6 +34,7 @@ yarn-error.log*
 # Testing
 coverage/
 .nyc_output/
+.playwright/
 
 # Misc
 .cache/
@@ -42,8 +43,11 @@ tmp/
 apps/api/.wrangler
 .worktrees/
 .edgecms/
+.tanstack/
 
 # Local Wrangler state and agent tooling
 .wrangler/
+.cloudflare/
+apps/api/.cloudflare
 .agents/
 .claude/settings.local.json

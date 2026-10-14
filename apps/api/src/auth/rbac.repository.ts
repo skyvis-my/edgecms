@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import type { Database } from '@/database/db'
 import { permissions, roles } from '@/database/schema'
 
@@ -27,8 +27,19 @@ export type NewPermission = PermissionInsert
  */
 export const rbacRepository = {
   /** List all roles for a tenant. */
-  async findRolesByTenant(db: Database, tenantId: string): Promise<RoleRow[]> {
-    return await db.select().from(roles).where(eq(roles.tenantId, tenantId)).all()
+  async findRolesByTenant(
+    db: Database,
+    tenantId: string,
+    options: { limit?: number } = {}
+  ): Promise<RoleRow[]> {
+    const limit = Math.min(100, Math.max(1, options.limit ?? 100))
+    return await db
+      .select()
+      .from(roles)
+      .where(eq(roles.tenantId, tenantId))
+      .orderBy(roles.name)
+      .limit(limit)
+      .all()
   },
 
   /** Find a role by its primary key. */
@@ -66,8 +77,41 @@ export const rbacRepository = {
   },
 
   /** List all permissions for a role. */
-  async findPermissionsByRole(db: Database, roleId: string): Promise<PermissionRow[]> {
-    return await db.select().from(permissions).where(eq(permissions.roleId, roleId)).all()
+  async findPermissionsByRole(
+    db: Database,
+    roleId: string,
+    options: { limit?: number } = {}
+  ): Promise<PermissionRow[]> {
+    const limit = Math.min(100, Math.max(1, options.limit ?? 100))
+    return await db
+      .select()
+      .from(permissions)
+      .where(eq(permissions.roleId, roleId))
+      .limit(limit)
+      .all()
+  },
+
+  /** Get counts of permissions grouped by roleId for a given tenant. */
+  async findPermissionCountsByTenant(
+    db: Database,
+    tenantId: string
+  ): Promise<Map<string, number>> {
+    const rows = await db
+      .select({
+        roleId: permissions.roleId,
+        count: sql<number>`count(*)`,
+      })
+      .from(permissions)
+      .innerJoin(roles, eq(permissions.roleId, roles.id))
+      .where(eq(roles.tenantId, tenantId))
+      .groupBy(permissions.roleId)
+      .all()
+
+    const map = new Map<string, number>()
+    for (const row of rows) {
+      map.set(row.roleId, row.count)
+    }
+    return map
   },
 
   /** Insert a new role row. */
@@ -88,6 +132,12 @@ export const rbacRepository = {
       throw new Error('Failed to create permission: insert returned no rows')
     }
     return row
+  },
+
+  /** Batch insert multiple permissions in a single round-trip. */
+  async createPermissions(db: Database, perms: NewPermission[]): Promise<PermissionRow[]> {
+    if (perms.length === 0) return []
+    return await db.insert(permissions).values(perms).returning()
   },
 
   /** Update an existing role by tenant and ID. Returns the updated row or undefined if not found. */

@@ -119,20 +119,26 @@ export async function runContextTool(db: Database, call: ContextToolCall): Promi
     if (call.tool === 'cms.searchEntries' || call.tool === 'rag.search') {
       const query = String(call.input.query ?? '').trim()
       const collectionId = call.input.collectionId ? String(call.input.collectionId) : undefined
-      const rows = await entriesRepository.findAll(db, {
-        tenantId: call.tenantId,
-        collectionId,
-        perPage: limit,
-        extraConditions: query ? [like(entries.data, `%${query.replace(/[%_]/g, '\\$&')}%`)] : [],
-      })
-      citations = rows.rows.slice(0, limit).map((entry) => ({
-        id: `entry:${entry.id}`,
-        sourceType: 'entry' as const,
-        sourceId: entry.id,
-        label: entry.slug,
-        snippet: snippet(entry.data),
-        score: query ? 0.7 : 0.4,
-      }))
+      // Guard unindexed LIKE %...% scans on entries.data: require min length.
+      if (query && query.length < 2) {
+        citations = []
+      } else {
+        const rows = await entriesRepository.findAll(db, {
+          tenantId: call.tenantId,
+          collectionId,
+          perPage: limit,
+          skipCount: true,
+          extraConditions: query ? [like(entries.data, `%${query.replace(/[%_]/g, '\\$&')}%`)] : [],
+        })
+        citations = rows.rows.slice(0, limit).map((entry) => ({
+          id: `entry:${entry.id}`,
+          sourceType: 'entry' as const,
+          sourceId: entry.id,
+          label: entry.slug,
+          snippet: snippet(entry.data),
+          score: query ? 0.7 : 0.4,
+        }))
+      }
     }
 
     if (call.tool === 'cms.searchAssets') {

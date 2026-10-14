@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
 
 /**
  * Auth tables for better-auth.
@@ -22,7 +22,7 @@ export const user = sqliteTable(
     createdAt: integer('createdAt', { mode: 'timestamp' }).notNull(),
     updatedAt: integer('updatedAt', { mode: 'timestamp' }).notNull(),
   },
-  (table) => [index('user_email_idx').on(table.email)]
+  (table) => [index('user_created_at_idx').on(table.createdAt)]
 )
 
 export const session = sqliteTable(
@@ -61,14 +61,23 @@ export const account = sqliteTable(
     createdAt: integer('createdAt', { mode: 'timestamp' }).notNull(),
     updatedAt: integer('updatedAt', { mode: 'timestamp' }).notNull(),
   },
-  (table) => [index('account_user_id_idx').on(table.userId)]
+  (table) => [
+    index('account_user_id_idx').on(table.userId),
+    uniqueIndex('account_provider_account_unique').on(table.providerId, table.accountId),
+  ]
 )
 
-export const verification = sqliteTable('verification', {
-  id: text('id').primaryKey(),
-  identifier: text('identifier').notNull(),
-  value: text('value').notNull(),
-  expiresAt: integer('expiresAt', { mode: 'timestamp' }).notNull(),
-  createdAt: integer('createdAt', { mode: 'timestamp' }),
-  updatedAt: integer('updatedAt', { mode: 'timestamp' }),
-})
+export const verification = sqliteTable(
+  'verification',
+  {
+    id: text('id').primaryKey(),
+    identifier: text('identifier').notNull(),
+    value: text('value').notNull(),
+    expiresAt: integer('expiresAt', { mode: 'timestamp' }).notNull(),
+    createdAt: integer('createdAt', { mode: 'timestamp' }),
+    updatedAt: integer('updatedAt', { mode: 'timestamp' }),
+  },
+  (table) => [
+    index('verification_identifier_value_idx').on(table.identifier, table.value),
+  ]
+)

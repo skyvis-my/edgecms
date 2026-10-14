@@ -86,7 +86,14 @@ export async function ensureUserHasOnboardingTenant(
     userId: user.id,
     role: 'owner',
   })
-  if (!membership.success) return membership
+  if (!membership.success) {
+    // Compensation: owner insert failed → remove orphan tenant (no owner).
+    // CONFLICT (already member) is benign — keep the tenant.
+    if (membership.error.code !== 'CONFLICT') {
+      await tenantsService.deleteById(db, createdTenant.id).catch(() => undefined)
+    }
+    return membership
+  }
 
   return { success: true, data: createdTenant }
 }

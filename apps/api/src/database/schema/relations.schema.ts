@@ -1,4 +1,5 @@
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core'
+import { sql } from 'drizzle-orm'
 import { collections } from '@/database/schema/collections.schema'
 import { entries } from '@/database/schema/entries.schema'
 
@@ -37,21 +38,33 @@ export const relations = sqliteTable(
     fieldName: text('fieldName').notNull(),
     /** Sort order for ordered relations (default 0). */
     sortOrder: integer('sortOrder').notNull().default(0),
+    /** Tenant scope owning this relation (denormalized from source collection). */
+    tenantId: text('tenantId').notNull().default('global'),
     /** ISO 8601 timestamp. */
     createdAt: text('createdAt').notNull(),
     /** ISO 8601 timestamp. */
     updatedAt: text('updatedAt').notNull(),
   },
   (table) => [
-    // Primary lookup: find relations for a source entry + field
-    index('relations_source_field_idx').on(table.sourceEntryId, table.fieldName),
+    // Primary lookup: find relations for a source entry + field, ordered by sortOrder
+    index('relations_source_field_idx').on(table.sourceEntryId, table.fieldName, table.sortOrder),
     // Reverse lookup: find what entries reference a target entry
     index('relations_target_idx').on(table.targetEntryId),
+    // Prevent full table scans on collection cascade deletes
+    index('relations_source_collection_idx').on(table.sourceCollectionId),
+    index('relations_target_collection_idx').on(table.targetCollectionId),
     // Prevent duplicate links between the same source, target, and field
     uniqueIndex('relations_source_target_field_unique').on(
       table.sourceEntryId,
       table.targetEntryId,
       table.fieldName
     ),
+    // ATM-05: serialize concurrent one-to-one linkers at the DB layer.
+    // Partial unique index — one-to-many / many-to-many rows are unaffected.
+    uniqueIndex('relations_one_to_one_unique')
+      .on(table.sourceEntryId, table.fieldName)
+      .where(sql`${table.relationType} = 'one-to-one'`),
+    // Tenant-scoped lookup: find relations for a tenant + source entry
+    index('relations_tenant_source_idx').on(table.tenantId, table.sourceEntryId),
   ]
 )

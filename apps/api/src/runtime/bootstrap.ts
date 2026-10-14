@@ -81,3 +81,15 @@ export async function bootstrapApp(options: BootstrapOptions = {}): Promise<Boot
     pluginsLoaded: getLoadedPlugins(options.pluginRuntime).length,
   }
 }
+
+let workerBootstrapped = false
+
+export async function ensureWorkerBootstrapped(workerEnv?: Env): Promise<void> {
+  if (workerBootstrapped) return
+  workerBootstrapped = true
+  await bootstrapApp({ env: workerEnv })
+}
+
+export function resetWorkerBootstrapStateForTests(): void {
+  workerBootstrapped = false
+}

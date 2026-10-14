@@ -65,6 +65,8 @@ export default defineConfig({
     emptyOutDir: true,
     // Ensure assets use relative paths for Worker serving
     assetsDir: 'assets',
+    target: 'es2022',
+    cssMinify: true,
     rollupOptions: {
       output: {
         manualChunks(id) {
@@ -72,13 +74,54 @@ export default defineConfig({
           if (!packageName) return undefined
           if (INLINE_VENDOR_PACKAGES.has(packageName)) return undefined
 
+          if (packageName === 'react' || packageName === 'react-dom' || packageName === 'scheduler') {
+            return 'react-vendor'
+          }
           if (packageName.startsWith('@tanstack/')) return 'tanstack-vendor'
           if (packageName.startsWith('@radix-ui/')) return 'radix-vendor'
+          if (packageName.startsWith('@floating-ui/')) return 'floating-vendor'
           if (packageName === 'recharts' || packageName.startsWith('d3')) {
             return 'charts-vendor'
           }
-          if (packageName === 'react' || packageName === 'react-dom' || packageName === 'scheduler')
-            return 'react-vendor'
+          if (packageName.startsWith('prosemirror-') || packageName.startsWith('@tiptap/')) {
+            return 'editor-vendor'
+          }
+          if (
+            packageName === 'react-hook-form' ||
+            packageName.startsWith('@hookform/') ||
+            packageName === 'zod' ||
+            packageName === '@sinclair/typebox'
+          ) {
+            return 'form-vendor'
+          }
+          if (
+            packageName === 'date-fns' ||
+            packageName.startsWith('@date-fns/') ||
+            packageName === 'react-day-picker'
+          ) {
+            return 'date-vendor'
+          }
+          if (packageName === 'dexie' || packageName.startsWith('dexie-')) {
+            return 'storage-vendor'
+          }
+          if (
+            packageName === 'tailwind-merge' ||
+            packageName === 'clsx' ||
+            packageName === 'class-variance-authority'
+          ) {
+            return 'css-vendor'
+          }
+          if (
+            packageName === 'lucide-react' ||
+            packageName === 'sonner' ||
+            packageName === 'cmdk' ||
+            packageName === 'input-otp'
+          ) {
+            return 'ui-vendor'
+          }
+          if (packageName.startsWith('@better-auth/') || packageName === 'better-auth') {
+            return 'auth-vendor'
+          }
 
           return `vendor-${toChunkSafeName(packageName)}`
         },

@@ -5,6 +5,7 @@ export type SeedOptions = {
   env?: 'local' | 'staging' | 'production'
   remote: boolean
   allowProduction: boolean
+  skipMigrations?: boolean
   email: string
   password: string
   tenantSlug: string
@@ -36,10 +37,13 @@ export function parseSeedOptions(
     throw new Error(`Unsupported seed env: ${targetEnv}`)
   }
 
+  const skipMigrations = args.includes('--skip-migrations') || args.includes('--no-migrate')
+
   return {
     env: targetEnv,
     remote: args.includes('--remote') || targetEnv !== 'local',
     allowProduction: args.includes('--allow-production'),
+    ...(skipMigrations ? { skipMigrations: true } : {}),
     email: getArg(args, '--email') ?? env.E2E_ADMIN_EMAIL ?? 'smoke.admin@example.com',
     password: getArg(args, '--password') ?? env.E2E_ADMIN_PASSWORD ?? 'SmokePassw0rd!',
     tenantSlug: getArg(args, '--tenant-slug') ?? env.E2E_TENANT_SLUG ?? 'smoke',
@@ -119,9 +123,30 @@ ON CONFLICT("tenantId", "slug") DO UPDATE SET
 `.trim()
 }
 
+export async function applyLocalMigrations(runner?: () => Promise<number>, cwd = apiDir) {
+  if (runner) {
+    const exitCode = await runner()
+    if (exitCode !== 0) throw new Error(`cf d1 migrations apply failed with exit code ${exitCode}`)
+    return
+  }
+  const localDatabaseId = process.env.D1_DATABASE_ID ?? 'LOCAL_DATABASE_ID'
+  const cmd = ['node', 'scripts/cf.mjs', 'd1', 'migrations', 'apply', localDatabaseId, '--local', '--dir', 'drizzle/migrations']
+  const proc = Bun.spawn(cmd, {
+    cwd,
+    stdout: 'inherit',
+    stderr: 'inherit',
+  })
+  const exitCode = await proc.exited
+  if (exitCode !== 0) throw new Error(`cf d1 migrations apply failed with exit code ${exitCode}`)
+}
+
 async function runWranglerSeed(options: SeedOptions, sql: string) {
   if (options.env === 'production' && !options.allowProduction) {
     throw new Error('Production smoke seed requires --allow-production')
+  }
+
+  if (options.env === 'local' && !options.remote && !options.skipMigrations) {
+    await applyLocalMigrations()
   }
 
   const dir = await Bun.$`mktemp -d`.text()
@@ -132,25 +157,52 @@ async function runWranglerSeed(options: SeedOptions, sql: string) {
     await mkdir(tempDir, { recursive: true })
     await Bun.write(file, sql)
 
-    const cmd = [
-      'bunx',
-      'wrangler',
-      'd1',
-      'execute',
-      'DB',
-      ...(options.env !== 'local' ? ['--env', options.env] : []),
-      options.remote ? '--remote' : '--local',
-      '--file',
-      file,
-    ]
+    if (options.remote) {
+      const databaseId =
+        options.env === 'production'
+          ? (process.env.PRODUCTION_D1_DATABASE_ID ?? '')
+          : (process.env.STAGING_D1_DATABASE_ID ?? process.env.D1_DATABASE_ID ?? '')
+      if (!databaseId) {
+        throw new Error(
+          'Remote smoke seed requires PRODUCTION_D1_DATABASE_ID (production) or STAGING_D1_DATABASE_ID / D1_DATABASE_ID (staging) to be set'
+        )
+      }
+      const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? ''
 
-    const proc = Bun.spawn(cmd, {
-      cwd: apiDir,
-      stdout: 'inherit',
-      stderr: 'inherit',
-    })
-    const exitCode = await proc.exited
-    if (exitCode !== 0) throw new Error(`wrangler d1 execute failed with exit code ${exitCode}`)
+      const proc = Bun.spawn(
+        ['node', 'scripts/cf.mjs', 'd1', 'query', databaseId, '--sql', sql],
+        {
+          cwd: apiDir,
+          env: {
+            ...process.env,
+            CLOUDFLARE_ACCOUNT_ID: accountId,
+          },
+          stdout: 'inherit',
+          stderr: 'inherit',
+        }
+      )
+      const exitCode = await proc.exited
+      if (exitCode !== 0) throw new Error(`cf d1 query failed with exit code ${exitCode}`)
+    } else {
+      const cmd = [
+        'bunx',
+        'wrangler',
+        'd1',
+        'execute',
+        'DB',
+        '--local',
+        '--file',
+        file,
+      ]
+
+      const proc = Bun.spawn(cmd, {
+        cwd: apiDir,
+        stdout: 'inherit',
+        stderr: 'inherit',
+      })
+      const exitCode = await proc.exited
+      if (exitCode !== 0) throw new Error(`d1 execute failed with exit code ${exitCode}`)
+    }
   } finally {
     await rm(tempDir, { recursive: true, force: true })
   }

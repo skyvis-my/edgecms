@@ -21,6 +21,172 @@ export type JwtValidationConfig = {
   required?: boolean
 }
 
+export type AccessTokenClaims = {
+  sub: string
+  role?: string
+  tid?: string
+  tsl?: string
+  trl?: string
+  rv?: number
+  pv?: number
+  email?: string
+  sa?: number
+  iss?: string
+  aud?: string | string[]
+  exp?: number
+  iat?: number
+}
+
+export type CreateAccessTokenInput = {
+  sub: string
+  role?: string
+  tid?: string
+  tsl?: string
+  trl?: string
+  rv?: number
+  pv?: number
+  email?: string
+  sa?: boolean
+}
+
+export type CreateAccessTokenOptions = {
+  issuer?: string
+  audience?: string
+  ttlSeconds?: number
+  issuedAtSeconds?: number
+}
+
+/** Default lifetime for RBAC access tokens (10 minutes). Bounds staleness. */
+export const ACCESS_TOKEN_DEFAULT_TTL_SECONDS = 600
+
+const MAX_CLAIM_STRING_LENGTH = 128
+
+const utf8Encoder = new TextEncoder()
+const utf8Decoder = new TextDecoder()
+
+const hmacKeyCache = new Map<string, Promise<CryptoKey>>()
+
+function getCachedHmacKey(secret: string, usage: 'sign' | 'verify'): Promise<CryptoKey> {
+  const cacheKey = `${usage}:${secret}`
+  let cached = hmacKeyCache.get(cacheKey)
+  if (!cached) {
+    cached = crypto.subtle.importKey(
+      'raw',
+      utf8Encoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      [usage]
+    )
+    hmacKeyCache.set(cacheKey, cached)
+  }
+  return cached
+}
+
+export function __resetHmacKeyCacheForTests(): void {
+  hmacKeyCache.clear()
+}
+
+function base64UrlEncodeBytes(bytes: Uint8Array): string {
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i] as number)
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
+function base64UrlEncodeJson(value: unknown): string {
+  return base64UrlEncodeBytes(utf8Encoder.encode(JSON.stringify(value)))
+}
+
+async function signHs256Signature(signingInput: string, secret: string): Promise<string> {
+  const key = await getCachedHmacKey(secret, 'sign')
+  const signature = await crypto.subtle.sign('HMAC', key, utf8Encoder.encode(signingInput))
+  return base64UrlEncodeBytes(new Uint8Array(signature))
+}
+
+/**
+ * Mint a short-lived stateless RBAC access token.
+ *
+ * Encodes global role + single-tenant membership so the hot path can
+ * authorize without D1 reads. Covers one tenant per token to bound size.
+ */
+export async function createAccessToken(
+  input: CreateAccessTokenInput,
+  secret: string,
+  options: CreateAccessTokenOptions = {}
+): Promise<string> {
+  if (!input.sub) throw new Error('createAccessToken requires sub')
+  if (!secret) throw new Error('createAccessToken requires secret')
+  const ttl = options.ttlSeconds ?? ACCESS_TOKEN_DEFAULT_TTL_SECONDS
+  const iat = options.issuedAtSeconds ?? Math.floor(Date.now() / 1000)
+  const payload: Record<string, unknown> = {
+    sub: input.sub,
+    iat,
+    exp: iat + ttl,
+  }
+  if (options.issuer) payload.iss = options.issuer
+  if (options.audience) payload.aud = options.audience
+  if (input.role) payload.role = input.role
+  if (input.tid) payload.tid = input.tid
+  if (input.tsl) payload.tsl = input.tsl
+  if (input.trl) payload.trl = input.trl
+  if (typeof input.rv === 'number') payload.rv = input.rv
+  if (typeof input.pv === 'number') payload.pv = input.pv
+  if (input.email) payload.email = input.email
+  if (input.sa) payload.sa = 1
+
+  const headerPart = base64UrlEncodeJson({ alg: 'HS256', typ: 'JWT' })
+  const payloadPart = base64UrlEncodeJson(payload)
+  const signaturePart = await signHs256Signature(`${headerPart}.${payloadPart}`, secret)
+  return `${headerPart}.${payloadPart}.${signaturePart}`
+}
+
+function asClaimString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > MAX_CLAIM_STRING_LENGTH) return undefined
+  return trimmed
+}
+
+function asRevision(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return undefined
+  return value
+}
+
+/**
+ * Extract typed RBAC claims from an already signature-verified JWT payload.
+ * Returns undefined when the payload is not a usable access token.
+ */
+export function parseAccessClaims(payload: JwtPayload | unknown): AccessTokenClaims | undefined {
+  if (!payload || typeof payload !== 'object') return undefined
+  const record = payload as Record<string, unknown>
+  const sub = asClaimString(record.sub)
+  if (!sub) return undefined
+  const claims: AccessTokenClaims = { sub }
+  const role = asClaimString(record.role)
+  if (role) claims.role = role
+  const tid = asClaimString(record.tid)
+  if (tid) claims.tid = tid
+  const tsl = asClaimString(record.tsl)
+  if (tsl) claims.tsl = tsl
+  const trl = asClaimString(record.trl)
+  if (trl) claims.trl = trl
+  const rv = asRevision(record.rv)
+  if (rv !== undefined) claims.rv = rv
+  const pv = asRevision(record.pv)
+  if (pv !== undefined) claims.pv = pv
+  const email = asClaimString(record.email)
+  if (email) claims.email = email
+  if (record.sa === 1 || record.sa === true) claims.sa = 1
+  if (typeof record.iat === 'number') claims.iat = record.iat
+  if (typeof record.exp === 'number') claims.exp = record.exp
+  if (typeof record.iss === 'string') claims.iss = record.iss
+  if (typeof record.aud === 'string' || Array.isArray(record.aud)) {
+    claims.aud = record.aud as string | string[]
+  }
+  return claims
+}
+
 export type JwtValidationResult =
   | { valid: true; payload?: JwtPayload }
   | {
@@ -29,21 +195,21 @@ export type JwtValidationResult =
       message: string
     }
 
-function base64UrlToUint8Array(value: string): Uint8Array {
+function base64UrlToUint8Array(value: string): Uint8Array<ArrayBuffer> {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
   const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4))
   const binary = atob(`${normalized}${padding}`)
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0))
-}
-
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  return bytes
 }
 
 function decodeJson<T>(value: string): T | null {
   try {
     const bytes = base64UrlToUint8Array(value)
-    const text = new TextDecoder().decode(bytes)
+    const text = utf8Decoder.decode(bytes)
     return JSON.parse(text) as T
   } catch {
     return null
@@ -69,19 +235,13 @@ async function verifyHs256Signature(
   signaturePart: string,
   secret: string
 ): Promise<boolean> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['verify']
-  )
+  const key = await getCachedHmacKey(secret, 'verify')
 
   return crypto.subtle.verify(
     'HMAC',
     key,
-    toArrayBuffer(base64UrlToUint8Array(signaturePart)),
-    new TextEncoder().encode(signingInput)
+    base64UrlToUint8Array(signaturePart),
+    new Uint8Array(utf8Encoder.encode(signingInput))
   )
 }
 

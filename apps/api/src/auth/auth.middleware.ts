@@ -4,6 +4,7 @@ import type { Env } from '@/env'
 import { getRequestUrl } from '@/shared/utils/request-url'
 import { createAuth } from './auth'
 import { getSessionForRequest } from './session-cache'
+import { getCachedFastActor } from '@/tenants/tenant-cache'
 
 /**
  * Elysia plugin that integrates better-auth with the CMS Worker.
@@ -28,37 +29,63 @@ import { getSessionForRequest } from './session-cache'
  *   })
  * ```
  */
-export const betterAuthPlugin = new Elysia({ name: 'better-auth', aot: false })
-  .mount('/api/auth', (request) => {
-    const typedEnv = env as unknown as Env
-    const url = getRequestUrl(request)
-    const baseURL = url.origin
-    const auth = createAuth(typedEnv.DB, {
-      secret: typedEnv.BETTER_AUTH_SECRET,
-      baseURL,
-      entra: {
-        clientId: typedEnv.ENTRA_CLIENT_ID,
-        clientSecret: typedEnv.ENTRA_CLIENT_SECRET,
-        tenantId: typedEnv.ENTRA_TENANT_ID,
-      },
-      google: {
-        clientId: typedEnv.GOOGLE_CLIENT_ID,
-        clientSecret: typedEnv.GOOGLE_CLIENT_SECRET,
-      },
-    })
-    // better-auth handler expects the full URL path starting from basePath.
-    // When Elysia mounts at /api/auth, it strips that prefix from the request,
-    // so we need to reconstruct the full URL for better-auth.
-    const pathname = url.pathname.startsWith('/api/auth')
-      ? url.pathname
-      : `/api/auth${url.pathname}`
-    const fullUrl = new URL(`${pathname}${url.search}`, url.origin)
-    const fullRequest = new Request(fullUrl.toString(), request)
-    return auth.handler(fullRequest)
+export const handleBetterAuth = (request: Request) => {
+  const typedEnv = env as unknown as Env
+  const url = getRequestUrl(request)
+  const baseURL = url.origin
+  const auth = createAuth(typedEnv.DB, {
+    secret: typedEnv.BETTER_AUTH_SECRET,
+    baseURL,
+    entra: {
+      clientId: typedEnv.ENTRA_CLIENT_ID,
+      clientSecret: typedEnv.ENTRA_CLIENT_SECRET,
+      tenantId: typedEnv.ENTRA_TENANT_ID,
+    },
+    google: {
+      clientId: typedEnv.GOOGLE_CLIENT_ID,
+      clientSecret: typedEnv.GOOGLE_CLIENT_SECRET,
+    },
   })
+  const pathname = url.pathname.startsWith('/api/auth')
+    ? url.pathname
+    : `/api/auth${url.pathname}`
+  const fullUrl = new URL(`${pathname}${url.search}`, url.origin)
+  const fullRequest = new Request(fullUrl.toString(), request)
+  return auth.handler(fullRequest)
+}
+
+export const betterAuthPlugin = new Elysia({ name: 'better-auth' })
   .macro({
     auth: {
-      async resolve({ status, request }) {
+      async derive({ status, request }) {
+        // Stateless fast path: a verified FastPathActor cached on this Request
+        // by the api-security guard synthesizes { user, session } with zero D1.
+        // /api/me always uses the session source of truth.
+        const pathname = getRequestUrl(request).pathname
+        if (pathname !== '/api/me') {
+          const cached = getCachedFastActor(request)
+          if (cached) {
+            const fast = cached.actor
+            const email = fast.actorEmail ?? ''
+            const role = fast.isSuperAdminByToken
+              ? 'super_admin'
+              : (fast.actorRole ?? 'viewer')
+            return {
+              user: {
+                id: fast.actorId,
+                name: email || fast.actorId,
+                email,
+                role,
+              },
+              session: {
+                id: `fastpath:${fast.actorId}`,
+                userId: fast.actorId,
+                role,
+              },
+            }
+          }
+        }
+
         const typedEnv = env as unknown as Env
         const baseURL = getRequestUrl(request).origin
         const auth = createAuth(typedEnv.DB, {

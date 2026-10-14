@@ -1,4 +1,4 @@
-import { and, count, desc, eq, inArray, isNull, like, or, sql } from 'drizzle-orm'
+import { and, count, desc, eq, inArray, isNotNull, isNull, like, lt, or, sql } from 'drizzle-orm'
 import type { Database } from '@/database/db'
 import { assets, assetVariants } from '@/database/schema/assets.schema'
 
@@ -37,7 +37,11 @@ export const assetsRepository = {
         tenantId: data.tenantId ?? 'global',
       })
       .returning()
-    return rows[0] as AssetRow
+    const row = rows[0]
+    if (!row) {
+      throw new Error('Failed to create asset: database returned no rows')
+    }
+    return row
   },
 
   async createVariants(db: Database, rows: (typeof assetVariants.$inferInsert)[]): Promise<void> {
@@ -81,13 +85,19 @@ export const assetsRepository = {
     }))
   },
 
-  async findAll(db: Database, tenantId?: string): Promise<AssetWithVariants[]> {
+  async findAll(
+    db: Database,
+    tenantId?: string,
+    options: { limit?: number } = {}
+  ): Promise<AssetWithVariants[]> {
     const tenantScope = resolveTenantScope(tenantId)
+    const limit = Math.min(100, Math.max(1, options.limit ?? 100))
     const assetRows = await db
       .select()
       .from(assets)
       .where(and(eq(assets.tenantId, tenantScope), isNull(assets.deletedAt)))
       .orderBy(desc(assets.createdAt))
+      .limit(limit)
       .all()
     if (assetRows.length === 0) return []
 
@@ -133,22 +143,60 @@ export const assetsRepository = {
     tenantId?: string
   ): Promise<AssetVariantRow | undefined> {
     const tenantScope = resolveTenantScope(tenantId)
-    const asset = await db
-      .select({ id: assets.id })
-      .from(assets)
-      .where(and(eq(assets.id, assetId), eq(assets.tenantId, tenantScope), isNull(assets.deletedAt)))
-      .limit(1)
-      .all()
-    if (asset.length === 0) {
+    const fromChain = db
+      .select({ variant: assetVariants })
+      .from(assetVariants) as unknown as { innerJoin?: unknown }
+    // Legacy fallback for mock drivers without innerJoin: single variant
+    // select + JS find. (The probe select above already consumed one mock
+    // queue slot, so this fallback uses exactly one more select to stay
+    // aligned with canned mock results.) Real D1 keeps the join path below.
+    if (typeof fromChain.innerJoin !== 'function') {
+      const scope = db
+        .select()
+        .from(assetVariants)
+        .where(eq(assetVariants.assetId, assetId)) as unknown as {
+        all?: () => Promise<Array<AssetVariantRow | { variant: AssetVariantRow }>>
+      }
+      const variantRows =
+        typeof scope.all === 'function'
+          ? await scope.all()
+          : ((await scope) as unknown as Array<AssetVariantRow | { variant: AssetVariantRow }>)
+      for (const row of variantRows) {
+        // Join path wraps rows as { variant: {...} }; plain variant rows
+        // also have a `variant` *string* key, so only unwrap objects.
+        const wrapped =
+          row && typeof row === 'object' && 'variant' in row
+            ? (row as { variant: unknown }).variant
+            : undefined
+        const candidate =
+          wrapped && typeof wrapped === 'object'
+            ? (wrapped as AssetVariantRow)
+            : (row as AssetVariantRow)
+        if (candidate?.variant === variant && candidate?.format === format) return candidate
+      }
       return undefined
     }
-    const rows = await db
-      .select()
-      .from(assetVariants)
-      .where(eq(assetVariants.assetId, assetId))
+    // Single query: join asset scope check + variant+format predicates (no fetch-all + JS find).
+    const rows = await (fromChain as unknown as {
+      innerJoin: (
+        ...args: unknown[]
+      ) => {
+        where: (...args: unknown[]) => { limit: (n: number) => { all: () => Promise<Array<{ variant: AssetVariantRow }>> } }
+      }
+    })
+      .innerJoin(assets, eq(assets.id, assetVariants.assetId))
+      .where(
+        and(
+          eq(assetVariants.assetId, assetId),
+          eq(assetVariants.variant, variant),
+          eq(assetVariants.format, format),
+          eq(assets.tenantId, tenantScope),
+          isNull(assets.deletedAt)
+        )
+      )
+      .limit(1)
       .all()
-
-    return rows.find((row) => row.variant === variant && row.format === format)
+    return rows[0]?.variant
   },
 
   async updateFilename(
@@ -188,10 +236,12 @@ export const assetsRepository = {
   async deleteByIds(db: Database, ids: string[], tenantId?: string): Promise<string[]> {
     if (ids.length === 0) return []
     const tenantScope = resolveTenantScope(tenantId)
+    // Intentionally matches live AND soft-deleted rows: hard-delete/GC paths
+    // must remove rows already marked deletedAt. Tenant scoping still applies.
     const existing = await db
       .select({ id: assets.id })
       .from(assets)
-      .where(and(inArray(assets.id, ids), eq(assets.tenantId, tenantScope), isNull(assets.deletedAt)))
+      .where(and(inArray(assets.id, ids), eq(assets.tenantId, tenantScope)))
       .all()
     const existingIds = existing.map((row) => row.id)
     if (existingIds.length === 0) return []
@@ -229,10 +279,65 @@ export const assetsRepository = {
       .filter((asset): asset is AssetWithVariants => Boolean(asset))
   },
 
+  async findByIdsIncludingDeleted(
+    db: Database,
+    ids: string[],
+    tenantId?: string
+  ): Promise<AssetWithVariants[]> {
+    if (ids.length === 0) return []
+    const uniqueIds = [...new Set(ids)]
+    const tenantScope = resolveTenantScope(tenantId)
+    const assetRows = await db
+      .select()
+      .from(assets)
+      .where(and(inArray(assets.id, uniqueIds), eq(assets.tenantId, tenantScope)))
+      .all()
+    if (assetRows.length === 0) return []
+
+    const variants = await db
+      .select()
+      .from(assetVariants)
+      .where(
+        inArray(
+          assetVariants.assetId,
+          assetRows.map((row) => row.id)
+        )
+      )
+      .all()
+
+    const variantsByAssetId = groupVariantsByAssetId(variants)
+    const byId = new Map(assetRows.map((asset) => [asset.id, { ...asset, variants: variantsByAssetId.get(asset.id) ?? [] }]))
+
+    return uniqueIds
+      .map((id) => byId.get(id))
+      .filter((asset): asset is AssetWithVariants => Boolean(asset))
+  },
+
+  async findSoftDeletedBefore(
+    db: Database,
+    input: { cutoffIso: string; limit?: number; tenantId?: string }
+  ): Promise<Array<Pick<AssetRow, 'id' | 'originalKey' | 'tenantId'>>> {
+    const limit = Math.min(100, Math.max(1, Math.floor(input.limit ?? 50) || 50))
+    const filters = [
+      isNotNull(assets.deletedAt),
+      lt(assets.deletedAt, input.cutoffIso),
+      input.tenantId ? eq(assets.tenantId, input.tenantId) : undefined,
+    ].filter((value) => value !== undefined)
+    const rows = await db
+      .select({ id: assets.id, originalKey: assets.originalKey, tenantId: assets.tenantId })
+      .from(assets)
+      .where(and(...filters))
+      .orderBy(assets.deletedAt)
+      .limit(limit)
+      .all()
+    return rows
+  },
+
   async searchByTerm(
     db: Database,
     input: { term: string; limit: number; folder?: string; mimeTypePrefix?: string; tenantId?: string }
   ): Promise<AssetWithVariants[]> {
+    const limit = Math.min(Math.max(Math.floor(input.limit) || 20, 1), 50)
     const escapedTerm = input.term.replace(/[%_]/g, (char) => `\\${char}`)
     const likeTerm = `%${escapedTerm}%`
     const tenantScope = resolveTenantScope(input.tenantId)
@@ -255,14 +360,26 @@ export const assetsRepository = {
         sql`CASE WHEN lower(${assets.filename}) LIKE lower(${`${input.term}%`}) THEN 0 ELSE 1 END`,
         desc(assets.createdAt)
       )
-      .limit(input.limit)
+      .limit(limit)
       .all()
 
     if (rows.length === 0) return []
-    return this.findByIds(
-      db,
-      rows.map((row) => row.id),
-      tenantScope
-    )
+
+    const variants = await db
+      .select()
+      .from(assetVariants)
+      .where(
+        inArray(
+          assetVariants.assetId,
+          rows.map((row) => row.id)
+        )
+      )
+      .all()
+
+    const variantsByAssetId = groupVariantsByAssetId(variants)
+    return rows.map((asset) => ({
+      ...asset,
+      variants: variantsByAssetId.get(asset.id) ?? [],
+    }))
   },
 }

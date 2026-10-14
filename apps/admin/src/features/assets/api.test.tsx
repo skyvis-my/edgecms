@@ -8,6 +8,7 @@ const edenGet = vi.fn()
 const edenPost = vi.fn()
 const edenPostMultipart = vi.fn()
 const edenPut = vi.fn()
+const edenDelete = vi.fn()
 const mockCommandQueueAdd = vi.fn().mockResolvedValue(1)
 
 vi.mock('@/lib/eden-client', () => ({
@@ -15,6 +16,7 @@ vi.mock('@/lib/eden-client', () => ({
   edenPost,
   edenPostMultipart,
   edenPut,
+  edenDelete,
 }))
 
 vi.mock('@/features/sync/offline-http-queue', () => ({

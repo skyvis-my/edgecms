@@ -60,6 +60,15 @@ const { assetsController } = await import(`../../assets/assets.controller?bypass
 
 describe('assetsController', () => {
   const app = new Elysia().use(assetsController)
+  const makeTenantApp = (tenantId = 't1') =>
+    new Elysia()
+      .derive(() => ({
+        tenant: {
+          tenant: { id: tenantId, slug: 'acme', name: 'Acme', status: 'active' },
+          resources: { mode: 'shared' as const },
+        },
+      }))
+      .use(assetsController)
   const mockService = assetsService as unknown as {
     upload: ReturnType<typeof vi.fn>
     list: ReturnType<typeof vi.fn>
@@ -241,36 +250,57 @@ describe('assetsController', () => {
     )
   })
 
-  it('GET /api/admin/assets/usage returns grouped tenant media usage', async () => {
+  it('GET /api/admin/assets/usage requires tenant context and scopes to it', async () => {
+    const missing = await app.handle(new Request('http://localhost/api/admin/assets/usage'))
+    expect(missing.status).toBe(400)
+    const missingBody = (await missing.json()) as { success: boolean; error?: { code?: string } }
+    expect(missingBody.success).toBe(false)
+    expect(missingBody.error?.code).toBe('TENANT_REQUIRED')
+
     mockService.usage.mockResolvedValue([
       { tenantId: 'tenant_1', assetCount: 3, totalBytes: 1024 },
-      { tenantId: 'tenant_2', assetCount: 1, totalBytes: 2048 },
     ])
 
-    const response = await app.handle(new Request('http://localhost/api/admin/assets/usage'))
+    const response = await makeTenantApp('tenant_1').handle(
+      new Request('http://localhost/api/admin/assets/usage')
+    )
 
     expect(response.status).toBe(200)
-    expect(mockService.usage).toHaveBeenCalledWith(mockDb, undefined)
+    expect(mockService.usage).toHaveBeenCalledWith(mockDb, 'tenant_1')
     const body = (await response.json()) as {
       success: boolean
       data: Array<{ tenantId: string; assetCount: number; totalBytes: number }>
     }
     expect(body.success).toBe(true)
-    expect(body.data).toEqual([
-      { tenantId: 'tenant_1', assetCount: 3, totalBytes: 1024 },
-      { tenantId: 'tenant_2', assetCount: 1, totalBytes: 2048 },
-    ])
+    expect(body.data).toEqual([{ tenantId: 'tenant_1', assetCount: 3, totalBytes: 1024 }])
   })
 
-  it('GET /api/admin/assets and /api/admin/assets/:assetId return expected metadata', async () => {
+  it('GET /api/admin/assets and /api/admin/assets/:assetId require tenant context', async () => {
+    for (const url of [
+      'http://localhost/api/admin/assets',
+      'http://localhost/api/admin/assets/a1',
+    ]) {
+      const missing = await app.handle(new Request(url))
+      expect(missing.status).toBe(400)
+      const missingBody = (await missing.json()) as {
+        success: boolean
+        error?: { code?: string }
+      }
+      expect(missingBody.error?.code).toBe('TENANT_REQUIRED')
+    }
+
     mockService.list.mockResolvedValue([{ id: 'a1' }])
     mockService.getById.mockResolvedValue({ id: 'a1', variants: [] })
 
-    const listRes = await app.handle(new Request('http://localhost/api/admin/assets'))
+    const listRes = await makeTenantApp().handle(new Request('http://localhost/api/admin/assets'))
     expect(listRes.status).toBe(200)
+    expect(mockService.list).toHaveBeenCalledWith(mockDb, 't1')
 
-    const detailRes = await app.handle(new Request('http://localhost/api/admin/assets/a1'))
+    const detailRes = await makeTenantApp('t2').handle(
+      new Request('http://localhost/api/admin/assets/a1')
+    )
     expect(detailRes.status).toBe(200)
+    expect(mockService.getById).toHaveBeenCalledWith(mockDb, 'a1', 't2')
     const detailBody = (await detailRes.json()) as { data: { id: string } }
     expect(detailBody.data.id).toBe('a1')
   })
@@ -298,9 +328,21 @@ describe('assetsController', () => {
   })
 
   it('POST /api/admin/assets/delete bulk deletes assets', async () => {
+    const missing = await app.handle(
+      new Request('http://localhost/api/admin/assets/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: ['a1', 'a2'] }),
+      })
+    )
+    expect(missing.status).toBe(400)
+    const missingBody = (await missing.json()) as { success: boolean; error?: { code?: string } }
+    expect(missingBody.error?.code).toBe('TENANT_REQUIRED')
+    expect(mockService.deleteMany).not.toHaveBeenCalled()
+
     mockService.deleteMany.mockResolvedValue({ deletedIds: ['a1', 'a2'] })
 
-    const response = await app.handle(
+    const response = await makeTenantApp().handle(
       new Request('http://localhost/api/admin/assets/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -309,6 +351,14 @@ describe('assetsController', () => {
     )
 
     expect(response.status).toBe(200)
+    expect(mockService.deleteMany).toHaveBeenCalledWith(
+      mockDb,
+      expect.anything(),
+      ['a1', 'a2'],
+      't1',
+      expect.anything(),
+      undefined
+    )
     const body = (await response.json()) as { success: boolean; data: { deletedIds: string[] } }
     expect(body.success).toBe(true)
     expect(body.data.deletedIds).toEqual(['a1', 'a2'])

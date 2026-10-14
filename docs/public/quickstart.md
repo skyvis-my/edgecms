@@ -76,7 +76,14 @@ Expected: wrapper starts local API/admin processes and runs live API smoke check
 
 Run this from a clean terminal when `localhost:8787` is free. Keep the manual dev terminals for browsing the app.
 
-## Seed Smoke Data
+## Apply Migrations and Seed Smoke Data
+
+Apply local D1 migrations before seeding:
+
+```bash
+bun run db:migrate:local
+# or: bun run --filter edgecms-api db:migrate:local
+```
 
 Seed local D1 with the smoke admin, tenant, and collection:
 
@@ -267,7 +274,7 @@ bun run check:release
 Use local performance proof before repeating edge-performance claims:
 
 ```bash
-bun run perf:public-read:local -- --path /api/tenants/smoke/api/public/smoke-posts/<entry-slug>
+bun run perf:public-read:local -- --path /api/tenants/smoke/api/public/smoke-posts/<entry-slug> --expected-kind detail
 ```
 
 Use remote performance proof only when an operator provides a deployed Worker URL and a known published public-read path:

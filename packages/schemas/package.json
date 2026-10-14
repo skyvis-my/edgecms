@@ -1,6 +1,7 @@
 {
   "name": "@edgecms/schemas",
   "version": "0.1.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "exports": {
@@ -8,6 +9,6 @@
     "./commands": "./src/commands.ts"
   },
   "dependencies": {
-    "arktype": "^2.2.7"
+    "@sinclair/typebox": "^0.34.52"
   }
 }

@@ -14,10 +14,12 @@ import { RelationFieldWrapper } from './relation-field-wrapper'
 import { RichTextField, TextField } from './text-field'
 import { SelectField } from './select-field'
 import { SlugField } from './slug-field'
+import { SectionBuilder } from './section-builder'
 import type { FieldTypeProps } from './types'
 import { UrlField } from './url-field'
 
 export type { FieldTypeProps } from './types'
+export { SectionBuilder } from './section-builder'
 
 export type FieldRendererMap = Record<
   string,
@@ -35,6 +37,9 @@ export const FIELD_RENDERERS: FieldRendererMap = {
   relation: RelationFieldWrapper,
   json: JsonField,
   array: ArrayField as FieldRendererMap[string],
+  sections: SectionBuilder as FieldRendererMap[string],
+  blocks: SectionBuilder as FieldRendererMap[string],
+  'section-builder': SectionBuilder as FieldRendererMap[string],
   select: SelectField,
   email: EmailField,
   url: UrlField,

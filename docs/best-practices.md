@@ -43,6 +43,8 @@ This document serves as the authoritative guide for architectural patterns, codi
     *   *Test Impact:* Update controller tests to assert service contracts (inputs/outputs) rather than testing internal orchestration logic.
 *   **Error Handling:** Distinguish between `throw` (caught by `onError` middleware) and `return` for control flow. Use `throw` for operational errors (4xx/5xx).
 *   **Request Isolation:** Avoid duplicate repository lookups in the same request path. Fetch once, cache in a local variable (or RequestContext), and reuse for subsequent logic like TTL/tag calculations.
+*   **Plugin Composition & Route Bundling:** Decompose cross-cutting concerns (security guards, request tracing, observability) into discrete Elysia plugins (`createApiSecurityGuardPlugin`, `createRequestObservabilityPlugin`) composed via `.use(...)`. Bundle duplicated controller route sets (`createCoreApiRoutes`) so global and tenant-scoped route trees remain deduplicated and structurally identical.
+*   **Unified Tenant Context & Bindings:** Always resolve tenant database, KV, and R2 bindings through the shared `withTenantBindings` plugin (`{ db, kv, r2, tenantCtx, workerEnv }`) across controllers rather than creating manual D1 connections or ad-hoc context readers.
 
 ### Async & Background Jobs
 *   **Non-Blocking Webhooks:** Webhook and event dispatch **must not** block the command response. Emit events asynchronously (using Cloudflare Queues or `context.waitUntil`) and isolate listener errors so request latency is not coupled to downstream I/O.

@@ -1,6 +1,9 @@
+import { eq } from 'drizzle-orm'
 import type { Database } from '@/database/db'
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
+import { assets } from '@/database/schema/assets.schema'
+import { r2GcRepository, sweepR2GcOutbox } from './r2-gc.repository'
 import { type AssetWithVariants, assetsRepository } from './assets.repository'
 import {
   DEFAULT_ASSET_ALLOWED_MIME_TYPES,
@@ -38,9 +41,16 @@ export interface SemanticAssetSearchInput {
 type DeferAssetVectorWork = (promise: Promise<unknown>) => void
 
 async function runInChunks<T>(items: T[], chunkSize: number, fn: (item: T) => Promise<unknown>) {
+  const failures: unknown[] = []
   for (let i = 0; i < items.length; i += chunkSize) {
     const chunk = items.slice(i, i + chunkSize)
-    await Promise.allSettled(chunk.map((item) => fn(item)))
+    const results = await Promise.allSettled(chunk.map((item) => fn(item)))
+    for (const r of results) {
+      if (r.status === 'rejected') failures.push(r.reason)
+    }
+  }
+  if (failures.length > 0) {
+    throw failures[0] instanceof Error ? failures[0] : new Error(String(failures[0] ?? 'chunk failed'))
   }
 }
 
@@ -121,7 +131,6 @@ export const assetsService = {
     })
 
     const isImage = mimeType.startsWith('image/')
-
     const inferredWidth =
       input.width ??
       input.variants?.reduce<number | undefined>(
@@ -139,20 +148,34 @@ export const assetsService = {
     const storedHeight = inferredHeight ?? null
     const storedBlurhash = input.blurhash ?? null
 
-    const asset = await assetsRepository.createAsset(db, {
-      id: assetId,
-      tenantId: tenantScope,
-      filename: input.filename,
-      mimeType,
-      size: originalBytes.byteLength,
-      width: storedWidth,
-      height: storedHeight,
-      blurhash: storedBlurhash,
-      createdBy: createdBy ?? null,
-      originalKey,
-      createdAt: now,
-      updatedAt: now,
-    })
+    // ATM: compensating R2 rollback — if the D1 insert fails after the R2
+    // put, delete the orphaned object instead of leaking storage.
+    let asset
+    try {
+      asset = await assetsRepository.createAsset(db, {
+        id: assetId,
+        tenantId: tenantScope,
+        filename: input.filename,
+        mimeType,
+        size: originalBytes.byteLength,
+        width: storedWidth,
+        height: storedHeight,
+        blurhash: storedBlurhash,
+        createdBy: createdBy ?? null,
+        originalKey,
+        createdAt: now,
+        updatedAt: now,
+      })
+    } catch (err) {
+      await r2.delete(originalKey).catch((deleteErr) => {
+        logger.warn('asset_orphan_cleanup_failed', {
+          assetId,
+          objectKey: originalKey,
+          error: deleteErr instanceof Error ? deleteErr.message : String(deleteErr),
+        })
+      })
+      throw err
+    }
 
     const variantRows: Array<{
       id: string
@@ -188,18 +211,33 @@ export const assetsService = {
       })
     }
 
-    await runInChunks(variantRows, 10, (variant) =>
-      r2.put(variant.objectKey, variant.bytes, {
-        httpMetadata: {
-          contentType: variant.format === 'original' ? mimeType : `image/${variant.format}`,
-        },
+    const uploadedVariantKeys = variantRows.map((v) => v.objectKey)
+    try {
+      await runInChunks(variantRows, 10, (variant) =>
+        r2.put(variant.objectKey, variant.bytes, {
+          httpMetadata: {
+            contentType: variant.format === 'original' ? mimeType : `image/${variant.format}`,
+          },
+        })
+      )
+      await assetsRepository.createVariants(
+        db,
+        variantRows.map(({ bytes: _bytes, ...row }) => row)
+      )
+    } catch (err) {
+      // Compensate: remove variant objects (and the original) uploaded above,
+      // plus the D1 asset row (otherwise it dangles at a deleted originalKey).
+      await Promise.allSettled(
+        [...uploadedVariantKeys, originalKey].map((key) => r2.delete(key))
+      ).catch(() => undefined)
+      await db.delete(assets).where(eq(assets.id, assetId)).catch(() => undefined)
+      logger.warn('asset_variant_orphan_cleanup', {
+        assetId,
+        variantCount: uploadedVariantKeys.length,
+        error: err instanceof Error ? err.message : String(err),
       })
-    )
-
-    await assetsRepository.createVariants(
-      db,
-      variantRows.map(({ bytes: _bytes, ...row }) => row)
-    )
+      throw err
+    }
 
     const createdAsset = await assetsRepository.findById(db, asset.id, tenantScope)
 
@@ -297,6 +335,10 @@ export const assetsService = {
     }
 
     const existingAssets = await assetsRepository.findByIds(db, uniqueIds, tenantScope)
+    // Soft-delete only marks rows (deletedAt); R2 objects are intentionally
+    // retained so deletes stay reversible. Hard-delete paths enqueue R2 object
+    // keys to the durable r2_gc_outbox table (see hardDelete / gcSoftDeleted).
+    // DB delete below is tenant-scoped (tenantScope) so cross-tenant deletes are blocked.
     const deletedIds = await assetsRepository.softDeleteByIds(
       db,
       existingAssets.map((asset) => asset.id),
@@ -317,6 +359,150 @@ export const assetsService = {
     }
 
     return { deletedIds }
+  },
+
+  async hardDelete(
+    db: Database,
+    r2: R2Bucket,
+    ids: string[],
+    tenantId?: string,
+    workerEnv?: Env,
+    defer?: DeferAssetVectorWork
+  ): Promise<{ deletedIds: string[]; r2Failures: string[] }> {
+    const tenantScope = tenantId ?? 'global'
+    const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
+    if (uniqueIds.length === 0) {
+      return { deletedIds: [], r2Failures: [] }
+    }
+
+    // Inclusion-aware fetch: soft-deleted rows (deletedAt set) are the
+    // primary hard-delete targets, so findByIds (live-only) cannot be used.
+    const existingAssets = await assetsRepository.findByIdsIncludingDeleted(
+      db,
+      uniqueIds,
+      tenantScope
+    )
+    if (existingAssets.length === 0) {
+      return { deletedIds: [], r2Failures: [] }
+    }
+
+    const keysById = new Map(
+      existingAssets.map((asset) => [
+        asset.id,
+        [
+          asset.originalKey,
+          ...(asset.variants ?? []).map((variant) => variant.objectKey),
+        ].filter((key): key is string => typeof key === 'string' && key.length > 0),
+      ])
+    )
+    const deletedIds = await assetsRepository.deleteByIds(
+      db,
+      existingAssets.map((asset) => asset.id),
+      tenantScope
+    )
+    const keysToDelete = deletedIds.flatMap((id) => keysById.get(id) ?? [])
+
+    // Durable path: enqueue every key BEFORE attempting R2 deletes so a crash
+    // between DB commit and r2.delete never leaks objects — pending rows are
+    // replayed by sweepR2GcOutbox (see gcSoftDeleted / POST /gc). Degrades to
+    // direct best-effort deletes when the outbox table is unavailable.
+    const r2Failures: string[] = []
+    const durable = await r2GcRepository
+      .enqueueKeys(db, tenantScope, keysToDelete)
+      .catch(() => false)
+    if (durable) {
+      const outcomes = await Promise.allSettled(
+        keysToDelete.map(async (key) => {
+          try {
+            await r2.delete(key)
+            await r2GcRepository.markSentByKey(db, key)
+          } catch (err) {
+            await r2GcRepository.markFailedByKey(db, key)
+            throw err
+          }
+        })
+      )
+      outcomes.forEach((outcome, index) => {
+        if (outcome.status === 'rejected') r2Failures.push(keysToDelete[index] as string)
+      })
+    } else {
+      // Best-effort: DB rows are committed, so R2 failures are reported, not thrown.
+      const outcomes = await Promise.allSettled(keysToDelete.map((key) => r2.delete(key)))
+      keysToDelete.forEach((key, index) => {
+        if (outcomes[index]?.status === 'rejected') r2Failures.push(key)
+      })
+    }
+    if (r2Failures.length > 0) {
+      logger.warn('asset_r2_cleanup_failed', {
+        tenantId: tenantScope,
+        count: r2Failures.length,
+        objectKeys: r2Failures,
+      })
+    }
+
+    if (deletedIds.length > 0 && workerEnv) {
+      scheduleAssetVectorWork(
+        removeAssetVectors(workerEnv, deletedIds, tenantScope).catch((error) => {
+          logger.warn('asset_vector_delete_failed', {
+            tenantId: tenantScope,
+            count: deletedIds.length,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }),
+        defer
+      )
+    }
+
+    return { deletedIds, r2Failures }
+  },
+
+  async gcSoftDeleted(
+    db: Database,
+    r2: R2Bucket,
+    input: { olderThanDays?: number; limit?: number; tenantId?: string } = {},
+    workerEnv?: Env,
+    defer?: DeferAssetVectorWork
+  ): Promise<{ deletedIds: string[]; r2Failures: string[] }> {
+    const olderThanDays = Math.min(365, Math.max(1, Math.floor(input.olderThanDays ?? 30) || 30))
+    const limit = Math.min(100, Math.max(1, Math.floor(input.limit ?? 50) || 50))
+    const cutoffIso = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString()
+
+    const stale = await assetsRepository.findSoftDeletedBefore(db, {
+      cutoffIso,
+      limit,
+      tenantId: input.tenantId,
+    })
+    if (stale.length === 0) {
+      return { deletedIds: [], r2Failures: [] }
+    }
+
+    // Group by tenant so each hardDelete stays tenant-scoped (no cross-tenant deletes).
+    const idsByTenant = new Map<string, string[]>()
+    for (const row of stale) {
+      const scope = row.tenantId ?? input.tenantId ?? 'global'
+      const current = idsByTenant.get(scope)
+      if (current) current.push(row.id)
+      else idsByTenant.set(scope, [row.id])
+    }
+
+    const deletedIds: string[] = []
+    const r2Failures: string[] = []
+    for (const [scope, scopeIds] of idsByTenant) {
+      const result = await this.hardDelete(db, r2, scopeIds, scope, workerEnv, defer)
+      deletedIds.push(...result.deletedIds)
+      r2Failures.push(...result.r2Failures)
+    }
+    // Drain any backlog of pending R2 deletes (crash-replayed or previously
+    // failed keys). Result shape is unchanged; swept counts are logged.
+    const swept = await sweepR2GcOutbox(db, r2, { limit: 50 })
+    if (swept.deleted > 0 || swept.failed > 0) {
+      logger.warn('asset_gc_sweep_summary', {
+        tenantId: input.tenantId ?? 'all',
+        sweptDeleted: swept.deleted,
+        sweptFailed: swept.failed,
+      })
+    }
+    return { deletedIds, r2Failures }
   },
 
   async semanticSearch(
@@ -361,6 +547,10 @@ export const assetsService = {
       matchedIds.length > 0 ? await assetsRepository.findByIds(db, matchedIds, tenantScope) : []
 
     const folderPrefix = input.folder ? `${input.folder}/` : undefined
+    // Vector matches carry no folder/mime metadata, so folder/mimeTypePrefix
+    // predicates cannot be pushed into the Vectorize query — they are applied
+    // here in memory after the tenant-scoped findByIds. The lexical fallback
+    // below pushes both predicates into the DB WHERE clause (searchByTerm).
     const vectorFiltered = vectorAssets.filter((asset) => {
       if (folderPrefix && !asset.filename.startsWith(folderPrefix)) {
         return false
@@ -436,7 +626,7 @@ export const assetsService = {
     accept: string | null,
     tenantId?: string
   ): Promise<
-    | { success: true; data: { key: string; contentType: string } }
+    | { success: true; data: { key: string; contentType: string; fallbackKey: string; fallbackContentType: string } }
     | { success: false; error: { message: string } }
   > {
     const asset = await assetsRepository.findById(db, id, tenantId)
@@ -460,6 +650,8 @@ export const assetsService = {
           data: {
             key: matched.objectKey,
             contentType: `image/${matched.format}`,
+            fallbackKey: asset.originalKey,
+            fallbackContentType: asset.mimeType,
           },
         }
       }
@@ -470,6 +662,8 @@ export const assetsService = {
       data: {
         key: asset.originalKey,
         contentType: asset.mimeType,
+        fallbackKey: asset.originalKey,
+        fallbackContentType: asset.mimeType,
       },
     }
   },

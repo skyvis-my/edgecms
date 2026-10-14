@@ -1,4 +1,4 @@
-import { type } from 'arktype'
+import { Type, createSchema } from './typebox'
 import { id, slug, timestamp } from './common'
 import { fieldType } from './field-types'
 
@@ -20,13 +20,15 @@ import { fieldType } from './field-types'
  * - options: type-specific configuration (e.g. min/max for numbers,
  *   allowed formats for media, target collection for relations)
  */
-export const fieldDefinition = type({
-  name: 'string',
-  type: fieldType,
-  required: 'boolean',
-  localizable: 'boolean',
-  'options?': 'Record<string, unknown>',
-})
+export const fieldDefinition = createSchema(
+  Type.Object({
+    name: Type.String(),
+    type: fieldType,
+    required: Type.Boolean(),
+    localizable: Type.Boolean(),
+    options: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  })
+)
 
 export type FieldDefinition = typeof fieldDefinition.infer
 
@@ -38,24 +40,26 @@ export type FieldDefinition = typeof fieldDefinition.infer
  * - defaultLocale: BCP 47 locale tag used as the primary language
  * - supportedLocales: all locale tags this collection supports
  */
-export const collectionDefinition = type({
-  id,
-  name: 'string',
-  slug,
-  singleton: 'boolean',
-  fields: fieldDefinition.array(),
-  defaultLocale: 'string',
-  supportedLocales: 'string[]',
-  'displayName?': 'string',
-  'description?': 'string',
-  'icon?': 'string',
-  'color?': 'string',
-  'listFields?': 'string[]',
-  'searchFields?': 'string[]',
-  'defaultSort?': 'string',
-  'defaultSortOrder?': "'asc' | 'desc'",
-  createdAt: timestamp,
-  updatedAt: timestamp,
-})
+export const collectionDefinition = createSchema(
+  Type.Object({
+    id,
+    name: Type.String(),
+    slug,
+    singleton: Type.Boolean(),
+    fields: Type.Array(fieldDefinition),
+    defaultLocale: Type.String(),
+    supportedLocales: Type.Array(Type.String()),
+    displayName: Type.Optional(Type.String()),
+    description: Type.Optional(Type.String()),
+    icon: Type.Optional(Type.String()),
+    color: Type.Optional(Type.String()),
+    listFields: Type.Optional(Type.Array(Type.String())),
+    searchFields: Type.Optional(Type.Array(Type.String())),
+    defaultSort: Type.Optional(Type.String()),
+    defaultSortOrder: Type.Optional(Type.Union([Type.Literal('asc'), Type.Literal('desc')])),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  })
+)
 
 export type CollectionDefinition = typeof collectionDefinition.infer

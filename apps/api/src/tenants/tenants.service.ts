@@ -1,7 +1,10 @@
 import type { Database } from '@/database/db'
 import { normalizeAllowedAssetMimeTypes } from '@/assets/file-policy'
+import { logger } from '@/observability/logger'
 import type { ServiceResult } from '@/shared/types/result'
 import { rbacService } from '@/auth/rbac.service'
+import { buildBuiltInSeedRows } from '@/auth/builtin-roles'
+import { permissions, roles, tenants } from '@/database/schema'
 import {
   deprovisionTenant as deprovisionTenantResources,
   provisionTenant as provisionTenantResources,
@@ -143,12 +146,20 @@ export const tenantsService = {
 
   /** Get a tenant by ID or slug. */
   async findByIdOrSlug(db: Database, idOrSlug: string): Promise<ServiceResult<TenantRow>> {
-    // Try by ID first, then by slug
-    const byId = await tenantsRepository.findById(db, idOrSlug)
-    if (byId) return { success: true, data: byId }
-
-    const bySlug = await tenantsRepository.findBySlug(db, idOrSlug)
-    if (bySlug) return { success: true, data: bySlug }
+    // UUID-shaped input is usually an ID, slug-shaped input a slug — one query
+    // on the fast path, with a fallback on miss for legacy/non-UUID ids.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    if (UUID_RE.test(idOrSlug)) {
+      const byId = await tenantsRepository.findById(db, idOrSlug)
+      if (byId) return { success: true, data: byId }
+      const bySlug = await tenantsRepository.findBySlug(db, idOrSlug)
+      if (bySlug) return { success: true, data: bySlug }
+    } else {
+      const bySlug = await tenantsRepository.findBySlug(db, idOrSlug)
+      if (bySlug) return { success: true, data: bySlug }
+      const byId = await tenantsRepository.findById(db, idOrSlug)
+      if (byId) return { success: true, data: byId }
+    }
 
     return {
       success: false,
@@ -262,8 +273,7 @@ export const tenantsService = {
 
     const now = new Date().toISOString()
     const id = crypto.randomUUID()
-
-    const row = await tenantsRepository.create(db, {
+    const tenantValues = {
       id,
       name: input.name,
       slug: input.slug,
@@ -276,10 +286,62 @@ export const tenantsService = {
       mediaAllowedMimeTypes,
       createdAt: now,
       updatedAt: now,
-    })
+    }
 
-    // Seed built-in RBAC roles for the new tenant
-    await rbacService.seedBuiltInRoles(db, id)
+    // Fast path: tenant + all RBAC seed rows in ONE db.batch() (atomic —
+    // no partial-role window, no compensation needed). Falls back to
+    // sequential insert + healable seed on drivers without .batch().
+    const batched = db as unknown as {
+      batch?: (queries: Parameters<Database['batch']>[0]) => ReturnType<Database['batch']>
+    }
+    if (typeof batched.batch === 'function') {
+      const { roleRows, permRows } = buildBuiltInSeedRows(id, now)
+      try {
+        await batched.batch([
+          db.insert(tenants).values(tenantValues),
+          db.insert(roles).values(roleRows),
+          db.insert(permissions).values(permRows),
+        ])
+      } catch (err) {
+        // UNIQUE race on slug (check-then-insert cannot serialize concurrent creates).
+        if (err instanceof Error && /unique|UNIQUE|SQLITE_CONSTRAINT/i.test(err.message)) {
+          return {
+            success: false,
+            error: { code: 'CONFLICT', message: `Tenant with slug '${input.slug}' already exists` },
+          }
+        }
+        throw err
+      }
+      const created = await tenantsRepository.findBySlug(db, input.slug)
+      if (!created) {
+        throw new Error('Failed to create tenant: batch committed but row not found')
+      }
+      return { success: true, data: created }
+    }
+
+    let row: TenantRow
+    try {
+      row = await tenantsRepository.create(db, tenantValues)
+    } catch (err) {
+      // UNIQUE race on slug (check-then-insert cannot serialize concurrent creates).
+      if (err instanceof Error && /unique|UNIQUE/i.test(err.message)) {
+        return {
+          success: false,
+          error: { code: 'CONFLICT', message: `Tenant with slug '${input.slug}' already exists` },
+        }
+      }
+      throw err
+    }
+
+    // Seed built-in RBAC roles for the new tenant.
+    // Compensation: if seeding fails, remove the tenant row to avoid orphan tenants
+    // with partial roles (auth hole / dead tenant).
+    try {
+      await rbacService.seedBuiltInRoles(db, id)
+    } catch (err) {
+      await tenantsRepository.deleteById(db, id).catch(() => false)
+      throw err
+    }
 
     return { success: true, data: row }
   },
@@ -424,8 +486,55 @@ export const tenantsService = {
   },
 
   /** Delete a tenant by ID. */
-  async deleteById(db: Database, id: string): Promise<ServiceResult<{ id: string }>> {
+  async deleteById(
+    db: Database,
+    id: string,
+    deprovision?: { accountId: string; apiToken: string }
+  ): Promise<ServiceResult<{ id: string }>> {
     const existing = await tenantsRepository.findById(db, id)
+    // ATM-03 (tenant leak): tear down provisioned Cloudflare resources
+    // BEFORE deleting the DB row. The row delete cascades to
+    // tenant_resources, so deprovisioning after would lose the resource IDs.
+    if (existing) {
+      let deprovisionFailed = false
+      try {
+        const resources = await tenantsRepository.getResources(db, id)
+        const hasResources =
+          resources && (resources.d1DatabaseId || resources.kvNamespaceId || resources.r2BucketName)
+        if (hasResources) {
+          if (deprovision?.accountId && deprovision?.apiToken) {
+            await deprovisionTenantResources(
+              db,
+              deprovision.accountId,
+              existing.slug,
+              id,
+              deprovision.apiToken
+            )
+          } else {
+            logger.warn('tenant_delete_without_deprovision', {
+              tenantId: id,
+              slug: existing.slug,
+            })
+          }
+        }
+      } catch (err) {
+        // Fail-closed: keep the row + resource IDs so deprovision stays retryable.
+        deprovisionFailed = true
+        logger.error('tenant_deprovision_before_delete_failed', {
+          tenantId: id,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+      if (deprovisionFailed) {
+        return {
+          success: false,
+          error: {
+            code: 'DEPROVISIONING_ERROR',
+            message: `Tenant '${id}' not deleted: deprovision failed, retry with credentials`,
+          },
+        }
+      }
+    }
     const deleted = await tenantsRepository.deleteById(db, id)
     if (!deleted) {
       return {

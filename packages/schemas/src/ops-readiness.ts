@@ -1,58 +1,80 @@
-import { type } from 'arktype'
+import { Type, createSchema } from './typebox'
 
-export const smokeAssetFixture = type({
-  tenantSlug: 'string > 0',
-  assetId: 'string > 0',
-  filename: 'string > 0',
-  publicPath: 'string > 0',
-})
+export const smokeAssetFixture = createSchema(
+  Type.Object({
+    tenantSlug: Type.String({ minLength: 1 }),
+    assetId: Type.String({ minLength: 1 }),
+    filename: Type.String({ minLength: 1 }),
+    publicPath: Type.String({ minLength: 1 }),
+  })
+)
 
-export const smokePluginFixture = type({
-  pluginName: 'string > 0',
-  enabled: 'boolean',
-  trustedOnly: 'boolean',
-})
+export const smokePluginFixture = createSchema(
+  Type.Object({
+    pluginName: Type.String({ minLength: 1 }),
+    enabled: Type.Boolean(),
+    trustedOnly: Type.Boolean(),
+  })
+)
 
-export const checklistItem = type({
-  id: 'string > 0',
-  label: 'string > 0',
-  done: 'boolean',
-})
+export const checklistItem = createSchema(
+  Type.Object({
+    id: Type.String({ minLength: 1 }),
+    label: Type.String({ minLength: 1 }),
+    done: Type.Boolean(),
+  })
+)
 
-export const publishChecklist = type({
-  seo: 'boolean',
-  locale: 'boolean',
-  media: 'boolean',
-  schedule: 'boolean',
-})
+export const publishChecklist = createSchema(
+  Type.Object({
+    seo: Type.Boolean(),
+    locale: Type.Boolean(),
+    media: Type.Boolean(),
+    schedule: Type.Boolean(),
+  })
+)
 
-export const autosaveConflictWarning = type({
-  entryId: 'string > 0',
-  localVersion: 'number.integer >= 1',
-  remoteVersion: 'number.integer >= 1',
-})
+export const autosaveConflictWarning = createSchema(
+  Type.Object({
+    entryId: Type.String({ minLength: 1 }),
+    localVersion: Type.Integer({ minimum: 1 }),
+    remoteVersion: Type.Integer({ minimum: 1 }),
+  })
+)
 
-export const auditLogPolicy = type({
-  surface: 'string > 0',
-  redactedFields: type('string > 0').array(),
-})
+export const auditLogPolicy = createSchema(
+  Type.Object({
+    surface: Type.String({ minLength: 1 }),
+    redactedFields: Type.Array(Type.String({ minLength: 1 })),
+  })
+)
 
-export const rateLimitDocsPolicy = type({
-  surface: "'public' | 'admin' | 'auth'",
-  windowMs: 'number > 0',
-  limit: 'number > 0',
-})
+export const rateLimitDocsPolicy = createSchema(
+  Type.Object({
+    surface: Type.Union([
+      Type.Literal('public'),
+      Type.Literal('admin'),
+      Type.Literal('auth'),
+    ]),
+    windowMs: Type.Number({ minimum: 1 }),
+    limit: Type.Number({ minimum: 1 }),
+  })
+)
 
-export const securityHeaderPolicy = type({
-  contentSecurityPolicy: 'string > 0',
-  frameOptions: "'DENY' | 'SAMEORIGIN'",
-})
+export const securityHeaderPolicy = createSchema(
+  Type.Object({
+    contentSecurityPolicy: Type.String({ minLength: 1 }),
+    frameOptions: Type.Union([Type.Literal('DENY'), Type.Literal('SAMEORIGIN')]),
+  })
+)
 
-export const backupExportPlan = type({
-  d1Export: 'boolean',
-  r2Lifecycle: 'boolean',
-  operatorReceiptRequired: 'boolean',
-})
+export const backupExportPlan = createSchema(
+  Type.Object({
+    d1Export: Type.Boolean(),
+    r2Lifecycle: Type.Boolean(),
+    operatorReceiptRequired: Type.Boolean(),
+  })
+)
 
 export function isSmokeFixturePublic(asset: typeof smokeAssetFixture.infer): boolean {
   return asset.publicPath.startsWith('/api/tenants/')

@@ -29,8 +29,8 @@ export const cacheTags = sqliteTable(
     createdAt: text('createdAt').notNull(),
   },
   (table) => [
-    // Index for finding all snapshots with a given tag (for invalidation)
-    index('cache_tags_tag_idx').on(table.tag),
+    // Covering index for finding all snapshots with a given tag (for invalidation)
+    index('cache_tags_tag_snapshot_idx').on(table.tag, table.snapshotKey),
     // Index for finding all tags associated with a snapshot key (for updates)
     index('cache_tags_snapshot_key_idx').on(table.snapshotKey),
   ]

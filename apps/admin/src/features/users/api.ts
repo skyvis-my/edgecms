@@ -16,8 +16,14 @@ export function useUsers(tenantSlug?: string) {
   return useQuery({
     queryKey: usersKeys.byTenant(tenantSlug),
     queryFn: async () => {
-      const users = await edenGet<unknown>('/admin/users')
+      // NOTE: the backend currently returns the full user list without
+      // server-side tenant filtering; tenantSlug only scopes the cache key
+      // (client-side filtering happens at the call site). The query param
+      // below future-proofs server filtering without breaking current behavior.
+      const suffix = tenantSlug ? `?tenant=${encodeURIComponent(tenantSlug)}` : ''
+      const users = await edenGet<unknown>(`/admin/users${suffix}`)
       return usersQuerySchema.parse({ users }).users
     },
+    staleTime: 5 * 60 * 1000,
   })
 }

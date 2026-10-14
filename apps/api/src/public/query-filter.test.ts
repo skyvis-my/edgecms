@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 
-const { parsePublicFilters, hashFilterParams } = await import(
+const { parsePublicFilters, hashFilterParams, enforceSearchAllowlist } = await import(
   `../public/query-filter?bypass=${Date.now()}`
 )
 
@@ -254,5 +254,64 @@ describe('buildDrizzleConditions', () => {
     expect(result.errors).toEqual([
       'Field "id" is not filterable. Allowed top-level fields: slug, createdAt, updatedAt, status. Use data.fieldName for custom fields.',
     ])
+  })
+})
+
+describe('enforceSearchAllowlist', () => {
+  it('passes everything through when searchFields is null (compat)', () => {
+    const filters = [{ field: 'data.body', operator: 'contains' as const, value: 'hello' }]
+    const sort = [{ field: 'data.title', order: 'desc' as const }]
+    const result = enforceSearchAllowlist(filters, sort, null)
+    expect(result.errors).toEqual([])
+    expect(result.filters).toEqual(filters)
+    expect(result.sort).toEqual(sort)
+  })
+
+  it('rejects contains on non-allowlisted data fields', () => {
+    const filters = [
+      { field: 'data.title', operator: 'contains' as const, value: 'hello' },
+      { field: 'data.body', operator: 'contains' as const, value: 'world' },
+    ]
+    const result = enforceSearchAllowlist(filters, [], ['title'])
+    expect(result.filters).toEqual([filters[0]])
+    expect(result.errors).toEqual([
+      'Filter "data.body" with operator "contains" is not searchable on this collection',
+    ])
+  })
+
+  it('allows non-contains operators on non-allowlisted data fields', () => {
+    const filters = [{ field: 'data.body', operator: 'eq' as const, value: 'world' }]
+    const result = enforceSearchAllowlist(filters, [], ['title'])
+    expect(result.errors).toEqual([])
+    expect(result.filters).toEqual(filters)
+  })
+
+  it('rejects data sorts on non-allowlisted fields but keeps top-level sorts', () => {
+    const sort = [
+      { field: 'data.title', order: 'asc' as const },
+      { field: 'data.views', order: 'desc' as const },
+      { field: 'createdAt', order: 'desc' as const },
+    ]
+    const result = enforceSearchAllowlist([], sort, ['title'])
+    expect(result.sort).toEqual([sort[0], sort[2]])
+    expect(result.errors).toEqual(['Field "data.views" is not sortable on this collection'])
+  })
+
+  it('matches nested paths by root field name', () => {
+    const filters = [{ field: 'data.meta.author', operator: 'contains' as const, value: 'ada' }]
+    const allowed = enforceSearchAllowlist(filters, [], ['meta'])
+    expect(allowed.errors).toEqual([])
+    const denied = enforceSearchAllowlist(filters, [], ['title'])
+    expect(denied.filters).toEqual([])
+    expect(denied.errors).toHaveLength(1)
+  })
+
+  it('empty allowlist denies all contains and data sorts', () => {
+    const filters = [{ field: 'data.title', operator: 'contains' as const, value: 'x' }]
+    const sort = [{ field: 'data.title', order: 'asc' as const }]
+    const result = enforceSearchAllowlist(filters, sort, [])
+    expect(result.filters).toEqual([])
+    expect(result.sort).toEqual([])
+    expect(result.errors).toHaveLength(2)
   })
 })

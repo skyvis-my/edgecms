@@ -49,7 +49,8 @@ type FindEntryByIdFn = (
 >
 
 export function normalizeSyncPullLimit(limit: number | undefined): number {
-  return Math.min(limit ?? 100, MAX_SYNC_PULL_LIMIT)
+  const raw = Number.isFinite(limit as number) ? Math.floor(limit as number) : 100
+  return Math.min(Math.max(raw, 1), MAX_SYNC_PULL_LIMIT)
 }
 
 export function buildSyncPullPayload(changes: SyncPullChange[], cursor: number, limit: number) {

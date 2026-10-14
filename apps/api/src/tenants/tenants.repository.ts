@@ -81,9 +81,10 @@ function withDefaultTenantColumns<
  */
 export const tenantsRepository = {
   /** List all tenants ordered by creation date (newest first). */
-  async findAll(db: Database): Promise<TenantRow[]> {
+  async findAll(db: Database, options: { limit?: number } = {}): Promise<TenantRow[]> {
+    const limit = Math.min(100, Math.max(1, options.limit ?? 100))
     try {
-      return await db.select().from(tenants).all()
+      return await db.select().from(tenants).limit(limit).all()
     } catch (error) {
       if (!isMissingOptionalTenantColumnsError(error)) throw error
       const rows = await db
@@ -102,7 +103,8 @@ export const tenantsRepository = {
   },
 
   /** List all tenants with their user counts. */
-  async findAllWithUserCount(db: Database): Promise<TenantWithUserCount[]> {
+  async findAllWithUserCount(db: Database, options: { limit?: number } = {}): Promise<TenantWithUserCount[]> {
+    const limit = Math.min(100, Math.max(1, options.limit ?? 100))
     const userCountSubquery = db
       .select({
         tenantId: tenantUsers.tenantId,
@@ -130,6 +132,7 @@ export const tenantsRepository = {
       })
       .from(tenants)
       .leftJoin(userCountSubquery, eq(tenants.id, userCountSubquery.tenantId))
+      .limit(limit)
       .all()
 
     return rows.map((row) => ({
@@ -219,6 +222,7 @@ export const tenantsRepository = {
       .from(tenantUsers)
       .innerJoin(tenants, eq(tenantUsers.tenantId, tenants.id))
       .where(eq(tenantUsers.userId, userId))
+      .limit(100)
       .all()
 
     return results.map((r) => r.tenant)
@@ -226,7 +230,7 @@ export const tenantsRepository = {
 
   /** Find all users in a tenant with their roles. */
   async findTenantUsers(db: Database, tenantId: string): Promise<TenantUserRow[]> {
-    return db.select().from(tenantUsers).where(eq(tenantUsers.tenantId, tenantId)).all()
+    return db.select().from(tenantUsers).where(eq(tenantUsers.tenantId, tenantId)).limit(100).all()
   },
 
   /** Find all users in a tenant with their profile details (name, email). */
@@ -241,6 +245,7 @@ export const tenantsRepository = {
       .from(tenantUsers)
       .innerJoin(user, eq(tenantUsers.userId, user.id))
       .where(eq(tenantUsers.tenantId, tenantId))
+      .limit(100)
       .all()
 
     return rows
@@ -333,6 +338,30 @@ export const tenantsRepository = {
     tenantId: string,
     data: Omit<TenantResourceInsert, 'tenantId'>
   ): Promise<TenantResourceRow> {
+    // Single-statement upsert — avoids read-then-write race.
+    const now = new Date().toISOString()
+    const insertBuilder = db.insert(tenantResources).values({
+      tenantId,
+      ...data,
+      createdAt: now,
+      updatedAt: now,
+    })
+    if (
+      typeof (insertBuilder as unknown as { onConflictDoUpdate?: unknown }).onConflictDoUpdate ===
+      'function'
+    ) {
+      const rows = await (
+        insertBuilder as unknown as {
+          onConflictDoUpdate: (args: unknown) => Promise<TenantResourceRow[]>
+        }
+      ).onConflictDoUpdate({
+        target: tenantResources.tenantId,
+        set: { ...data, updatedAt: now },
+      })
+      const row = rows[0]
+      if (!row) throw new Error('Failed to upsert tenant resources: upsert returned no rows')
+      return row
+    }
     const existing = await this.getResources(db, tenantId)
 
     if (existing) {

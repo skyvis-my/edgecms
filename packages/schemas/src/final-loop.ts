@@ -1,39 +1,49 @@
-import { type } from 'arktype'
+import { Type, createSchema } from './typebox'
 
-export const collectionImportPreview = type({
-  collectionSlug: 'string > 0',
-  additions: 'number >= 0',
-  changes: 'number >= 0',
-  removals: 'number >= 0',
-  destructiveApply: 'boolean',
-})
+export const collectionImportPreview = createSchema(
+  Type.Object({
+    collectionSlug: Type.String({ minLength: 1 }),
+    additions: Type.Number({ minimum: 0 }),
+    changes: Type.Number({ minimum: 0 }),
+    removals: Type.Number({ minimum: 0 }),
+    destructiveApply: Type.Boolean(),
+  })
+)
 
-export const dataPortabilityRoadmap = type({
-  exportFormats: type('string > 0').array(),
-  importPreviewRequired: 'boolean',
-  destructiveApplyBlocked: 'boolean',
-})
+export const dataPortabilityRoadmap = createSchema(
+  Type.Object({
+    exportFormats: Type.Array(Type.String({ minLength: 1 })),
+    importPreviewRequired: Type.Boolean(),
+    destructiveApplyBlocked: Type.Boolean(),
+  })
+)
 
-export const publicPluginSafetyGate = type({
-  pluginName: 'string > 0',
-  publicRoute: 'string > 0',
-  tenantTests: 'boolean',
-  authTests: 'boolean',
-  cacheTests: 'boolean',
-})
+export const publicPluginSafetyGate = createSchema(
+  Type.Object({
+    pluginName: Type.String({ minLength: 1 }),
+    publicRoute: Type.String({ minLength: 1 }),
+    tenantTests: Type.Boolean(),
+    authTests: Type.Boolean(),
+    cacheTests: Type.Boolean(),
+  })
+)
 
-export const publishAutomationGate = type({
-  packageName: 'string > 0',
-  dryRunPassed: 'boolean',
-  manualApprovalRequired: 'boolean',
-})
+export const publishAutomationGate = createSchema(
+  Type.Object({
+    packageName: Type.String({ minLength: 1 }),
+    dryRunPassed: Type.Boolean(),
+    manualApprovalRequired: Type.Boolean(),
+  })
+)
 
-export const deployedProofGate = type({
-  url: 'string > 0',
-  smokePassed: 'boolean',
-  perfPassed: 'boolean',
-  operatorReceiptRequired: 'boolean',
-})
+export const deployedProofGate = createSchema(
+  Type.Object({
+    url: Type.String({ minLength: 1 }),
+    smokePassed: Type.Boolean(),
+    perfPassed: Type.Boolean(),
+    operatorReceiptRequired: Type.Boolean(),
+  })
+)
 
 export function isSafeImportPreview(preview: typeof collectionImportPreview.infer): boolean {
   return !preview.destructiveApply

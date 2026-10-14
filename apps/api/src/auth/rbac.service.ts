@@ -1,11 +1,15 @@
 import type { Database } from '@/database/db'
 import type { ServiceResult } from '@/shared/types/result'
+import { permissions, roles } from '@/database/schema'
+import {
+  BUILTIN_PERMISSIONS,
+  buildBuiltInSeedRows,
+  type BuiltInRoleName,
+} from './builtin-roles'
 import { rbacRepository } from './rbac.repository'
 
-/** Built-in role names. */
-export type BuiltInRoleName = 'viewer' | 'editor' | 'admin' | 'owner'
-
 /** Custom role input for creation. */
+export type { BuiltInRoleName } from './builtin-roles'
 export interface CreateRoleInput {
   name: string
   description?: string
@@ -19,39 +23,19 @@ export type RoleWithPermissionCount = RoleRow & { permissionCount: number }
 // Import types from repository
 type RoleRow = import('./rbac.repository').RoleRow
 
-/** Built-in permissions for each role. */
-const BUILTIN_PERMISSIONS: Record<BuiltInRoleName, Array<{ subject: string; action: string }>> = {
-  viewer: [
-    { subject: 'collection:*', action: 'read' },
-    { subject: 'entry:*', action: 'read' },
-    { subject: 'asset:*', action: 'read' },
-  ],
-  editor: [
-    { subject: 'collection:*', action: 'read' },
-    { subject: 'entry:*', action: 'read' },
-    { subject: 'entry:*', action: 'create' },
-    { subject: 'entry:*', action: 'update' },
-    { subject: 'entry:*', action: 'delete' },
-    { subject: 'entry:*', action: 'publish' },
-    { subject: 'asset:*', action: 'read' },
-    { subject: 'asset:*', action: 'create' },
-    { subject: 'asset:*', action: 'update' },
-    { subject: 'asset:*', action: 'delete' },
-  ],
-  admin: [
-    { subject: 'collection:*', action: 'manage' },
-    { subject: 'entry:*', action: 'manage' },
-    { subject: 'asset:*', action: 'manage' },
-    { subject: 'user:*', action: 'read' },
-    { subject: 'user:*', action: 'create' },
-    { subject: 'user:*', action: 'update' },
-    { subject: 'settings:*', action: 'manage' },
-    { subject: 'webhooks:*', action: 'manage' },
-  ],
-  owner: [
-    { subject: '*:*', action: 'manage' },
-  ],
+/** D1 batch capability probe (mock drivers lack .batch). Call as a method to preserve `this`. */
+function batchCapable(db: Database) {
+  return db as unknown as {
+    batch?: (queries: Parameters<Database['batch']>[0]) => ReturnType<Database['batch']>
+  }
 }
+const PERMS_CACHE_TTL_MS = 60_000
+// Per-DB cache (WeakMap): a module-level Map keyed by tenant:role leaks across
+// test mock DBs and across tenants sharing a process. Scope to the db instance.
+const permsCache = new WeakMap<
+  object,
+  Map<string, { expiresAt: number; perms: Array<{ subject: string; action: string; conditions?: string | null }> }>
+>()
 
 /**
  * Business logic layer for RBAC.
@@ -63,8 +47,32 @@ export const rbacService = {
   /**
    * Seed built-in roles for a new tenant.
    * Should be called after tenant creation.
+   *
+   * Fast path: when no roles exist yet and the driver supports db.batch(),
+   * all 4 roles + 22 permissions go in a single round-trip. Otherwise falls
+   * back to the per-role check-then-insert loop (idempotent re-seed heal).
    */
   async seedBuiltInRoles(db: Database, tenantId: string): Promise<void> {
+    const batched = batchCapable(db)
+    if (typeof batched.batch === 'function' && typeof rbacRepository.findRolesByTenant === 'function') {
+      const existing = await rbacRepository.findRolesByTenant(db, tenantId)
+      if (existing.length === 0) {
+        const now = new Date().toISOString()
+        const { roleRows, permRows } = buildBuiltInSeedRows(tenantId, now)
+        try {
+          await batched.batch([db.insert(roles).values(roleRows), db.insert(permissions).values(permRows)])
+          return
+        } catch (err) {
+          // UNIQUE race (concurrent seed won): fall through to per-role heal.
+          if (!(err instanceof Error) || !/unique|UNIQUE|SQLITE_CONSTRAINT/i.test(err.message)) {
+            throw err
+          }
+        }
+      } else if (existing.length >= 4) {
+        return
+      }
+    }
+
     const now = new Date().toISOString()
     const roleNames: BuiltInRoleName[] = ['viewer', 'editor', 'admin', 'owner']
     const roleDescriptions: Record<BuiltInRoleName, string> = {
@@ -78,46 +86,81 @@ export const rbacService = {
       const existing = await rbacRepository.findRoleByTenantAndName(db, tenantId, roleName)
       if (existing) continue
 
-      const role = await rbacRepository.createRole(db, {
-        id: crypto.randomUUID(),
-        tenantId,
-        name: roleName,
-        description: roleDescriptions[roleName],
-        isDefault: roleName === 'viewer',
-        createdAt: now,
-        updatedAt: now,
-      })
-
-      // Create permissions for this role
-      const permissions = BUILTIN_PERMISSIONS[roleName]
-      for (const perm of permissions) {
-        await rbacRepository.createPermission(db, {
+      // ATM: concurrent seeds race on the check above; the
+      // (tenantId, name) unique constraint arbitrates. A loser skips.
+      let role
+      try {
+        role = await rbacRepository.createRole(db, {
           id: crypto.randomUUID(),
-          roleId: role.id,
-          subject: perm.subject,
-          action: perm.action,
-          conditions: null,
+          tenantId,
+          name: roleName,
+          description: roleDescriptions[roleName],
+          isDefault: roleName === 'viewer',
           createdAt: now,
+          updatedAt: now,
         })
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
+          continue
+        }
+        throw err
+      }
+
+      // Create permissions for this role in batch (with fallback for custom mocks)
+      const permissions = BUILTIN_PERMISSIONS[roleName]
+      if (permissions.length > 0) {
+        if (typeof rbacRepository.createPermissions === 'function') {
+          await rbacRepository.createPermissions(
+            db,
+            permissions.map((perm) => ({
+              id: crypto.randomUUID(),
+              roleId: role.id,
+              subject: perm.subject,
+              action: perm.action,
+              conditions: null,
+              createdAt: now,
+            }))
+          )
+        } else {
+          for (const perm of permissions) {
+            await rbacRepository.createPermission(db, {
+              id: crypto.randomUUID(),
+              roleId: role.id,
+              subject: perm.subject,
+              action: perm.action,
+              conditions: null,
+              createdAt: now,
+            })
+          }
+        }
       }
     }
   },
 
-  /** List all roles for a tenant with permission counts. */
+  /** List all roles for a tenant with permission counts in a single join query. */
   async getRolesForTenant(
     db: Database,
     tenantId: string
   ): Promise<ServiceResult<RoleWithPermissionCount[]>> {
     const roles = await rbacRepository.findRolesByTenant(db, tenantId)
-    const rolesWithCounts: RoleWithPermissionCount[] = []
+    const countsMap =
+      typeof rbacRepository.findPermissionCountsByTenant === 'function'
+        ? await rbacRepository.findPermissionCountsByTenant(db, tenantId)
+        : new Map<string, number>(
+            await Promise.all(
+              roles.map(
+                async (role): Promise<[string, number]> => [
+                  role.id,
+                  (await rbacRepository.findPermissionsByRole(db, role.id)).length,
+                ]
+              )
+            )
+          )
 
-    for (const role of roles) {
-      const permissions = await rbacRepository.findPermissionsByRole(db, role.id)
-      rolesWithCounts.push({
-        ...role,
-        permissionCount: permissions.length,
-      })
-    }
+    const rolesWithCounts: RoleWithPermissionCount[] = roles.map((role) => ({
+      ...role,
+      permissionCount: countsMap.get(role.id) ?? 0,
+    }))
 
     return { success: true, data: rolesWithCounts }
   },
@@ -128,6 +171,11 @@ export const rbacService = {
     tenantId: string,
     roleName: string
   ): Promise<ServiceResult<Array<{ subject: string; action: string; conditions?: string | null }>>> {
+    const cacheKey = `${tenantId}:${roleName}`
+    const cached = permsCache.get(db as unknown as object)?.get(cacheKey)
+    if (cached && cached.expiresAt > Date.now()) {
+      return { success: true, data: cached.perms }
+    }
     const role = await rbacRepository.findRoleByTenantAndName(db, tenantId, roleName)
     if (!role) {
       return {
@@ -137,14 +185,18 @@ export const rbacService = {
     }
 
     const permissions = await rbacRepository.findPermissionsByRole(db, role.id)
-    return {
-      success: true,
-      data: permissions.map((p) => ({
-        subject: p.subject,
-        action: p.action,
-        conditions: p.conditions,
-      })),
+    const data = permissions.map((p) => ({
+      subject: p.subject,
+      action: p.action,
+      conditions: p.conditions,
+    }))
+    let scoped = permsCache.get(db as unknown as object)
+    if (!scoped) {
+      scoped = new Map()
+      permsCache.set(db as unknown as object, scoped)
     }
+    scoped.set(cacheKey, { expiresAt: Date.now() + PERMS_CACHE_TTL_MS, perms: data })
+    return { success: true, data }
   },
 
   /** Check if a role can perform a specific action on a subject. */
@@ -187,27 +239,56 @@ export const rbacService = {
     const now = new Date().toISOString()
     const id = crypto.randomUUID()
 
-    const role = await rbacRepository.createRole(db, {
-      id,
-      tenantId,
-      name: input.name,
-      description: input.description ?? null,
-      isDefault: false,
-      createdAt: now,
-      updatedAt: now,
-    })
+    let role
+    try {
+      role = await rbacRepository.createRole(db, {
+        id,
+        tenantId,
+        name: input.name,
+        description: input.description ?? null,
+        isDefault: false,
+        createdAt: now,
+        updatedAt: now,
+      })
+    } catch (err) {
+      // ATM: check-then-act race on concurrent creates with the same name.
+      if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
+        return {
+          success: false,
+          error: {
+            code: 'CONFLICT',
+            message: `Role '${input.name}' already exists for tenant`,
+          },
+        }
+      }
+      throw err
+    }
 
-    // Add permissions if provided
+    // Add permissions in batch if provided (with fallback for custom mocks)
     if (input.permissions && input.permissions.length > 0) {
-      for (const perm of input.permissions) {
-        await rbacRepository.createPermission(db, {
-          id: crypto.randomUUID(),
-          roleId: role.id,
-          subject: perm.subject,
-          action: perm.action,
-          conditions: null,
-          createdAt: now,
-        })
+      if (typeof rbacRepository.createPermissions === 'function') {
+        await rbacRepository.createPermissions(
+          db,
+          input.permissions.map((perm) => ({
+            id: crypto.randomUUID(),
+            roleId: role.id,
+            subject: perm.subject,
+            action: perm.action,
+            conditions: null,
+            createdAt: now,
+          }))
+        )
+      } else {
+        for (const perm of input.permissions) {
+          await rbacRepository.createPermission(db, {
+            id: crypto.randomUUID(),
+            roleId: role.id,
+            subject: perm.subject,
+            action: perm.action,
+            conditions: null,
+            createdAt: now,
+          })
+        }
       }
     }
 
