@@ -50,8 +50,6 @@
     "smoke:e2e:local": "bun scripts/smoke-e2e.ts --mode local",
     "smoke:e2e:local-live": "bun scripts/smoke-e2e.ts --mode local-live",
     "smoke:e2e:remote": "bun scripts/smoke-e2e.ts --mode remote",
-    "smoke:e2e:staging": "bun scripts/smoke-e2e.ts --mode remote --base-url $STAGING_URL",
-    "smoke:e2e:production": "bun scripts/smoke-e2e.ts --mode remote --base-url $PRODUCTION_URL",
     "smoke:e2e:full": "bun scripts/smoke-e2e.ts --mode local --full",
     "perf:public-read:local": "bun scripts/public-read-performance.ts --mode local --expected-kind list --allow-empty",
     "perf:public-read:remote": "bun scripts/public-read-performance.ts --mode remote",

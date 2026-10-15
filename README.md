@@ -17,6 +17,17 @@ Use EdgeCMS when you want a production CMS that runs close to users on Cloudflar
 └── README.md
 ```
 
+## Public vs SaaS boundary
+
+This repo holds library code only: the self-hostable framework (`apps/*`, `packages/*`,
+`templates/*`, `examples/*`, `docs/`). It ships placeholder Cloudflare IDs and no hosting
+targets — deploy it to your own account via the Deploy button or `docs/deployment-runbook.md`.
+
+Hosted service code (real account IDs, `STAGING_URL`/`PRODUCTION_URL` deploy workflows,
+billing, signup, plan limits, marketing website) lives in the private
+`skyvis-my/edgecms-saas` repo, which merges this repo as `upstream`. Never commit SaaS
+secrets or hosting targets here.
+
 ## Quickstart
 
 For the full local path from checkout to first public read, see `docs/public/quickstart.md`.
