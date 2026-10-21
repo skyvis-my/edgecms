@@ -89,8 +89,8 @@ const VALID_EVENT_TYPES = [
 ]
 
 /**
- * Tenant lifecycle events (HS-08) are delivered with global scope, so only
- * global webhooks may subscribe to them.
+ * Tenant lifecycle events (HS-08) are delivered with global scope and describe
+ * every tenant, so only super-admins may subscribe to them, on global webhooks.
  */
 const GLOBAL_ONLY_EVENT_TYPES = [
   'tenant.created',
@@ -100,17 +100,25 @@ const GLOBAL_ONLY_EVENT_TYPES = [
   'tenant.limit_reached',
 ]
 
+/** Caller capabilities that widen what a webhook may subscribe to. */
+export interface WebhookSubscriptionOptions {
+  /** Super-admin caller: may subscribe a global webhook to tenant.* events. */
+  allowTenantLifecycleEvents?: boolean
+}
+
 function validateEvents(
   events: string[],
-  tenantId?: string
+  tenantId: string | undefined,
+  options: WebhookSubscriptionOptions
 ): { valid: true } | { valid: false; error: string } {
   if (!events || events.length === 0) {
     return { valid: false, error: 'Events array must contain at least one event type' }
   }
 
-  const validTypes = tenantId
-    ? VALID_EVENT_TYPES
-    : [...VALID_EVENT_TYPES, ...GLOBAL_ONLY_EVENT_TYPES]
+  const validTypes =
+    !tenantId && options.allowTenantLifecycleEvents
+      ? [...VALID_EVENT_TYPES, ...GLOBAL_ONLY_EVENT_TYPES]
+      : VALID_EVENT_TYPES
   const invalidEvents = events.filter((e) => !validTypes.includes(e))
   if (invalidEvents.length > 0) {
     return {
@@ -156,7 +164,8 @@ export const webhooksService = {
     db: Database,
     input: CreateWebhookInput,
     tenantId?: string,
-    policy?: WebhookDestinationPolicy
+    policy?: WebhookDestinationPolicy,
+    options: WebhookSubscriptionOptions = {}
   ): Promise<ServiceResult<WebhookRow>> {
     // Validate URL
     const urlValidation = validateUrl(input.url, policy)
@@ -168,7 +177,7 @@ export const webhooksService = {
     }
 
     // Validate events
-    const eventsValidation = validateEvents(input.events, tenantId)
+    const eventsValidation = validateEvents(input.events, tenantId, options)
     if (!eventsValidation.valid) {
       return {
         success: false,
@@ -206,7 +215,8 @@ export const webhooksService = {
     id: string,
     input: UpdateWebhookInput,
     tenantId?: string,
-    policy?: WebhookDestinationPolicy
+    policy?: WebhookDestinationPolicy,
+    options: WebhookSubscriptionOptions = {}
   ): Promise<ServiceResult<WebhookRow>> {
     const existing = tenantId
       ? await webhooksRepository.findById(db, id, tenantId)
@@ -231,7 +241,7 @@ export const webhooksService = {
 
     // Validate events if being updated
     if (input.events) {
-      const eventsValidation = validateEvents(input.events, tenantId)
+      const eventsValidation = validateEvents(input.events, tenantId, options)
       if (!eventsValidation.valid) {
         return {
           success: false,

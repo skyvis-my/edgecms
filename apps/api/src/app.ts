@@ -17,7 +17,12 @@ import {
   formatCsrfCookieHeader,
 } from '@/auth/csrf.middleware'
 import { rbacController } from '@/auth/rbac.controller'
-import { hasSuperAdminRole, isSuperAdminEmail, parseSuperAdminEmails } from '@/auth/super-admin'
+import {
+  hasSuperAdminRole,
+  isSuperAdminEmail,
+  isSuperAdminUser,
+  parseSuperAdminEmails,
+} from '@/auth/super-admin'
 import { ensureUserHasOnboardingTenant } from '@/bootstrap/onboarding-tenant'
 import { createErrorEnvelope, toServiceResponse } from '@/shared/utils/service-response'
 import { collectionsRepository } from '@/collections/collections.repository'
@@ -309,17 +314,13 @@ export const createApp = (options: CreateAppOptions = {}) => {
         })
         .post('/api/bootstrap/provision-tenant', { auth: true }, async ({ user, set }) => {
           const db = createDb((env as Env).DB)
-          const typedEnv = env as Env
-          const rawRole = (user as { role?: unknown }).role
           const result = await ensureUserHasOnboardingTenant(
             db,
             { id: user.id, name: user.name, email: user.email },
             {
               host,
               events: tenantEvents,
-              isSuperAdmin:
-                hasSuperAdminRole(rawRole) ||
-                isSuperAdminEmail(user.email, parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS)),
+              isSuperAdmin: isSuperAdminUser(user as { email: string; role?: unknown }, env as Env),
             }
           )
           return toServiceResponse(set, result, { successStatus: 201 })

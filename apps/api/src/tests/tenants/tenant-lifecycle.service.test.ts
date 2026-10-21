@@ -8,6 +8,7 @@ vi.mock('../../tenants/tenants.repository', () => ({
     update: vi.fn(),
     deleteById: vi.fn(),
     addUserToTenant: vi.fn(),
+    addUserToTenantQuery: vi.fn((_db: unknown, row: unknown) => ({ ownerRow: row })),
     getResources: vi.fn(),
   },
 }))
@@ -26,7 +27,14 @@ const { tenantsService } = await import(`../../tenants/tenants.service?bypass=${
 
 type MockFn = ReturnType<typeof vi.fn>
 const repo = tenantsRepository as unknown as Record<
-  'findById' | 'findBySlug' | 'create' | 'update' | 'deleteById' | 'addUserToTenant' | 'getResources',
+  | 'findById'
+  | 'findBySlug'
+  | 'create'
+  | 'update'
+  | 'deleteById'
+  | 'addUserToTenant'
+  | 'addUserToTenantQuery'
+  | 'getResources',
   MockFn
 >
 const rbac = rbacService as unknown as { seedBuiltInRoles: ReturnType<typeof vi.fn> }
@@ -73,6 +81,7 @@ describe('Tenant lifecycle (HS-02, HS-04, HS-08)', () => {
     rbac.seedBuiltInRoles.mockResolvedValue(undefined)
     repo.addUserToTenant.mockResolvedValue({})
     repo.getResources.mockResolvedValue(undefined)
+    repo.addUserToTenantQuery.mockImplementation((_db: unknown, row: unknown) => ({ ownerRow: row }))
   })
 
   describe('createForActor', () => {
@@ -124,14 +133,8 @@ describe('Tenant lifecycle (HS-02, HS-04, HS-08)', () => {
 
     it('adds the owner in the same atomic batch when the driver supports it', async () => {
       const batched: unknown[][] = []
-      const tenantUserValues: unknown[] = []
       const batchDb = {
-        insert: vi.fn(() => ({
-          values: vi.fn((rows: unknown) => {
-            tenantUserValues.push(rows)
-            return { rows }
-          }),
-        })),
+        insert: vi.fn(() => ({ values: vi.fn((rows: unknown) => ({ rows })) })),
         batch: vi.fn(async (queries: unknown[]) => {
           batched.push(queries)
           return []
@@ -149,9 +152,9 @@ describe('Tenant lifecycle (HS-02, HS-04, HS-08)', () => {
       expect(result.success).toBe(true)
       // Tenant + roles + permissions + owner membership.
       expect(batched[0]).toHaveLength(4)
-      expect(tenantUserValues).toContainEqual(
-        expect.objectContaining({ userId: 'u2', role: 'owner' })
-      )
+      expect(batched[0]).toContainEqual({
+        ownerRow: expect.objectContaining({ userId: 'u2', role: 'owner' }),
+      })
       expect(repo.addUserToTenant).not.toHaveBeenCalled()
     })
 

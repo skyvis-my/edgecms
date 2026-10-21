@@ -11,7 +11,8 @@ type TenantSnapshot = TenantLifecycleEvent['tenant']
 type EventBusLike = {
   emit: (
     eventType: EventType,
-    data: { before?: unknown; after?: unknown; metadata?: unknown }
+    data: { before?: unknown; after?: unknown; metadata?: unknown },
+    options?: { mode?: 'async' | 'sync' }
   ) => Promise<void>
 }
 
@@ -42,8 +43,12 @@ export function tenantStatusTransitionEvent(
  * host's `onTenantEvent` listener. One publisher per app instance.
  *
  * Webhook scope is `global`: lifecycle events are operator events, so only
- * global (super-admin) webhooks receive them, never another tenant's.
- * Delivery failures are logged and never fail the committed change.
+ * global webhooks (subscribable by super-admins) receive them, never a
+ * tenant's. Both deliveries are awaited so they finish inside the request:
+ * these events have no outbox row for the relay to replay, and lifecycle
+ * changes are rare admin operations. Hosts should keep `onTenantEvent` fast
+ * (enqueue work rather than call slow APIs). Failures are logged and never
+ * fail the committed change.
  */
 export function createTenantEventPublisher(
   host: Pick<ResolvedHostPolicies, 'onTenantEvent'>,
@@ -58,15 +63,20 @@ export function createTenantEventPublisher(
         status: tenant.status,
       }
       try {
-        await bus.emit(event, {
-          after: snapshot,
-          metadata: {
-            syncChannel: 'global',
-            tenantId: snapshot.id,
-            previousStatus: details.previousStatus,
-            actorId: details.actorId,
+        await bus.emit(
+          event,
+          {
+            after: snapshot,
+            metadata: {
+              syncChannel: 'global',
+              tenantId: snapshot.id,
+              previousStatus: details.previousStatus,
+              actorId: details.actorId,
+            },
           },
-        })
+          // Await webhook enqueueing so the Worker does not drop it after the response.
+          { mode: 'sync' }
+        )
       } catch (err) {
         logger.error('tenant_event_bus_emit_failed', {
           event,

@@ -4,7 +4,7 @@ import { logger } from '@/observability/logger'
 import type { ServiceResult } from '@/shared/types/result'
 import { rbacService } from '@/auth/rbac.service'
 import { buildBuiltInSeedRows } from '@/auth/builtin-roles'
-import { permissions, roles, tenants, tenantUsers } from '@/database/schema'
+import { permissions, roles, tenants } from '@/database/schema'
 import {
   deprovisionTenant as deprovisionTenantResources,
   provisionTenant as provisionTenantResources,
@@ -325,9 +325,12 @@ export const tenantsService = {
       const { roleRows, permRows } = buildBuiltInSeedRows(id, now)
       const ownerRow = options.ownerUserId
         ? [
-            db
-              .insert(tenantUsers)
-              .values({ tenantId: id, userId: options.ownerUserId, role: 'owner', createdAt: now }),
+            tenantsRepository.addUserToTenantQuery(db, {
+              tenantId: id,
+              userId: options.ownerUserId,
+              role: 'owner',
+              createdAt: now,
+            }),
           ]
         : []
       try {
@@ -339,7 +342,7 @@ export const tenantsService = {
         ])
       } catch (err) {
         // UNIQUE race on slug (check-then-insert cannot serialize concurrent creates).
-        if (err instanceof Error && /unique|UNIQUE|SQLITE_CONSTRAINT/i.test(err.message)) {
+        if (err instanceof Error && /unique/i.test(err.message)) {
           return {
             success: false,
             error: { code: 'CONFLICT', message: `Tenant with slug '${input.slug}' already exists` },

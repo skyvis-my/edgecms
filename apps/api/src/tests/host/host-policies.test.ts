@@ -92,7 +92,7 @@ describe('tenant event publisher', () => {
         previousStatus: 'active',
         actorId: 'u1',
       },
-    })
+    }, { mode: 'sync' })
     expect(onTenantEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event: 'tenant.suspended',

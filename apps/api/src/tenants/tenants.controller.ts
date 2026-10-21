@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:workers'
 import { Elysia, t } from 'elysia'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
-import { hasSuperAdminRole, isSuperAdminEmail, parseSuperAdminEmails } from '@/auth/super-admin'
+import { isSuperAdminUser, parseSuperAdminEmails } from '@/auth/super-admin'
 import type { createDb } from '@/database/db'
 import type { Env } from '@/env'
 import { bumpAuthRevision } from '@/auth/auth-revision'
@@ -66,18 +66,12 @@ function evaluateSuperAdmin(
   }
 
   const workerEnv = env as unknown as Env
-  const superAdminEmails = parseSuperAdminEmails(workerEnv.SUPER_ADMIN_EMAILS)
-  const allowDevMode = workerEnv.SUPER_ADMIN_DEV_MODE === 'true'
-
-  if (hasSuperAdminRole(user.role)) {
+  if (isSuperAdminUser(user, workerEnv)) {
     return null
   }
 
-  // Fail closed unless dev mode is explicitly enabled.
-  if (superAdminEmails.length === 0) {
-    if (allowDevMode) {
-      return null
-    }
+  // Fail closed unless dev mode is explicitly enabled (handled by isSuperAdminUser).
+  if (parseSuperAdminEmails(workerEnv.SUPER_ADMIN_EMAILS).length === 0) {
     return {
       status: 403,
       body: {
@@ -90,13 +84,10 @@ function evaluateSuperAdmin(
     }
   }
 
-  if (!isSuperAdminEmail(user.email, superAdminEmails)) {
-    return {
-      status: 403,
-      body: { success: false, error: { code: 'FORBIDDEN', message: 'Super-admin access required' } },
-    }
+  return {
+    status: 403,
+    body: { success: false, error: { code: 'FORBIDDEN', message: 'Super-admin access required' } },
   }
-  return null
 }
 
 /** Super-admin authorization guard configuration. */

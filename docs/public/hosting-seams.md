@@ -9,7 +9,7 @@ const host: HostPolicies = {
   // HS-02: who may create a tenant. Return a boolean or a decision object.
   canCreateTenant: async (actor) =>
     actor.isSuperAdmin || { allowed: true, initialStatus: 'pending' },
-  // HS-08: runs after a tenant lifecycle change commits. Errors are logged, never thrown.
+  // HS-08: awaited after a tenant lifecycle change commits. Keep it fast; errors are logged.
   onTenantEvent: async (event) => {
     console.log(event.event, event.tenant.slug)
   },
@@ -48,4 +48,4 @@ The legacy `inactive` status, and any status not listed above, behaves like `dis
 | `tenant.deleted` | A tenant is deleted. |
 | `tenant.limit_reached` | Reserved for HS-06. Not emitted yet. |
 
-Events go to `host.onTenantEvent` and to the webhook event bus. Webhook delivery uses global scope: only global webhooks (created on `/api/admin/webhooks` without a tenant) can subscribe to `tenant.*` events. A tenant-scoped webhook cannot.
+Events go to `host.onTenantEvent` and to the webhook event bus. Both are awaited inside the request, so a slow listener slows tenant changes. Enqueue the work instead of calling slow APIs. Webhook delivery uses global scope: only super-admins can subscribe a global webhook (created on `/api/admin/webhooks` without a tenant) to `tenant.*` events, because those events describe every tenant. A tenant-scoped webhook cannot subscribe to them.

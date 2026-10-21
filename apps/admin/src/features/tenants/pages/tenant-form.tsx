@@ -133,7 +133,8 @@ export function TenantForm({ tenant, mode }: TenantFormProps) {
       ? {
           name: tenant.name,
           slug: tenant.slug,
-          status: tenant.status,
+          // Legacy `inactive` behaves like `disabled` (HS-04); show it as such.
+          status: (tenant.status as string) === 'inactive' ? 'disabled' : tenant.status,
           localeCatalog: tenant.localeCatalog?.length ? tenant.localeCatalog : ['en'],
           targetUrl: tenant.targetUrl ?? '',
           corsOrigin: tenant.corsOrigin ?? '',
