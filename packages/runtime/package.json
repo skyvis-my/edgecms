@@ -1,6 +1,6 @@
 {
   "name": "@edgecms/runtime",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "EdgeCMS runtime package — real Worker fetch handler, Eden contract types, and bootstrap entrypoint for Cloudflare Workers consumers.",
   "type": "module",
