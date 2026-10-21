@@ -9,7 +9,7 @@
 export const MFA_REQUIRED_CODE = 'MFA_REQUIRED'
 
 export const MFA_REQUIRED_MESSAGE =
-  'Multi-factor authentication is required. Enable two-factor authentication in your profile and sign in again.'
+  'Multi-factor authentication is required. Set up two-factor authentication in your profile, or sign in again with your authenticator code.'
 
 /** Reads the `mfaVerified` flag from a better-auth `getSession` result. */
 export function isMfaVerifiedSession(session: unknown): boolean {

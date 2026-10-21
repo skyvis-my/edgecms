@@ -21,12 +21,23 @@ vi.mock('@/lib/eden-client', () => ({
   resolveApiBasePath: () => mockResolveApiBasePath(),
 }))
 
+const mockToastError = vi.fn()
+
 vi.mock('sonner', () => ({
   toast: {
-    error: vi.fn(),
+    error: (...args: unknown[]) => mockToastError(...args),
     success: vi.fn(),
   },
 }))
+
+async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>, email = 'john@example.com') {
+  await user.type(screen.getByLabelText('First Name'), 'John')
+  await user.type(screen.getByLabelText('Last Name'), 'Doe')
+  await user.type(screen.getByLabelText('Email'), email)
+  await user.type(screen.getByLabelText('Password'), 'Password1')
+  await user.type(screen.getByLabelText('Confirm Password'), 'Password1')
+  await user.click(screen.getByRole('button', { name: 'Create Account' }))
+}
 
 describe('SignUpForm', () => {
   beforeEach(() => {
@@ -91,5 +102,52 @@ describe('SignUpForm', () => {
     })
 
     expect(localStorage.getItem('edgecms:active-tenant')).toBe('acme')
+  })
+
+  it('sends the invite token as a header', async () => {
+    const user = userEvent.setup()
+    const { SignUpForm } = await import(`./sign-up-form?bypass=${Date.now()}`)
+
+    render(<SignUpForm inviteToken='invite-123' />)
+    await fillAndSubmit(user)
+
+    await waitFor(() => {
+      expect(mockSignUpEmail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fetchOptions: { headers: { 'x-edgecms-invite-token': 'invite-123' } },
+        })
+      )
+    })
+  })
+
+  it('asks the user to verify their email when no session was created', async () => {
+    mockSignUpEmail.mockResolvedValue({ data: { token: null, user: {} }, error: null })
+    const user = userEvent.setup()
+    const { SignUpForm } = await import(`./sign-up-form?bypass=${Date.now()}`)
+
+    render(<SignUpForm onboarding />)
+    await fillAndSubmit(user, 'verify@example.com')
+
+    expect(await screen.findByText('Check your inbox')).toBeTruthy()
+    expect(screen.getByText('verify@example.com')).toBeTruthy()
+    expect(mockRefreshSessionAfterLogin).not.toHaveBeenCalled()
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+  })
+
+  it('explains policy rejections', async () => {
+    mockSignUpEmail.mockResolvedValue({
+      error: { code: 'SIGNUP_DISABLED', message: 'Sign-up is disabled on this deployment' },
+    })
+    const user = userEvent.setup()
+    const { SignUpForm } = await import(`./sign-up-form?bypass=${Date.now()}`)
+
+    render(<SignUpForm />)
+    await fillAndSubmit(user)
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith(
+        'Sign-up is closed on this workspace. Ask an administrator for an account.'
+      )
+    })
   })
 })

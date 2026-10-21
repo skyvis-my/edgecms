@@ -6,6 +6,7 @@ import { getSessionIfNeeded } from '@/lib/auth-client'
 const searchSchema = z.object({
   onboarding: z.coerce.boolean().optional(),
   redirect: z.string().optional(),
+  invite: z.string().max(256).optional(),
 })
 
 export const Route = createFileRoute('/(auth)/sign-up')({

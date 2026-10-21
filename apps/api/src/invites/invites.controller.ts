@@ -46,10 +46,12 @@ export const invitesController = new Elysia({ prefix: '/api/admin/invites' })
       if (!result.success) return toServiceResponse(set, result)
 
       const signUpPath = `/sign-up?invite=${encodeURIComponent(result.data.token)}`
-      const sender = resolveAuthPolicies(env as unknown as Env).emailSender
+      const workerEnv = env as unknown as Env
+      const sender = resolveAuthPolicies(workerEnv).emailSender
       let emailed = false
       if (sender) {
-        const url = `${getRequestUrl(request).origin}${signUpPath}`
+        const origin = workerEnv.BASE_URL?.replace(/\/$/, '') || getRequestUrl(request).origin
+        const url = `${origin}${signUpPath}`
         try {
           await sender.send({
             to: result.data.invite.email,

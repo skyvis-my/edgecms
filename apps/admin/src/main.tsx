@@ -60,7 +60,13 @@ const queryClient = new QueryClient({
           router.navigate({ to: '/500' })
         }
       }
-      if (isApiStatusError(error, 403)) {
+      if (isApiStatusError(error, 403) && (error as ApiClientError).code === 'MFA_REQUIRED') {
+        toast.error('This workspace requires two-factor authentication.', {
+          id: 'mfa-required',
+          description: 'Set it up in your profile to continue.',
+        })
+        router.navigate({ to: '/settings' })
+      } else if (isApiStatusError(error, 403)) {
         toast.error('You do not have permission to access this resource.')
         router.navigate({ to: '/403' })
       }

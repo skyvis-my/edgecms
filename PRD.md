@@ -1,6 +1,6 @@
 # EdgeCMS Product Requirements
 
-Version: 3.3 (2026-10-22)
+Version: 3.4 (2026-10-22)
 Owner: EdgeCMS maintainers
 Status: Living document. Every feature PR cites a requirement ID from this file (see [Change control](#12-change-control)).
 
@@ -172,7 +172,7 @@ Generic hooks that let anyone run EdgeCMS as a multi-customer service, including
 
 | ID | Requirement | Status |
 | --- | --- | --- |
-| **HS-01** | Signup policy: `open`, `invite-only` or `disabled` (default `disabled` for new deployments), with email verification through an injected email sender. Today email/password signup is always open and unverified. | Planned |
+| **HS-01** | Signup policy: `open`, `invite-only` (single-use, email-bound invites via `/api/admin/invites`) or `disabled`, set at composition time. Runtime default stays `open` for existing deployments; `disabled` is the documented setting for new ones, and the first account of an empty deployment can always be created. Email verification is required when an injected email sender is configured (console sender for development). | Shipped |
 | **HS-02** | Tenant creation policy: an injected `canCreateTenant(actor)` decides who may create a tenant on the admin API and onboarding (default: super-admins only on the admin API; onboarding keeps a user's first workspace). A creator who is not a super-admin becomes the tenant owner in the same write. See [hosting seams](docs/public/hosting-seams.md). | Shipped |
 | **HS-03** | Provisioning modes: `shared` (rows in the main D1) or `dedicated` (own D1, KV and R2 through the existing Cloudflare API provisioning), with an idempotent, resumable job and a status the admin can show. | Partial |
 | **HS-04** | Tenant states: `pending`, `active`, `suspended` (admin locked, public reads continue) and `disabled` (everything blocked). Super-admins keep access in every state; legacy `inactive` behaves like `disabled`. | Shipped |
@@ -182,7 +182,7 @@ Generic hooks that let anyone run EdgeCMS as a multi-customer service, including
 | **HS-08** | Tenant lifecycle events (`tenant.created`, `tenant.activated`, `tenant.suspended`, `tenant.deleted`, `tenant.limit_reached`) on the event bus, global webhooks and the host's `onTenantEvent`. `tenant.limit_reached` is reserved until HS-06 emits it. | Partial |
 | **HS-09** | Tenant offboarding: full export (content, media references, settings) and verified deletion of tenant data and dedicated resources, with an audit receipt. | Planned |
 | **HS-10** | Host admin contributions: a trusted host plugin (EX-02) can add admin navigation, a plan/usage panel and banners without editing core. | Planned |
-| **HS-11** | Multi-factor authentication (TOTP and recovery codes through Better Auth), with a per-tenant "require MFA" setting and a deployment-wide requirement for super-admins. The admin has an OTP screen but the API does not verify a second factor yet. | Planned |
+| **HS-11** | Multi-factor authentication (TOTP and recovery codes through Better Auth), with a per-tenant "require MFA" setting and a deployment-wide requirement for super-admins (`SUPER_ADMIN_REQUIRE_MFA`), enforced on admin routes, access-token minting and the token fast path. Microsoft/Google sign-ins get no EdgeCMS second-factor challenge. | Shipped |
 | **HS-12** | Audit log hardening: hash-chained entries for tamper evidence, configurable retention (at least 1 year), per-tenant export, and coverage of sign-ins, permission changes and super-admin actions as well as commands. See [operations and security](docs/public/operations-security.md#audit-ledger-hs-12). | Shipped |
 | **HS-13** | Personal data requests: export and delete one user's personal data (account, sessions, memberships, authored-by references pseudonymized) with an audit receipt. See [operations and security](docs/public/operations-security.md#personal-data-requests-hs-13). | Shipped |
 | **HS-14** | Per-tenant AI switch: AI features and the providers they send content to are disabled until a tenant admin enables them, and the admin shows which providers will receive content. New tenants start off; migration `0033` keeps existing tenants on. See [AI command safety](docs/public/ai-command-safety.md#per-tenant-ai-switch-hs-14). | Shipped |
@@ -231,6 +231,7 @@ Every PR that adds or changes product behavior must fit this PRD.
 
 | Date | Version | Change |
 | --- | --- | --- |
+| 2026-10-22 | 3.4 | `HS-01` and `HS-11` shipped (signup policy, invites, email verification, MFA). |
 | 2026-10-22 | 3.3 | Shipped `HS-02` and `HS-04`; `HS-08` partial (`tenant.limit_reached` reserved). Added the `createApp({ host })` policy surface under OP-02. |
 | 2026-10-21 | 3.2 | Added compliance seams `HS-11`–`HS-14` (MFA, audit log hardening, personal data requests, per-tenant AI switch). |
 | 2026-10-21 | 3.1 | Added §10.1 hosting seams (`HS-01`–`HS-10`) for multi-customer hosts; downstream `*PRD.md` files extend this one. Corrected MD-05 defaults and PL-02 providers. |

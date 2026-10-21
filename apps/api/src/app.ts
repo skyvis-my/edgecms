@@ -516,3 +516,12 @@ export {
   type MetricsRegistry,
 } from '@/observability/metrics'
 export type { Env } from '@/env'
+export {
+  configureAuthPolicies,
+  createConsoleEmailSender,
+  type AuthEmailMessage,
+  type AuthEmailSender,
+  type AuthPolicies,
+  type AuthPolicyOverrides,
+  type SignupPolicy,
+} from '@/auth/auth-policies'

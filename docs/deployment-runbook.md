@@ -142,6 +142,30 @@ Each command will prompt you interactively for the secret value.
 wrangler secret list --env <env>
 ```
 
+## Sign-up, Email Verification and MFA
+
+These are fixed when the Worker starts (Worker vars or secrets, or `configureAuthPolicies()` in a custom Worker entry). Request input never changes them.
+
+| Variable | Values | Default | Purpose |
+|---|---|---|---|
+| `SIGNUP_POLICY` | `open`, `invite-only`, `disabled` | `open` | Who may create an account. |
+| `AUTH_EMAIL_SENDER` | `console` | unset | Development only: writes verification and invite emails to the Worker log. |
+| `SUPER_ADMIN_REQUIRE_MFA` | `true` / `false` | `false` | Super-admins (by role or `SUPER_ADMIN_EMAILS`) need a two-factor sign-in on every admin route. |
+
+**Recommended for new deployments:** `SIGNUP_POLICY=disabled` and `SUPER_ADMIN_REQUIRE_MFA=true`. The runtime default stays `open` so existing self-hosted deployments keep working after an upgrade.
+
+- **Bootstrap.** Under `disabled` and `invite-only`, the first account of an empty database can still be created, so you can sign up the first operator on a fresh install. Create it right after deploying.
+- **`invite-only`.** A super-admin creates an invite with `POST /api/admin/invites` (`{ "email": "...", "tenantSlug": "acme", "tenantRole": "admin" }`). The response contains the token once and a `signUpPath` (`/sign-up?invite=...`). Invites are bound to one email, work once, expire (default 72 hours) and can grant membership of one tenant. List with `GET /api/admin/invites`, revoke with `DELETE /api/admin/invites/:id`. The policy also blocks new accounts from Microsoft and Google sign-in.
+- **Email verification.** When an email sender is configured, email/password accounts must verify their address before they can sign in. Existing unverified accounts get a new link on their next sign-in attempt. To send real email, pass your own sender in code: `configureAuthPolicies({ emailSender: { send: async ({ to, subject, text }) => { /* your provider */ } } })`. EdgeCMS ships no email provider.
+- **MFA.** Users turn on two-factor authentication (authenticator app + recovery codes) under **Settings → Profile**. A super-admin can require it per tenant with `PUT /api/admin/tenants/:slug` and `{ "requireMfa": true }`; tenant admin and MCP routes then return `403 MFA_REQUIRED` for sessions that did not complete a second factor. Microsoft and Google sign-ins do not get an EdgeCMS second-factor challenge, so with MFA required those users must sign in with their password and authenticator code.
+
+Set them per environment, for example:
+
+```bash
+wrangler secret put SIGNUP_POLICY --env production
+wrangler secret put SUPER_ADMIN_REQUIRE_MFA --env production
+```
+
 ## GitHub Actions Deployment
 
 Deployment workflows live in `.github/workflows/`:
@@ -185,6 +209,8 @@ Default remote smoke validates health and deployed admin UI regressions. The opt
 ## Database Migrations
 
 Migrations must be applied **before** (or immediately after) deploying a new version that depends on schema changes.
+
+Migration `0032_auth_seams.sql` adds two-factor tables and a `session.mfaVerified` column. Apply it **before** deploying the version that contains it, or sign-in fails until it is applied.
 
 ```bash
 cd apps/api
