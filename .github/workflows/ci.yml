@@ -18,6 +18,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prd-reference:
+    name: PRD reference
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Check PR cites PRD.md
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: bun scripts/check-prd-reference.ts PRD.md
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

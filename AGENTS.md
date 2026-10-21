@@ -100,6 +100,15 @@ Commands must be run from `apps/api` or via filter:
 *   **Imports:** Admin app forbids direct `axios` usage; use the typed API client (`@/lib/api-client`).
 *   **Best Practices:** See `docs/best-practices.md` for project-wide patterns and `docs/elysia-typescript-backend-api-best-practices.md` for ElysiaJS + TypeScript backend API standards.
 
+## Product Direction (PRD)
+
+`PRD.md` is the source of truth for what EdgeCMS builds. Before starting any feature:
+
+1.  Read `PRD.md` and map the work to requirement IDs (`CM-*`, `CMD-*`, `OF-*`, `AI-*`, `MD-*`, `DL-*`, `PL-*`, `EX-*`, `OP-*`). In Claude Code, run `/prd-check <feature>`; other agents follow the steps in `.claude/commands/prd-check.md`.
+2.  Stop and ask the maintainers if the work breaks a principle (`P1`–`P10`), touches a non-goal (`NG1`–`NG8`), or is hosted-only (billing, signup, plan limits, website), which belongs in `skyvis-my/edgecms-saas`.
+3.  Update the requirement's status in `PRD.md`, or add a new ID, in the same PR. Never renumber IDs.
+4.  Put a `PRD:` line in the PR description (`PRD: DL-08, P5` or `PRD: n/a` for chores). CI fails without it.
+
 ## Agentic Workflow
 
 Implement one bounded ticket at a time. Do not freestyle architecture, add future-ticket features, or refactor unrelated systems.
