@@ -17,6 +17,12 @@ import {
   tenantsRepository,
 } from './tenants.repository'
 import { invalidateCorsCache } from './cors-cache'
+import type {
+  InitialTenantStatus,
+  ResolvedHostPolicies,
+  TenantCreationActor,
+} from '@/host/host-policies'
+import { type TenantEventPublisher, tenantStatusTransitionEvent } from '@/host/tenant-events'
 
 /** Input for creating a tenant. */
 export interface CreateTenantInput {
@@ -29,6 +35,23 @@ export interface CreateTenantInput {
   mediaUploadMaxDimension?: number
   mediaAllowedMimeTypes?: string[]
 }
+
+/** Options for creating a tenant. */
+export interface CreateTenantOptions {
+  /** User added as the tenant `owner` in the same write as the tenant (HS-02). */
+  ownerUserId?: string
+  /** Initial lifecycle state (HS-04). Defaults to `active`. */
+  initialStatus?: 'active' | 'pending'
+}
+
+/** Per-app-instance lifecycle hooks passed to mutating tenant operations. */
+export interface TenantLifecycleContext {
+  events?: TenantEventPublisher
+  actorId?: string
+}
+
+/** Tenant lifecycle states (HS-04). `inactive` is a legacy alias of `disabled`. */
+export const TENANT_STATUSES = ['pending', 'active', 'suspended', 'disabled', 'inactive'] as const
 
 /** Input for updating a tenant. */
 export interface UpdateTenantInput {
@@ -197,7 +220,11 @@ export const tenantsService = {
   },
 
   /** Create a new tenant with validation. */
-  async create(db: Database, input: CreateTenantInput): Promise<ServiceResult<TenantRow>> {
+  async create(
+    db: Database,
+    input: CreateTenantInput,
+    options: CreateTenantOptions = {}
+  ): Promise<ServiceResult<TenantRow>> {
     // Validate slug format
     if (!validateSlug(input.slug)) {
       return {
@@ -277,7 +304,7 @@ export const tenantsService = {
       id,
       name: input.name,
       slug: input.slug,
-      status: 'active',
+      status: options.initialStatus ?? 'active',
       localeCatalog,
       targetUrl,
       corsOrigin,
@@ -296,15 +323,26 @@ export const tenantsService = {
     }
     if (typeof batched.batch === 'function') {
       const { roleRows, permRows } = buildBuiltInSeedRows(id, now)
+      const ownerRow = options.ownerUserId
+        ? [
+            tenantsRepository.addUserToTenantQuery(db, {
+              tenantId: id,
+              userId: options.ownerUserId,
+              role: 'owner',
+              createdAt: now,
+            }),
+          ]
+        : []
       try {
         await batched.batch([
           db.insert(tenants).values(tenantValues),
           db.insert(roles).values(roleRows),
           db.insert(permissions).values(permRows),
+          ...ownerRow,
         ])
       } catch (err) {
         // UNIQUE race on slug (check-then-insert cannot serialize concurrent creates).
-        if (err instanceof Error && /unique|UNIQUE|SQLITE_CONSTRAINT/i.test(err.message)) {
+        if (err instanceof Error && /unique/i.test(err.message)) {
           return {
             success: false,
             error: { code: 'CONFLICT', message: `Tenant with slug '${input.slug}' already exists` },
@@ -338,6 +376,14 @@ export const tenantsService = {
     // with partial roles (auth hole / dead tenant).
     try {
       await rbacService.seedBuiltInRoles(db, id)
+      if (options.ownerUserId) {
+        await tenantsRepository.addUserToTenant(db, {
+          tenantId: id,
+          userId: options.ownerUserId,
+          role: 'owner',
+          createdAt: now,
+        })
+      }
     } catch (err) {
       await tenantsRepository.deleteById(db, id).catch(() => false)
       throw err
@@ -346,11 +392,69 @@ export const tenantsService = {
     return { success: true, data: row }
   },
 
+  /**
+   * HS-02: ask the host policy whether `actor` may create a tenant.
+   * Returns the initial status the new tenant should get.
+   */
+  async authorizeCreation(
+    actor: TenantCreationActor,
+    host: Pick<ResolvedHostPolicies, 'canCreateTenant'>
+  ): Promise<ServiceResult<{ initialStatus: InitialTenantStatus }>> {
+    const decision = await host.canCreateTenant(actor)
+    if (!decision.allowed) {
+      return {
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          message: decision.reason ?? 'Tenant creation is not allowed for this account',
+        },
+      }
+    }
+    return { success: true, data: { initialStatus: decision.initialStatus } }
+  },
+
+  /**
+   * Create a tenant for an already-authorized actor. The creator becomes the
+   * tenant owner unless they are a super-admin using the admin API (who can
+   * already manage every tenant). Emits `tenant.created`.
+   */
+  async createAuthorized(
+    db: Database,
+    input: CreateTenantInput,
+    actor: TenantCreationActor,
+    initialStatus: InitialTenantStatus,
+    lifecycle: TenantLifecycleContext = {}
+  ): Promise<ServiceResult<TenantRow>> {
+    const becomesOwner = actor.source === 'onboarding' || !actor.isSuperAdmin
+    const result = await tenantsService.create(db, input, {
+      ownerUserId: becomesOwner ? actor.userId : undefined,
+      initialStatus,
+    })
+    if (result.success) {
+      await lifecycle.events?.publish('tenant.created', result.data, { actorId: actor.userId })
+    }
+    return result
+  },
+
+  /** HS-02: authorize through the host policy, then create. */
+  async createForActor(
+    db: Database,
+    input: CreateTenantInput,
+    actor: TenantCreationActor,
+    host: Pick<ResolvedHostPolicies, 'canCreateTenant'>,
+    lifecycle: TenantLifecycleContext = {}
+  ): Promise<ServiceResult<TenantRow>> {
+    const authorized = await tenantsService.authorizeCreation(actor, host)
+    if (!authorized.success) return authorized
+    return tenantsService.createAuthorized(db, input, actor, authorized.data.initialStatus, lifecycle)
+  },
+
   /** Update an existing tenant by ID. */
   async update(
     db: Database,
     id: string,
-    input: UpdateTenantInput
+    input: UpdateTenantInput,
+    lifecycle: TenantLifecycleContext = {}
   ): Promise<ServiceResult<TenantRow>> {
     const existing = await tenantsRepository.findById(db, id)
     if (!existing) {
@@ -384,12 +488,15 @@ export const tenantsService = {
     }
 
     // Validate status if being updated
-    if (input.status !== undefined && !['active', 'inactive', 'suspended'].includes(input.status)) {
+    if (
+      input.status !== undefined &&
+      !(TENANT_STATUSES as readonly string[]).includes(input.status)
+    ) {
       return {
         success: false,
         error: {
           code: 'VALIDATION_ERROR',
-          message: "Status must be 'active', 'inactive', or 'suspended'",
+          message: `Status must be one of: ${TENANT_STATUSES.join(', ')}`,
         },
       }
     }
@@ -482,6 +589,14 @@ export const tenantsService = {
       invalidateCorsCache(existing.slug)
     }
 
+    const transition = tenantStatusTransitionEvent(existing.status, updated.status)
+    if (transition) {
+      await lifecycle.events?.publish(transition, updated, {
+        previousStatus: existing.status,
+        actorId: lifecycle.actorId,
+      })
+    }
+
     return { success: true, data: updated }
   },
 
@@ -489,7 +604,8 @@ export const tenantsService = {
   async deleteById(
     db: Database,
     id: string,
-    deprovision?: { accountId: string; apiToken: string }
+    deprovision?: { accountId: string; apiToken: string },
+    lifecycle: TenantLifecycleContext = {}
   ): Promise<ServiceResult<{ id: string }>> {
     const existing = await tenantsRepository.findById(db, id)
     // ATM-03 (tenant leak): tear down provisioned Cloudflare resources
@@ -544,6 +660,9 @@ export const tenantsService = {
     }
     if (existing?.slug) {
       invalidateCorsCache(existing.slug)
+    }
+    if (existing) {
+      await lifecycle.events?.publish('tenant.deleted', existing, { actorId: lifecycle.actorId })
     }
     return { success: true, data: { id } }
   },

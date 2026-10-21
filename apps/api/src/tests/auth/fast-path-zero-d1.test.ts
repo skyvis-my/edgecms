@@ -156,6 +156,22 @@ describe('stateless RBAC fast path: zero D1 session/membership reads', () => {
     expect(mockPrepare).not.toHaveBeenCalled()
   })
 
+  it('HS-04: locks a suspended tenant admin route for a valid member token', async () => {
+    const app = buildApp()
+    const token = await mintFreshToken()
+    mockFindBySlug.mockResolvedValueOnce({ ...mockTenantRow, status: 'suspended' })
+
+    const response = await app.handle(
+      new Request('http://localhost/api/tenants/acme/api/admin/entries', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+    )
+
+    expect(response.status).toBe(403)
+    const body = (await response.json()) as { error?: { code?: string } }
+    expect(body.error?.code).toBe('TENANT_SUSPENDED')
+  })
+
   it('still rejects stale tokens with TOKEN_STALE (never downgrades to DB)', async () => {
     const app = buildApp()
     const nowSeconds = Math.floor(Date.now() / 1000)
