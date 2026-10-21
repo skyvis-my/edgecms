@@ -32,6 +32,8 @@ export const tenants = sqliteTable(
     aiEnabled: integer('aiEnabled', { mode: 'boolean' })
       .notNull()
       .$defaultFn(() => false),
+    /** When true, tenant admin routes require a session verified with a second factor. */
+    requireMfa: integer('requireMfa', { mode: 'boolean' }).notNull().default(false),
     /** ISO 8601 timestamp. */
     createdAt: text('createdAt').notNull(),
     /** ISO 8601 timestamp. */

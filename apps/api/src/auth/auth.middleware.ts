@@ -9,7 +9,7 @@ import {
 } from '@/audit/audit-recorders'
 import { createDb } from '@/database/db'
 import { getRequestUrl } from '@/shared/utils/request-url'
-import { createAuth } from './auth'
+import { createAuthForEnv } from './auth'
 import { getSessionForRequest } from './session-cache'
 import { getCachedFastActor } from '@/tenants/tenant-cache'
 
@@ -40,19 +40,7 @@ export const handleBetterAuth = (request: Request) => {
   const typedEnv = env as unknown as Env
   const url = getRequestUrl(request)
   const baseURL = url.origin
-  const auth = createAuth(typedEnv.DB, {
-    secret: typedEnv.BETTER_AUTH_SECRET,
-    baseURL,
-    entra: {
-      clientId: typedEnv.ENTRA_CLIENT_ID,
-      clientSecret: typedEnv.ENTRA_CLIENT_SECRET,
-      tenantId: typedEnv.ENTRA_TENANT_ID,
-    },
-    google: {
-      clientId: typedEnv.GOOGLE_CLIENT_ID,
-      clientSecret: typedEnv.GOOGLE_CLIENT_SECRET,
-    },
-  })
+  const auth = createAuthForEnv(typedEnv, baseURL)
   const pathname = url.pathname.startsWith('/api/auth')
     ? url.pathname
     : `/api/auth${url.pathname}`
@@ -148,19 +136,7 @@ export const betterAuthPlugin = new Elysia({ name: 'better-auth' })
 
         const typedEnv = env as unknown as Env
         const baseURL = getRequestUrl(request).origin
-        const auth = createAuth(typedEnv.DB, {
-          secret: typedEnv.BETTER_AUTH_SECRET,
-          baseURL,
-          entra: {
-            clientId: typedEnv.ENTRA_CLIENT_ID,
-            clientSecret: typedEnv.ENTRA_CLIENT_SECRET,
-            tenantId: typedEnv.ENTRA_TENANT_ID,
-          },
-          google: {
-            clientId: typedEnv.GOOGLE_CLIENT_ID,
-            clientSecret: typedEnv.GOOGLE_CLIENT_SECRET,
-          },
-        })
+        const auth = createAuthForEnv(typedEnv, baseURL)
 
         const result = await getSessionForRequest(auth, request)
 

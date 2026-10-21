@@ -25,6 +25,8 @@ import {
 } from './rbac'
 import { rbacService } from './rbac.service'
 import { hasSuperAdminRole, isSuperAdminEmail, parseSuperAdminEmails } from './super-admin'
+import { resolveAuthPolicies } from './auth-policies'
+import { MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE, resolveMfaRequirement } from './mfa'
 import { createDb } from '@/database/db'
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
@@ -223,6 +225,7 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
       let actorSessionRoleRaw: string | undefined
       let actorUserRoleRaw: string | undefined
       let actorEmail: string | undefined = fastActor?.actorEmail
+      let actorMfaVerified = fastActor?.mfaVerified === true
       if (!fastActor && shouldResolveActorSession(pathname, method)) {
         try {
           const actor = await resolveActorSessionDetails(ctx.request)
@@ -231,6 +234,7 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
           actorSessionRoleRaw = actor.actorSessionRoleRaw
           actorUserRoleRaw = actor.actorUserRoleRaw
           actorEmail = actor.actorEmail
+          actorMfaVerified = actor.mfaVerified === true
         } catch (err) {
           logger.warn('actor_session_resolution_failed', {
             error: err instanceof Error ? err.message : String(err),
@@ -340,6 +344,19 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
         if (!authorization.allowed) {
           ctx.set.status = authorization.status
           return createErrorEnvelope(authorization.code, authorization.message)
+        }
+
+        // HS-11: deployment-wide MFA requirement for super-admins on every
+        // authorization-checked route. Per-tenant MFA is enforced in the
+        // tenant middleware, which has the tenant row.
+        const mfaRequirement = resolveMfaRequirement({
+          isSuperAdmin: principal.isSuperAdmin || principal.isSuperAdminByEmail,
+          requireMfaForSuperAdmins: resolveAuthPolicies(typedEnv).requireMfaForSuperAdmins,
+          tenantRequiresMfa: false,
+        })
+        if (mfaRequirement && !actorMfaVerified) {
+          ctx.set.status = 403
+          return createErrorEnvelope(MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE)
         }
       }
     })

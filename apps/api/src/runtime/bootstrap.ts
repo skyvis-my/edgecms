@@ -1,4 +1,5 @@
 import { initializeWebhookProducerIfNeeded } from '@/commands/commands.controller'
+import { validateAuthPolicyEnv } from '@/auth/auth-policies'
 import type { Env } from '@/env'
 import {
   createCompositeMetricSink,
@@ -48,6 +49,7 @@ export async function bootstrapApp(options: BootstrapOptions = {}): Promise<Boot
   if (!targetEnv.BETTER_AUTH_SECRET || targetEnv.BETTER_AUTH_SECRET.trim().length < 32) {
     throw new Error('BETTER_AUTH_SECRET must be configured and at least 32 characters long')
   }
+  validateAuthPolicyEnv(targetEnv)
 
   if (options.configureMetrics !== false) {
     setMetricSink(

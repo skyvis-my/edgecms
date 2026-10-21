@@ -19,6 +19,13 @@ import {
 import { rbacController } from '@/auth/rbac.controller'
 import { auditTrailPlugin } from '@/audit/audit-trail.plugin'
 import { privacyController } from '@/privacy/privacy.controller'
+import { resolveAuthPolicies } from '@/auth/auth-policies'
+import {
+  isMfaVerifiedSession,
+  MFA_REQUIRED_CODE,
+  MFA_REQUIRED_MESSAGE,
+  resolveMfaRequirement,
+} from '@/auth/mfa'
 import {
   hasSuperAdminRole,
   isSuperAdminEmail,
@@ -56,6 +63,7 @@ import { applyTenantPathAliases } from '@/tenants/tenant-path-normalizer'
 import { createTenantsController } from '@/tenants/tenants.controller'
 import { type HostPolicies, resolveHostPolicies } from '@/host/host-policies'
 import { createTenantEventPublisher } from '@/host/tenant-events'
+import { invitesController } from '@/invites/invites.controller'
 import { usersRepository } from '@/users/users.repository'
 import { API_VERSION } from '@/version'
 import {
@@ -229,6 +237,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
           let trl: string | undefined
           let rv = 0
           let pv = 0
+          let tenantRequiresMfa = false
           if (tenantSlug) {
             const db = createDb(typedEnv.DB)
             const tenantResult = await tenantsService.findByIdOrSlug(db, tenantSlug)
@@ -238,6 +247,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
             }
             tid = tenantResult.data.id
             tsl = tenantResult.data.slug
+            tenantRequiresMfa = tenantResult.data.requireMfa === true
             trl = await resolveTenantRoleForActor(typedEnv.DB, actor.actorId, tsl)
             if (!trl) {
               set.status = 403
@@ -245,6 +255,23 @@ export const createApp = (options: CreateAppOptions = {}) => {
             }
             rv = (await getAuthRevision(typedEnv.CACHE, actor.actorId, tid)) ?? 0
             pv = (await getPermissionRevision(typedEnv.CACHE, tid)) ?? 0
+          }
+
+          // HS-11: never mint a token that would let a caller skip a required
+          // second factor. Changing a tenant's requirement bumps its permission
+          // revision, so older tokens go stale.
+          const isSuperAdmin =
+            hasSuperAdminRole(actor.actorSessionRoleRaw) ||
+            hasSuperAdminRole(actor.actorUserRoleRaw) ||
+            isSuperAdminEmail(actor.actorEmail, parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS))
+          const mfaRequirement = resolveMfaRequirement({
+            isSuperAdmin,
+            requireMfaForSuperAdmins: resolveAuthPolicies(typedEnv).requireMfaForSuperAdmins,
+            tenantRequiresMfa,
+          })
+          if (mfaRequirement && !actor.mfaVerified) {
+            set.status = 403
+            return createErrorEnvelope(MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE)
           }
 
           const issuedAt = Math.floor(Date.now() / 1000)
@@ -261,6 +288,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
               sa:
                 hasSuperAdminRole(actor.actorSessionRoleRaw) ||
                 hasSuperAdminRole(actor.actorUserRoleRaw),
+              mfa: actor.mfaVerified === true,
             },
             typedEnv.JWT_HS256_SECRET,
             {
@@ -283,6 +311,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
 
         // Global admin routes — tenant management (super-admin)
         .use(scopedTenantsController)
+        .use(invitesController)
 
         // HS-13 personal data requests (global only)
         .use(privacyController)
@@ -331,7 +360,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
           )
           return toServiceResponse(set, result, { successStatus: 201 })
         })
-        .get('/api/me', { auth: true }, ({ user }) => {
+        .get('/api/me', { auth: true }, ({ user, session }) => {
           const typedEnv = env as Env
           const rawRole = (user as { role?: unknown }).role
           const role =
@@ -347,6 +376,8 @@ export const createApp = (options: CreateAppOptions = {}) => {
             name: user.name,
             email: user.email,
             role,
+            twoFactorEnabled: (user as { twoFactorEnabled?: unknown }).twoFactorEnabled === true,
+            mfaVerified: isMfaVerifiedSession({ session }),
           }
         })
         .onError(({ code, error, set, request }) => {

@@ -2,7 +2,8 @@ import { createDb } from '@/database/db'
 import { getRequestUrl } from '@/shared/utils/request-url'
 import { tenantsRepository } from '@/tenants/tenants.repository'
 import { usersRepository } from '@/users/users.repository'
-import { createAuth } from './auth'
+import { createAuthForEnv } from './auth'
+import { isMfaVerifiedSession } from './mfa'
 import { getSessionForRequest } from './session-cache'
 
 export type ActorRole = 'viewer' | 'editor' | 'admin'
@@ -13,6 +14,8 @@ export type ActorSessionDetails = {
   actorEmail?: string
   actorUserRoleRaw?: string
   actorSessionRoleRaw?: string
+  /** True when the session was created by completing a second-factor challenge. */
+  mfaVerified?: boolean
 }
 
 const ADMIN_MUTATION_PREFIXES = ['/api/admin/', '/api/tenants/']
@@ -81,19 +84,7 @@ export async function resolveActorSessionDetails(request: Request): Promise<Acto
       GOOGLE_CLIENT_ID?: string
       GOOGLE_CLIENT_SECRET?: string
     }
-    const auth = createAuth(typedEnv.DB, {
-      secret: typedEnv.BETTER_AUTH_SECRET,
-      baseURL: getRequestUrl(request).origin,
-      entra: {
-        clientId: typedEnv.ENTRA_CLIENT_ID,
-        clientSecret: typedEnv.ENTRA_CLIENT_SECRET,
-        tenantId: typedEnv.ENTRA_TENANT_ID,
-      },
-      google: {
-        clientId: typedEnv.GOOGLE_CLIENT_ID,
-        clientSecret: typedEnv.GOOGLE_CLIENT_SECRET,
-      },
-    })
+    const auth = createAuthForEnv(typedEnv, getRequestUrl(request).origin)
     const session = await getSessionForRequest(auth, request)
     if (!session?.user) return {}
     const actorUserRoleRaw =
@@ -118,6 +109,7 @@ export async function resolveActorSessionDetails(request: Request): Promise<Acto
       actorEmail: session.user.email,
       actorUserRoleRaw,
       actorSessionRoleRaw,
+      mfaVerified: isMfaVerifiedSession(session),
     }
   })()
 

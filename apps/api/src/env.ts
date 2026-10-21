@@ -39,6 +39,9 @@ export interface Env {
   MCP_API_KEY?: string
   SUPER_ADMIN_EMAILS?: string
   SUPER_ADMIN_DEV_MODE?: string
+  SUPER_ADMIN_REQUIRE_MFA?: string
+  SIGNUP_POLICY?: string
+  AUTH_EMAIL_SENDER?: string
   PREVIEW_SECRET?: string
   WEBHOOK_ALLOWED_HOSTS?: string
   CORS_ALLOWED_ORIGINS?: string
@@ -73,6 +76,9 @@ export const envSchema = {
   WEBHOOK_ALLOWED_HOSTS: 'string',
   SUPER_ADMIN_EMAILS: 'string',
   SUPER_ADMIN_DEV_MODE: 'string',
+  SUPER_ADMIN_REQUIRE_MFA: 'string',
+  SIGNUP_POLICY: 'string',
+  AUTH_EMAIL_SENDER: 'string',
   CORS_ALLOWED_ORIGINS: 'string',
   ADMIN_CORS_ALLOWED_ORIGINS: 'string',
   PUBLIC_CORS_ALLOWED_ORIGINS: 'string',

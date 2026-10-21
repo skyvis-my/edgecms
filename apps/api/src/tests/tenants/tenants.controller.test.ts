@@ -220,6 +220,32 @@ describe('tenantsController (repo-backed)', () => {
     expect(missingAfterUpdate.status).toBe(404)
   })
 
+  it('PUT /:tenantSlug sets requireMfa and invalidates tenant access tokens', async () => {
+    const kvStore = new Map<string, string>()
+    const previousCache = mockEnv.CACHE
+    mockEnv.CACHE = {
+      get: vi.fn(async (key: string) => kvStore.get(key) ?? null),
+      put: vi.fn(async (key: string, value: string) => void kvStore.set(key, value)),
+    } as unknown as KVNamespace
+    try {
+      mockService.findByIdOrSlug.mockResolvedValue(ok({ id: 't1' }))
+      mockService.update.mockResolvedValue(ok({ id: 't1', requireMfa: true }))
+
+      const response = await app.handle(
+        new Request('http://localhost/api/admin/tenants/acme', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requireMfa: true }),
+        })
+      )
+      expect(response.status).toBe(200)
+      expect(mockService.update).toHaveBeenCalledWith(mockDb, 't1', { requireMfa: true })
+      expect([...kvStore.keys()].some((key) => key.includes('t1'))).toBe(true)
+    } finally {
+      mockEnv.CACHE = previousCache
+    }
+  })
+
   it('DELETE /:tenantSlug returns success when resolved tenant is deleted', async () => {
     mockService.findByIdOrSlug.mockResolvedValueOnce(ok({ id: 't1' }))
     mockService.deleteById.mockResolvedValueOnce(ok({ id: 't1' }))

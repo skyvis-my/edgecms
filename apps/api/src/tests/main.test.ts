@@ -49,9 +49,19 @@ mock.module('cloudflare:workers', () => ({
   env: mockWorkerEnv,
 }))
 
-mock.module('@/auth/auth', () => ({
-  createAuth: mockCreateAuth,
-}))
+mock.module('@/auth/auth', () => {
+  const authModule = {
+    createAuth: mockCreateAuth,
+  }
+  return {
+    ...authModule,
+    createAuthForEnv: (env: { DB: unknown; BETTER_AUTH_SECRET?: string }, baseURL: string) =>
+      (authModule.createAuth as (...args: unknown[]) => unknown)(env.DB, {
+        secret: env.BETTER_AUTH_SECRET,
+        baseURL,
+      }),
+  }
+})
 
 mock.module('@/tenants/tenants.service', () => ({
   tenantsService: {
@@ -185,6 +195,7 @@ describe('Main API app (Elysia integration)', () => {
     mockWorkerEnv.JWT_ISSUER = undefined
     mockWorkerEnv.JWT_AUDIENCE = undefined
     mockWorkerEnv.JWT_REQUIRED_FOR_ADMIN = undefined
+    mockWorkerEnv.SUPER_ADMIN_REQUIRE_MFA = undefined
     mockWorkerEnv.CORS_ALLOWED_ORIGINS = undefined
     mockWorkerEnv.ADMIN_CORS_ALLOWED_ORIGINS = undefined
     mockWorkerEnv.PUBLIC_CORS_ALLOWED_ORIGINS = undefined
@@ -321,6 +332,8 @@ describe('Main API app (Elysia integration)', () => {
       name: 'Test User',
       email: 'test@example.com',
       role: 'admin',
+      twoFactorEnabled: false,
+      mfaVerified: false,
     })
   })
 
@@ -974,5 +987,47 @@ describe('Main API app (Elysia integration)', () => {
       })
     )
     expect(res500.headers.get('access-control-allow-origin')).toBe('https://site-500.com')
+  })
+})
+
+describe('access-token minting with MFA requirements (HS-11)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    __resetRateLimitState()
+    mockWorkerEnv.JWT_HS256_SECRET = 'test-jwt-secret-at-least-32-characters'
+    mockWorkerEnv.SUPER_ADMIN_EMAILS = 'root@example.com'
+    mockWorkerEnv.SUPER_ADMIN_REQUIRE_MFA = 'true'
+  })
+
+  afterAll(() => {
+    mockWorkerEnv.JWT_HS256_SECRET = undefined
+    mockWorkerEnv.SUPER_ADMIN_EMAILS = undefined
+    mockWorkerEnv.SUPER_ADMIN_REQUIRE_MFA = undefined
+  })
+
+  function rootSession(mfaVerified: boolean) {
+    return {
+      user: { id: 'u-root', name: 'Root', email: 'root@example.com', role: 'viewer' },
+      session: { id: 's-root', userId: 'u-root', mfaVerified },
+    }
+  }
+
+  it('refuses to mint a super-admin token for a session without MFA', async () => {
+    const app = await importApp()
+    buildMockAuth(rootSession(false))
+    const response = await app.handle(new Request('http://localhost/api/auth/access-token'))
+    expect(response.status).toBe(403)
+    const body = (await response.json()) as { error?: { code?: string } }
+    expect(body.error?.code).toBe('MFA_REQUIRED')
+  })
+
+  it('mints a token carrying the mfa claim after MFA', async () => {
+    const app = await importApp()
+    buildMockAuth(rootSession(true))
+    const response = await app.handle(new Request('http://localhost/api/auth/access-token'))
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { data: { token: string } }
+    const payload = JSON.parse(atob(body.data.token.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/')))
+    expect(payload.mfa).toBe(1)
   })
 })

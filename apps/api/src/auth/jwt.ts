@@ -31,6 +31,8 @@ export type AccessTokenClaims = {
   pv?: number
   email?: string
   sa?: number
+  /** 1 when the session behind this token completed a second factor (HS-11). */
+  mfa?: number
   iss?: string
   aud?: string | string[]
   exp?: number
@@ -47,6 +49,7 @@ export type CreateAccessTokenInput = {
   pv?: number
   email?: string
   sa?: boolean
+  mfa?: boolean
 }
 
 export type CreateAccessTokenOptions = {
@@ -134,6 +137,7 @@ export async function createAccessToken(
   if (typeof input.pv === 'number') payload.pv = input.pv
   if (input.email) payload.email = input.email
   if (input.sa) payload.sa = 1
+  if (input.mfa) payload.mfa = 1
 
   const headerPart = base64UrlEncodeJson({ alg: 'HS256', typ: 'JWT' })
   const payloadPart = base64UrlEncodeJson(payload)
@@ -178,6 +182,7 @@ export function parseAccessClaims(payload: JwtPayload | unknown): AccessTokenCla
   const email = asClaimString(record.email)
   if (email) claims.email = email
   if (record.sa === 1 || record.sa === true) claims.sa = 1
+  if (record.mfa === 1 || record.mfa === true) claims.mfa = 1
   if (typeof record.iat === 'number') claims.iat = record.iat
   if (typeof record.exp === 'number') claims.exp = record.exp
   if (typeof record.iss === 'string') claims.iss = record.iss

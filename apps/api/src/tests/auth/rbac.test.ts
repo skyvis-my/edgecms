@@ -17,6 +17,8 @@ vi.mock('cloudflare:workers', () => ({
 
 vi.mock('../../auth/auth', () => ({
   createAuth: mockCreateAuth,
+  createAuthForEnv: (env: { DB: unknown; BETTER_AUTH_SECRET?: string }, baseURL: string) =>
+    mockCreateAuth(env.DB, { secret: env.BETTER_AUTH_SECRET, baseURL }),
 }))
 
 vi.mock('@/database/db', () => ({

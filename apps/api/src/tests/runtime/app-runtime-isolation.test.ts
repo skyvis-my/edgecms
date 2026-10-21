@@ -25,17 +25,27 @@ mock.module('cloudflare:workers', () => ({
   env: mockWorkerEnv,
 }))
 
-mock.module('@/auth/auth', () => ({
-  createAuth: vi.fn(() => ({
-    handler: vi.fn(() => new Response('Not Found', { status: 404 })),
-    api: {
-      getSession: vi.fn(async () => ({
-        user: { id: 'admin-1', role: 'admin' },
-        session: { id: 'sess-1' },
-      })),
-    },
-  })),
-}))
+mock.module('@/auth/auth', () => {
+  const authModule = {
+    createAuth: vi.fn(() => ({
+      handler: vi.fn(() => new Response('Not Found', { status: 404 })),
+      api: {
+        getSession: vi.fn(async () => ({
+          user: { id: 'admin-1', role: 'admin' },
+          session: { id: 'sess-1' },
+        })),
+      },
+    })),
+  }
+  return {
+    ...authModule,
+    createAuthForEnv: (env: { DB: unknown; BETTER_AUTH_SECRET?: string }, baseURL: string) =>
+      (authModule.createAuth as (...args: unknown[]) => unknown)(env.DB, {
+        secret: env.BETTER_AUTH_SECRET,
+        baseURL,
+      }),
+  }
+})
 
 const { createApp } = await import('@/app')
 const { createPluginRuntime } = await import('@/plugins/plugin-loader')

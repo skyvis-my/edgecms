@@ -1,6 +1,6 @@
 import { Elysia } from 'elysia'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
-import { createAuth } from '@/auth/auth'
+import { createAuthForEnv } from '@/auth/auth'
 import { getSessionForRequest } from '@/auth/session-cache'
 import type { CommandContext } from '@/commands/engine'
 import type { Database } from '@/database/db'
@@ -43,19 +43,7 @@ async function resolveMcpAuth(
   // 3. Fallback check for session cookie if not pre-populated
   try {
     const baseURL = getRequestUrl(request).origin
-    const auth = createAuth(workerEnv.DB, {
-      secret: workerEnv.BETTER_AUTH_SECRET,
-      baseURL,
-      entra: {
-        clientId: workerEnv.ENTRA_CLIENT_ID,
-        clientSecret: workerEnv.ENTRA_CLIENT_SECRET,
-        tenantId: workerEnv.ENTRA_TENANT_ID,
-      },
-      google: {
-        clientId: workerEnv.GOOGLE_CLIENT_ID,
-        clientSecret: workerEnv.GOOGLE_CLIENT_SECRET,
-      },
-    })
+    const auth = createAuthForEnv(workerEnv, baseURL)
     const session = await getSessionForRequest(auth, request)
     if (session?.user?.id) {
       return { authenticated: true, actorId: session.user.id }

@@ -28,13 +28,23 @@ mock.module('../../tenants/tenants.repository', () => ({
 
 const mockGetSession = vi.fn()
 
-mock.module('@/auth/auth', () => ({
-  createAuth: () => ({
-    api: {
-      getSession: mockGetSession,
-    },
-  }),
-}))
+mock.module('@/auth/auth', () => {
+  const authModule = {
+    createAuth: () => ({
+      api: {
+        getSession: mockGetSession,
+      },
+    }),
+  }
+  return {
+    ...authModule,
+    createAuthForEnv: (env: { DB: unknown; BETTER_AUTH_SECRET?: string }, baseURL: string) =>
+      (authModule.createAuth as (...args: unknown[]) => unknown)(env.DB, {
+        secret: env.BETTER_AUTH_SECRET,
+        baseURL,
+      }),
+  }
+})
 
 const { Elysia: MockElysia } = await import('elysia')
 
