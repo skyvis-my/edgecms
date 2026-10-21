@@ -89,9 +89,9 @@ export interface D1UsageRollupSink extends UsageSink {
   flush(): Promise<void>
 }
 
+/** A Drizzle instance has `select`; a raw D1 binding does not. */
 function isDrizzle(value: unknown): value is Database {
-  return typeof value === 'object' && value !== null && typeof (value as Database).batch === 'function'
-    && typeof (value as Database).select === 'function'
+  return typeof value === 'object' && value !== null && typeof (value as Database).select === 'function'
 }
 
 /**

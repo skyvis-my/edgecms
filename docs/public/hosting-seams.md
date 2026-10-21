@@ -19,10 +19,24 @@ const host: HostPolicies = {
     emailSender: { send: async ({ to, subject, text }) => myMailer.send(to, subject, text) },
     requireMfaForSuperAdmins: true,
   },
+  // HS-05: per-tenant usage, delivered after the response through waitUntil.
+  usageSink: { record: (events) => usageQueue.sendBatch(events.map((body) => ({ body }))) },
+  // HS-06: quotas. Return true to allow, or a denial with an upgrade link.
+  limits: {
+    check: async ({ dimension, tenant }) =>
+      dimension === 'entries' && tenant && (await entriesLeft(tenant.id)) <= 0
+        ? { allowed: false, upgradeUrl: 'https://example.com/billing', period: '2026-10' }
+        : true,
+  },
+  // HS-07: per-tenant rate limits. Return nothing to keep the framework policy.
+  rateLimits: ({ tenantSlug, category, defaultPolicy }) =>
+    category === 'public_read' ? { ...defaultPolicy, tenantLimit: 1_000 } : undefined,
 }
 
 export const app = createApp({ host })
 ```
+
+`usageQueue` and `entriesLeft` stand for the host's own Queue binding and plan lookup.
 
 ## Tenant creation (HS-02)
 
@@ -52,9 +66,11 @@ The legacy `inactive` status, and any status not listed above, behaves like `dis
 | `tenant.activated` | Status changes to `active` from any other status. |
 | `tenant.suspended` | Status changes to `suspended`. |
 | `tenant.deleted` | A tenant is deleted. |
-| `tenant.limit_reached` | Reserved for HS-06. Not emitted yet. |
+| `tenant.limit_reached` | A limit (HS-06) denied a request. Sent once per tenant, dimension and period. |
 
 Events go to `host.onTenantEvent` and to the webhook event bus. Both are awaited inside the request, so a slow listener slows tenant changes. Enqueue the work instead of calling slow APIs. Webhook delivery uses global scope: only super-admins can subscribe a global webhook (created on `/api/admin/webhooks` without a tenant) to `tenant.*` events, because those events describe every tenant. A tenant-scoped webhook cannot subscribe to them.
+
+`tenant.limit_reached` carries `limit: { dimension, kind, limit?, used?, upgradeUrl?, period }`. The period is the denial's `period`, or the UTC day when the host gives none. A KV marker suppresses repeats across isolates, but two isolates that race can each send one, so treat delivery as at least once. A denied tenant creation has no tenant yet and sends no event.
 
 ## Sign-up and email verification (HS-01)
 
@@ -75,3 +91,76 @@ Users enrol an authenticator app with recovery codes under **Settings → Profil
 - Blocked requests get `403 MFA_REQUIRED`. Access tokens are not minted for such sessions, and changing a tenant's setting invalidates its existing tokens.
 - Microsoft and Google sign-ins get no EdgeCMS second-factor challenge, so they do not satisfy an MFA requirement.
 
+## Usage metering (HS-05)
+
+`host.usageSink.record(events)` receives batches of `UsageEvent`:
+
+```ts
+{ tenantId, tenantSlug?, metric, quantity, detail?, timestamp }
+```
+
+| Metric | Quantity |
+| --- | --- |
+| `public_reads` | 1 per successful public REST or GraphQL read the Worker served. Reads answered by the CDN never reach the Worker and are not counted. |
+| `admin_mutations` | 1 per executed command (a transaction counts once). Dry runs and failed commands are not counted. |
+| `ai_tokens` | Input plus output tokens of one model call; `detail` is the model tier (`nano`, `mid`, `heavy`). |
+| `media_bytes` | Signed change in stored bytes (original plus variants): `+` on upload, `-` when an asset is deleted. Soft-deleted assets stop counting even though R2 keeps them until garbage collection. |
+| `entries` | Signed change in entry count: `+1` per `createEntry`, `-1` per `deleteEntry`, including inside transactions. |
+
+Commands sent through the admin API, MCP and AI routes are metered. Imports and scheduled publishing are not. Global (non-tenant) routes are not metered, because there is no tenant to attribute them to.
+
+Recording never fails or slows a request. The framework hands each batch to `waitUntil` after the handler. A sink that throws, rejects or hangs is logged and dropped. Keep `record` cheap: enqueue to a Queue or buffer, then return.
+
+### D1 daily rollups
+
+`createD1UsageRollupSink({ db: env.DB })` sums events into `usage_daily` (tenant, UTC day, metric, detail). Migration `0035_usage_daily.sql` creates the table; apply it with the other migrations. The sink buffers in the isolate and writes one D1 batch at most every 10 s (`flushIntervalMs`), or sooner once 50 rows are pending (`maxBufferedRows`). A failed flush keeps its rows for the next one. Counts still in the buffer when an isolate is evicted are lost, so treat these rollups as approximate. For billing-grade counts, send events to a Queue and aggregate them there.
+
+## Limit policy (HS-06)
+
+`host.limits.check({ dimension, amount, tenant?, actor? })` runs before:
+
+| Dimension | Checked before | `amount` |
+| --- | --- | --- |
+| `commands` | Every command (admin API, MCP, AI execution) that is not a dry run | 1 |
+| `entries` | `createEntry`, including inside a transaction | Number of entries created |
+| `media_bytes` | `POST /admin/assets/upload` | Upload size in bytes (original plus variants) |
+| `ai_tokens` | `POST /admin/ai/command` (except when executing a preview receipt) and `/admin/ai/workflow` | 0: the cost is unknown before the call, so deny when the tenant has no budget left |
+| `tenants` | `POST /api/admin/tenants` and onboarding, after `canCreateTenant` allows the actor | 1 (`tenant` is absent) |
+
+`tenant` includes the tenant-row media limits (`mediaUploadMaxBytes`, `mediaUploadMaxDimension`). The upload path keeps enforcing those per-file limits itself (`413`, `415`) whether or not a host is configured.
+
+Return `true` or `{ allowed: true }` to allow. Return `false` or `{ allowed: false, kind, message?, limit?, used?, upgradeUrl?, retryAfterSeconds?, period? }` to deny:
+
+| `kind` | Response |
+| --- | --- |
+| `quota` (default) | `402` with code `QUOTA_EXCEEDED` |
+| `rate` | `429` with code `RATE_LIMITED` and a `Retry-After` header when `retryAfterSeconds` is set |
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "QUOTA_EXCEEDED",
+    "message": "Quota exceeded for entries",
+    "details": { "dimension": "entries", "kind": "quota", "limit": 500, "used": 500, "upgradeUrl": "https://example.com/billing" }
+  }
+}
+```
+
+`upgradeUrl` must be an absolute `http` or `https` URL; any other value is dropped. The admin shows these errors in a toast, with an Upgrade button when a link is present. A provider that throws allows the request (fail open) and logs `host_limits_check_failed`. Without `host.limits`, every check passes and nothing changes. Global routes are not limited.
+
+## Per-tenant rate limits (HS-07)
+
+Every API request except health checks and `/api/docs` is rate limited per caller (user, else IP) and route, in one of these categories:
+
+| Category | Routes | Framework policy |
+| --- | --- | --- |
+| `auth` | `/api/auth/*`, `/api/csrf` | 30 per minute |
+| `ai_command` | `/admin/ai/command`, `/admin/ai/workflow` | 20 per minute |
+| `admin_mutation` | Other non-GET `/admin/*` routes | 60 per minute |
+| `public_read` | GET `/public/*` | 300 per minute |
+| `default` | Everything else | 120 per minute |
+
+On tenant routes (`/api/tenants/:tenantSlug/...`), `host.rateLimits({ tenantSlug, category, defaultPolicy })` can return `{ windowMs, limit, tenantLimit?, upgradeUrl? }`. Buckets are keyed by tenant, so one tenant's traffic never uses another tenant's budget. `limit` applies per caller. `tenantLimit` is an optional budget shared by all callers of that tenant in the category. Return nothing to keep the framework policy.
+
+The slug comes from the URL and is not yet verified, so a request for an unknown tenant reaches your resolver too. Results are cached per app instance for 30 s, per tenant and category. Invalid policies (non-positive or non-integer numbers) and a resolver that throws fall back to the framework policy. Over-limit requests get `429 RATE_LIMITED` with `Retry-After` and `details: { dimension: <category>, kind: 'rate', scope: 'caller' | 'tenant', limit, retryAfterSeconds, upgradeUrl? }`.

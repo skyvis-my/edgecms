@@ -1,6 +1,6 @@
 # EdgeCMS Product Requirements
 
-Version: 3.4 (2026-10-22)
+Version: 3.5 (2026-10-22)
 Owner: EdgeCMS maintainers
 Status: Living document. Every feature PR cites a requirement ID from this file (see [Change control](#12-change-control)).
 
@@ -176,10 +176,10 @@ Generic hooks that let anyone run EdgeCMS as a multi-customer service, including
 | **HS-02** | Tenant creation policy: an injected `canCreateTenant(actor)` decides who may create a tenant on the admin API and onboarding (default: super-admins only on the admin API; onboarding keeps a user's first workspace). A creator who is not a super-admin becomes the tenant owner in the same write. See [hosting seams](docs/public/hosting-seams.md). | Shipped |
 | **HS-03** | Provisioning modes: `shared` (rows in the main D1) or `dedicated` (own D1, KV and R2 through the existing Cloudflare API provisioning), with an idempotent, resumable job and a status the admin can show. | Partial |
 | **HS-04** | Tenant states: `pending`, `active`, `suspended` (admin locked, public reads continue) and `disabled` (everything blocked). Super-admins keep access in every state; legacy `inactive` behaves like `disabled`. | Shipped |
-| **HS-05** | Usage metering: per-tenant counters for public reads, admin mutations, AI tokens by model tier, stored media bytes and entry count, written to an injected sink with daily rollups. Metering never blocks or slows the request path. | Planned |
-| **HS-06** | Limit policy: an injected `TenantLimits` provider is checked before commands, uploads, AI calls and tenant creation. Over-limit returns a typed error (`402` quota, `429` rate) that the admin shows with the host's upgrade link. Default limits come from the tenant row. | Planned |
-| **HS-07** | Per-tenant rate-limit policies, replacing the current fixed global policies. | Planned |
-| **HS-08** | Tenant lifecycle events (`tenant.created`, `tenant.activated`, `tenant.suspended`, `tenant.deleted`, `tenant.limit_reached`) on the event bus, global webhooks and the host's `onTenantEvent`. `tenant.limit_reached` is reserved until HS-06 emits it. | Partial |
+| **HS-05** | Usage metering: per-tenant counters for public reads, admin mutations, AI tokens by model tier, stored media bytes and entry count, written to an injected sink (`host.usageSink`) with an opt-in D1 daily-rollup sink. Metering never blocks or slows the request path. See [hosting seams](docs/public/hosting-seams.md). | Shipped |
+| **HS-06** | Limit policy: an injected `TenantLimits` provider (`host.limits`) is checked before commands, uploads, AI calls and tenant creation. Over-limit returns a typed error (`402` quota, `429` rate) that the admin shows with the host's upgrade link. The default provider allows everything; the tenant-row media limits (MD-05) stay enforced by the upload path and are passed to the provider. | Shipped |
+| **HS-07** | Per-tenant rate-limit policies (`host.rateLimits`), with an optional tenant-wide budget, falling back to the fixed framework policies. | Shipped |
+| **HS-08** | Tenant lifecycle events (`tenant.created`, `tenant.activated`, `tenant.suspended`, `tenant.deleted`, `tenant.limit_reached`) on the event bus, global webhooks and the host's `onTenantEvent`. | Shipped |
 | **HS-09** | Tenant offboarding: full export (content, media references, settings) and verified deletion of tenant data and dedicated resources, with an audit receipt. | Planned |
 | **HS-10** | Host admin contributions: a trusted host plugin (EX-02) can add admin navigation, a plan/usage panel and banners without editing core. | Planned |
 | **HS-11** | Multi-factor authentication (TOTP and recovery codes through Better Auth), with a per-tenant "require MFA" setting and a deployment-wide requirement for super-admins (`SUPER_ADMIN_REQUIRE_MFA`), enforced on admin routes, access-token minting and the token fast path. Microsoft/Google sign-ins get no EdgeCMS second-factor challenge. | Shipped |
@@ -231,6 +231,7 @@ Every PR that adds or changes product behavior must fit this PRD.
 
 | Date | Version | Change |
 | --- | --- | --- |
+| 2026-10-22 | 3.5 | Shipped `HS-05`, `HS-06`, `HS-07` (usage sink, limit policy, per-tenant rate limits) and `HS-08` (`tenant.limit_reached` now emitted). |
 | 2026-10-22 | 3.4 | `HS-01` and `HS-11` shipped (signup policy, invites, email verification, MFA). |
 | 2026-10-22 | 3.3 | Shipped `HS-02` and `HS-04`; `HS-08` partial (`tenant.limit_reached` reserved). Added the `createApp({ host })` policy surface under OP-02. |
 | 2026-10-21 | 3.2 | Added compliance seams `HS-11`–`HS-14` (MFA, audit log hardening, personal data requests, per-tenant AI switch). |
