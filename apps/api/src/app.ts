@@ -208,8 +208,10 @@ export const createApp = (options: CreateAppOptions = {}) => {
           })
         )
         .use(betterAuthPlugin)
-        .all('/api/auth', ({ request }) => handleBetterAuth(request))
-        .all('/api/auth/*', ({ request }) => handleBetterAuth(request))
+        // Better Auth reads the raw body itself; parsing it here would consume
+        // the stream and break every POST to /api/auth on workerd.
+        .all('/api/auth', { parse: 'none' }, ({ request }) => handleBetterAuth(request))
+        .all('/api/auth/*', { parse: 'none' }, ({ request }) => handleBetterAuth(request))
         .get('/api/csrf', async ({ request, set }) => {
           const token = await createSignedCsrfToken((env as Env).BETTER_AUTH_SECRET!)
           ;(set.headers as MutableHeaders)['Set-Cookie'] = formatCsrfCookieHeader(token, {

@@ -1031,3 +1031,33 @@ describe('access-token minting with MFA requirements (HS-11)', () => {
     expect(payload.mfa).toBe(1)
   })
 })
+
+describe('better-auth passthrough', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    __resetRateLimitState()
+  })
+
+  it('forwards POST bodies to better-auth unread', async () => {
+    const app = await importApp()
+    const handler = vi.fn(async (request: Request) =>
+      new Response(JSON.stringify({ received: await request.json() }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    )
+    mockCreateAuth.mockImplementation(() => ({ handler, api: { getSession: vi.fn(async () => null) } }))
+
+    const response = await app.handle(
+      new Request('http://localhost/api/auth/sign-in/email', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://localhost' },
+        body: JSON.stringify({ email: 'a@example.com', password: 'secret123' }),
+      })
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      received: { email: 'a@example.com', password: 'secret123' },
+    })
+  })
+})
