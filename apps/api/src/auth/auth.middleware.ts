@@ -9,7 +9,7 @@ import {
 } from '@/audit/audit-recorders'
 import { createDb } from '@/database/db'
 import { getRequestUrl } from '@/shared/utils/request-url'
-import { createAuthForEnv } from './auth'
+import { type Auth, createAuthForEnv } from './auth'
 import { getSessionForRequest } from './session-cache'
 import { getCachedFastActor } from '@/tenants/tenant-cache'
 
@@ -52,7 +52,7 @@ export const handleBetterAuth = (request: Request) => {
 }
 
 async function resolveSessionUserId(
-  auth: ReturnType<typeof createAuth>,
+  auth: Auth,
   headers: Headers
 ): Promise<string | null> {
   try {
@@ -75,7 +75,7 @@ async function userIdFromResponseBody(response: Response): Promise<string | null
 
 /** HS-12: record sign-in, sign-up and sign-out outcomes in the global audit chain. */
 async function handleAuditedAuthRequest(
-  auth: ReturnType<typeof createAuth>,
+  auth: Auth,
   request: Request,
   action: AuthAuditAction,
   pathname: string,
