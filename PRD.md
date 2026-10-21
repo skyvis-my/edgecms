@@ -1,6 +1,6 @@
 # EdgeCMS Product Requirements
 
-Version: 3.1 (2026-10-21)
+Version: 3.2 (2026-10-21)
 Owner: EdgeCMS maintainers
 Status: Living document. Every feature PR cites a requirement ID from this file (see [Change control](#12-change-control)).
 
@@ -168,7 +168,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 
 ### 10.1 Hosting seams
 
-Generic hooks that let anyone run EdgeCMS as a multi-customer service, including `skyvis-my/edgecms-saas`. The framework ships the hook and a safe default; pricing, payment and signup UI stay with the host (NG7). Each seam is configured at composition time (OP-02), never by request input.
+Generic hooks that let anyone run EdgeCMS as a multi-customer service, including `skyvis-my/edgecms-saas`. `HS-11`–`HS-14` are the controls a host needs to pass common SaaS security and privacy reviews (SOC 2, ISO 27001, GDPR, OWASP ASVS); the framework provides the control, the host provides the audit. The framework ships the hook and a safe default; pricing, payment and signup UI stay with the host (NG7). Each seam is configured at composition time (OP-02), never by request input.
 
 | ID | Requirement | Status |
 | --- | --- | --- |
@@ -182,6 +182,10 @@ Generic hooks that let anyone run EdgeCMS as a multi-customer service, including
 | **HS-08** | Tenant lifecycle events (`tenant.created`, `tenant.activated`, `tenant.suspended`, `tenant.deleted`, `tenant.limit_reached`) on the event bus and webhooks. | Planned |
 | **HS-09** | Tenant offboarding: full export (content, media references, settings) and verified deletion of tenant data and dedicated resources, with an audit receipt. | Planned |
 | **HS-10** | Host admin contributions: a trusted host plugin (EX-02) can add admin navigation, a plan/usage panel and banners without editing core. | Planned |
+| **HS-11** | Multi-factor authentication (TOTP and recovery codes through Better Auth), with a per-tenant "require MFA" setting and a deployment-wide requirement for super-admins. The admin has an OTP screen but the API does not verify a second factor yet. | Planned |
+| **HS-12** | Audit log hardening: hash-chained entries for tamper evidence, configurable retention (at least 1 year), per-tenant export, and coverage of sign-ins, permission changes and super-admin actions as well as commands. | Planned |
+| **HS-13** | Personal data requests: export and delete one user's personal data (account, sessions, memberships, authored-by references pseudonymized) with an audit receipt. | Planned |
+| **HS-14** | Per-tenant AI switch: AI features and the providers they send content to are disabled until a tenant admin enables them, and the admin shows which providers will receive content. | Planned |
 
 ## 11. Adoption and operations
 
@@ -227,5 +231,6 @@ Every PR that adds or changes product behavior must fit this PRD.
 
 | Date | Version | Change |
 | --- | --- | --- |
+| 2026-10-21 | 3.2 | Added compliance seams `HS-11`–`HS-14` (MFA, audit log hardening, personal data requests, per-tenant AI switch). |
 | 2026-10-21 | 3.1 | Added §10.1 hosting seams (`HS-01`–`HS-10`) for multi-customer hosts; downstream `*PRD.md` files extend this one. Corrected MD-05 defaults and PL-02 providers. |
 | 2026-10-21 | 3.0 | Rewritten from the internal v2.1 spec to match the open-source framework: TypeBox replaces ArkType, Better Auth replaces direct Entra auth, multi-tenancy, MCP, GraphQL, webhooks, versioning and x402 added, SaaS scope split out, requirement IDs and change control introduced. |
