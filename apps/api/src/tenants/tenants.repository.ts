@@ -285,6 +285,11 @@ export const tenantsRepository = {
   },
 
   /** Add a user to a tenant with a specific role. */
+  /** Unexecuted membership insert, for callers composing an atomic `db.batch()`. */
+  addUserToTenantQuery(db: Database, data: TenantUserInsert) {
+    return db.insert(tenantUsers).values(data)
+  },
+
   async addUserToTenant(db: Database, data: TenantUserInsert): Promise<TenantUserRow> {
     const rows = await db.insert(tenantUsers).values(data).returning()
     const row = rows[0]

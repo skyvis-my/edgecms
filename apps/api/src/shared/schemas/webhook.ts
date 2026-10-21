@@ -31,6 +31,11 @@ export const webhookEventType = createSchema(
     Type.Literal('collection.created'),
     Type.Literal('collection.updated'),
     Type.Literal('collection.deleted'),
+    Type.Literal('tenant.created'),
+    Type.Literal('tenant.activated'),
+    Type.Literal('tenant.suspended'),
+    Type.Literal('tenant.deleted'),
+    Type.Literal('tenant.limit_reached'),
   ])
 )
 

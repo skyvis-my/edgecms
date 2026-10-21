@@ -9,13 +9,16 @@ import { id, slug, timestamp } from './common'
  */
 
 /**
- * Tenant status values.
+ * Tenant status values (HS-04).
  */
 export const tenantStatus = createSchema(
   Type.Union([
+    Type.Literal('pending'),
     Type.Literal('active'),
-    Type.Literal('inactive'),
     Type.Literal('suspended'),
+    Type.Literal('disabled'),
+    /** Legacy alias of `disabled`. */
+    Type.Literal('inactive'),
   ])
 )
 

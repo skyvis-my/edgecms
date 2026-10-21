@@ -287,6 +287,59 @@ describe('webhooksService', () => {
       }
     })
 
+    it('lets super-admins subscribe global webhooks to tenant lifecycle events (HS-08)', async () => {
+      mockWebhooksRepository.create.mockResolvedValue({ id: 'w1', events: ['tenant.created'] })
+
+      const result = await webhooksService.create(
+        mockDb,
+        { url: 'https://example.com/webhook', events: ['tenant.created', 'tenant.deleted'] },
+        undefined,
+        undefined,
+        { allowTenantLifecycleEvents: true }
+      )
+
+      expect(result.success).toBe(true)
+    })
+
+    it('rejects tenant lifecycle events on global webhooks for non-super-admins', async () => {
+      const created = await webhooksService.create(mockDb, {
+        url: 'https://example.com/webhook',
+        events: ['tenant.created'],
+      })
+      expect(created.success).toBe(false)
+      if (!created.success) expect(created.error.code).toBe('VALIDATION_ERROR')
+
+      mockWebhooksRepository.findById.mockResolvedValue({ id: 'w1', events: ['entry.created'] })
+      const updated = await webhooksService.update(mockDb, 'w1', { events: ['tenant.deleted'] })
+      expect(updated.success).toBe(false)
+      if (!updated.success) expect(updated.error.code).toBe('VALIDATION_ERROR')
+    })
+
+    it('rejects tenant lifecycle events on tenant webhooks even for super-admins', async () => {
+      const result = await webhooksService.create(
+        mockDb,
+        { url: 'https://example.com/webhook', events: ['tenant.created'] },
+        'tenant-1',
+        undefined,
+        { allowTenantLifecycleEvents: true }
+      )
+      expect(result.success).toBe(false)
+    })
+
+    it('rejects tenant lifecycle events on tenant-scoped webhooks (HS-08)', async () => {
+      const result = await webhooksService.create(
+        mockDb,
+        { url: 'https://example.com/webhook', events: ['tenant.suspended'] },
+        'tenant-1'
+      )
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.code).toBe('VALIDATION_ERROR')
+        expect(result.error.message).toContain('tenant.suspended')
+      }
+    })
+
     it('auto-generates secret on creation', async () => {
       const mockWebhook = {
         id: 'test-uuid-123',
