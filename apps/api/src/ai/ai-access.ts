@@ -1,7 +1,6 @@
-import { eq } from 'drizzle-orm'
 import { createDb, type Database } from '@/database/db'
-import { tenants } from '@/database/schema'
 import type { Env } from '@/env'
+import { aiAccessRepository } from './ai-settings.repository'
 
 /**
  * HS-14: where tenant content goes when AI features are enabled. Shown in the
@@ -34,28 +33,6 @@ export const AI_CONTENT_PROVIDERS = [
 export const AI_DISABLED_CODE = 'AI_DISABLED'
 export const AI_DISABLED_MESSAGE =
   'AI features are turned off for this tenant. A tenant owner or admin can enable them in Settings → AI.'
-
-/**
- * Tenant flag lookup. The tenants table lives in the main D1, so callers pass
- * the Worker env when they hold a tenant-dedicated database handle.
- */
-export const aiAccessRepository = {
-  async findAiEnabled(db: Database, tenantId: string): Promise<boolean | null> {
-    const rows = await db
-      .select({ aiEnabled: tenants.aiEnabled })
-      .from(tenants)
-      .where(eq(tenants.id, tenantId))
-      .limit(1)
-    return rows[0] ? Boolean(rows[0].aiEnabled) : null
-  },
-
-  async setAiEnabled(db: Database, tenantId: string, enabled: boolean, now: string) {
-    await db
-      .update(tenants)
-      .set({ aiEnabled: enabled, updatedAt: now })
-      .where(eq(tenants.id, tenantId))
-  },
-}
 
 /**
  * Whether AI may process this tenant's content. Requests without a tenant

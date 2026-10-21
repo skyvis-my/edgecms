@@ -4,7 +4,8 @@ import type { Database } from '@/database/db'
 import type { Env } from '@/env'
 import type { ServiceResult } from '@/shared/utils/service-response'
 import { verifyTenantMembership } from '@/tenants/tenant-context'
-import { AI_CONTENT_PROVIDERS, aiAccessRepository } from './ai-access'
+import { AI_CONTENT_PROVIDERS } from './ai-access'
+import { aiAccessRepository } from './ai-settings.repository'
 
 const MANAGER_ROLES = new Set(['owner', 'admin'])
 
