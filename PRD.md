@@ -1,6 +1,6 @@
 # EdgeCMS Product Requirements
 
-Version: 3.0 (2026-10-21)
+Version: 3.1 (2026-10-21)
 Owner: EdgeCMS maintainers
 Status: Living document. Every feature PR cites a requirement ID from this file (see [Change control](#12-change-control)).
 
@@ -35,7 +35,8 @@ EdgeCMS is an open-source (MIT), edge-native headless CMS for Cloudflare Workers
 
 - **This repo (`skyvis-my/edgecms`)** holds the framework only: `apps/*`, `packages/*`, `templates/*`, `examples/*`, `docs/`. Placeholder Cloudflare IDs, no hosting targets.
 - **`skyvis-my/edgecms-saas`** (private) holds the hosted service: real account IDs, staging/production deploy workflows, billing, signup, plan limits and the marketing website. It merges this repo as `upstream`.
-- A feature that only makes sense for the hosted service (billing, signup, plan limits, hosted ops tooling) is out of scope here and belongs in `edgecms-saas`. Framework seams the SaaS needs (for example a usage hook) are in scope and get a requirement here.
+- A feature that only makes sense for the hosted service (billing, signup, plan limits, hosted ops tooling) is out of scope here and belongs in `edgecms-saas`. Framework seams the SaaS needs are in scope and live in §10.1 (`HS-*`).
+- A downstream repo may add its own `*PRD.md` at its root (the SaaS uses `SAAS-PRD.md`). Its IDs extend this file; they never override a principle here.
 
 ---
 
@@ -137,7 +138,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | **MD-02** | Each upload stores the original plus `thumbnail` (150px), `small` (480), `medium` (1024), `large` (2048) variants in R2 under tenant-scoped immutable keys. | Shipped |
 | **MD-03** | Asset metadata (dimensions, blurhash, variants) lives in D1; public variants are format-negotiated (AVIF > WebP > original) and cached as immutable. | Shipped |
 | **MD-04** | Deleting an asset is a soft delete; R2 cleanup runs later through garbage collection. | Shipped |
-| **MD-05** | Upload limits and file-type policy are enforced at the API (default 10 MB). | Shipped |
+| **MD-05** | Upload size, dimension and file-type limits are stored per tenant and enforced at the API (default 5 MB, 2048 px). | Shipped |
 
 ## 9. Delivery, caching and scheduling
 
@@ -158,12 +159,29 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | ID | Requirement | Status |
 | --- | --- | --- |
 | **PL-01** | Multi-tenant: tenant resolution by path, provisioning, per-tenant bindings and CORS, super-admin tooling. | Shipped |
-| **PL-02** | Sign-in with Better Auth (email/password and Microsoft Entra ID), JWT validation, sessions cached at the edge. | Shipped |
+| **PL-02** | Sign-in with Better Auth (email/password, optional Microsoft Entra ID and Google), JWT validation, sessions cached at the edge. | Shipped |
 | **PL-03** | RBAC with built-in roles; every route, command, AI and MCP action checks the caller's permissions. | Shipped |
 | **PL-04** | CSRF protection, rate limits, security headers and audit logging on admin routes. | Shipped |
 | **EX-01** | Trusted plugin catalog: manifests resolve from the catalog, unknown plugins are blocked, disabled plugins register nothing. See [plugin SDK](docs/public/plugin-sdk.md). | Shipped |
 | **EX-02** | One versioned extension contract (`@edgecms/plugin-sdk`) declaring version range, dependencies, bindings, routes, fields, admin contributions, hooks and AI tools, validated at composition time. | Partial |
 | **EX-03** | Public plugin routes need their own authorization and cache contract. | Deferred (until a reviewed design exists) |
+
+### 10.1 Hosting seams
+
+Generic hooks that let anyone run EdgeCMS as a multi-customer service, including `skyvis-my/edgecms-saas`. The framework ships the hook and a safe default; pricing, payment and signup UI stay with the host (NG7). Each seam is configured at composition time (OP-02), never by request input.
+
+| ID | Requirement | Status |
+| --- | --- | --- |
+| **HS-01** | Signup policy: `open`, `invite-only` or `disabled` (default `disabled` for new deployments), with email verification through an injected email sender. Today email/password signup is always open and unverified. | Planned |
+| **HS-02** | Tenant creation policy: an injected `canCreateTenant(actor)` decides who may create a tenant (default: super-admins only, as today). The creator becomes the tenant owner. | Planned |
+| **HS-03** | Provisioning modes: `shared` (rows in the main D1) or `dedicated` (own D1, KV and R2 through the existing Cloudflare API provisioning), with an idempotent, resumable job and a status the admin can show. | Partial |
+| **HS-04** | Tenant states: `pending`, `active`, `suspended` (admin locked, public reads continue) and `disabled` (everything blocked). Today any non-`active` status returns 403 everywhere. | Planned |
+| **HS-05** | Usage metering: per-tenant counters for public reads, admin mutations, AI tokens by model tier, stored media bytes and entry count, written to an injected sink with daily rollups. Metering never blocks or slows the request path. | Planned |
+| **HS-06** | Limit policy: an injected `TenantLimits` provider is checked before commands, uploads, AI calls and tenant creation. Over-limit returns a typed error (`402` quota, `429` rate) that the admin shows with the host's upgrade link. Default limits come from the tenant row. | Planned |
+| **HS-07** | Per-tenant rate-limit policies, replacing the current fixed global policies. | Planned |
+| **HS-08** | Tenant lifecycle events (`tenant.created`, `tenant.activated`, `tenant.suspended`, `tenant.deleted`, `tenant.limit_reached`) on the event bus and webhooks. | Planned |
+| **HS-09** | Tenant offboarding: full export (content, media references, settings) and verified deletion of tenant data and dedicated resources, with an audit receipt. | Planned |
+| **HS-10** | Host admin contributions: a trusted host plugin (EX-02) can add admin navigation, a plan/usage panel and banners without editing core. | Planned |
 
 ## 11. Adoption and operations
 
@@ -209,4 +227,5 @@ Every PR that adds or changes product behavior must fit this PRD.
 
 | Date | Version | Change |
 | --- | --- | --- |
+| 2026-10-21 | 3.1 | Added §10.1 hosting seams (`HS-01`–`HS-10`) for multi-customer hosts; downstream `*PRD.md` files extend this one. Corrected MD-05 defaults and PL-02 providers. |
 | 2026-10-21 | 3.0 | Rewritten from the internal v2.1 spec to match the open-source framework: TypeBox replaces ArkType, Better Auth replaces direct Entra auth, multi-tenancy, MCP, GraphQL, webhooks, versioning and x402 added, SaaS scope split out, requirement IDs and change control introduced. |

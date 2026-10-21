@@ -32,7 +32,7 @@ jobs:
       - name: Check PR cites PRD.md
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: bun scripts/check-prd-reference.ts PRD.md
+        run: bun scripts/check-prd-reference.ts
 
   lint:
     name: Lint

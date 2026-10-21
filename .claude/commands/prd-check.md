@@ -11,12 +11,12 @@ If the target is empty, use the current branch diff against `main` (`git diff ma
 
 ## Steps
 
-1. Read `PRD.md` in full. Do not rely on memory of it.
+1. Read `PRD.md` in full, plus any other `*PRD.md` at the repo root (a downstream repo's own PRD, such as `SAAS-PRD.md`). Do not rely on memory of them. Downstream IDs extend `PRD.md` and never override its principles.
 2. State the change in one sentence: the user-visible behavior or invariant it adds or changes.
-3. Map it to requirement IDs (`CM-*`, `CMD-*`, `OF-*`, `AI-*`, `MD-*`, `DL-*`, `PL-*`, `EX-*`, `OP-*`). Quote the requirement text you rely on.
+3. Map it to requirement IDs (`CM-*`, `CMD-*`, `OF-*`, `AI-*`, `MD-*`, `DL-*`, `PL-*`, `EX-*`, `HS-*`, `OP-*`). Quote the requirement text you rely on.
 4. Check every principle `P1`–`P10`. For each one the change touches, say how it holds, citing files or routes when there is a diff. Pay most attention to P2 tenant isolation, P3 command-only writes, P4 AI preview/approve and P5 published-only public reads.
 5. Check the non-goals `NG1`–`NG8`. Any overlap is a conflict.
-6. Check the repo boundary (§1.2): hosted-only work (billing, signup, plan limits, real deploy targets, website) belongs in `skyvis-my/edgecms-saas`, not here.
+6. Check the repo boundary (§1.2): hosted-only work (billing, signup, plan limits, real deploy targets, website) belongs in `skyvis-my/edgecms-saas`, not the public framework. In the SaaS repo, generic framework changes belong upstream as `HS-*` or other `PRD.md` IDs.
 7. Give one verdict:
    - **Aligned**: fits existing IDs and breaks no principle. Give the `PRD:` line for the PR description.
    - **Aligned, PRD update needed**: fits the direction but finishes a `Partial`/`Planned` item or needs a new ID. Write the exact `PRD.md` edit (status change or new row) to include in the same PR.
