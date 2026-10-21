@@ -14,9 +14,13 @@ import { resolveFastPathActor, type FastPathActor } from './access-token-guard'
 import { requiresCsrf, validateCsrfToken } from './csrf.middleware'
 import {
   consumeRateLimitDistributed,
+  DEFAULT_RATE_LIMIT_POLICIES,
+  getRateLimitCategory,
   getRateLimitKey,
-  getRateLimitPolicy,
+  getTenantRateLimitKey,
 } from './rate-limit.middleware'
+import type { TenantRateLimitPolicy } from '@/host/host-policies'
+import type { TenantRateLimitResolver } from '@/host/rate-limits'
 import {
   type ActorRole,
   type TenantActorRole,
@@ -117,13 +121,15 @@ function unsupportedContentTypeMessage(pathname: string): string {
 export type ApiSecurityGuardOptions = {
   hstsHeader?: string | null
   resolveAllowedCorsOrigin: (request: Request, pathname: string) => Promise<string | null>
+  /** HS-07: per-tenant rate-limit policies from the host; framework policies when absent. */
+  resolveTenantRateLimit?: TenantRateLimitResolver
 }
 
 /**
  * Elysia plugin for API security, CORS, rate limiting, and RBAC authorization.
  */
 export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
-  const { hstsHeader, resolveAllowedCorsOrigin } = options
+  const { hstsHeader, resolveAllowedCorsOrigin, resolveTenantRateLimit } = options
 
   return new Elysia({ name: 'api-security-guard' })
     .onRequest(({ request, set }) => {
@@ -245,7 +251,11 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
 
       if (shouldRateLimitRequest(pathname)) {
         const clientIp = ctx.request.headers.get('cf-connecting-ip') ?? undefined
-        const rateLimitPolicy = getRateLimitPolicy(pathname, method)
+        const category = getRateLimitCategory(pathname, method)
+        const rateLimitPolicy: TenantRateLimitPolicy =
+          tenantSlug && resolveTenantRateLimit
+            ? await resolveTenantRateLimit(tenantSlug, category)
+            : DEFAULT_RATE_LIMIT_POLICIES[category]
         const rate = await consumeRateLimitDistributed(
           getRateLimitKey(pathname, method, actorId, tenantSlug, clientIp),
           {
@@ -255,9 +265,30 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
             source: ctx,
           }
         )
-        if (!rate.allowed) {
+        const tenantLimit = rateLimitPolicy.tenantLimit
+        const tenantRate =
+          rate.allowed && tenantSlug && tenantLimit
+            ? await consumeRateLimitDistributed(getTenantRateLimitKey(tenantSlug, category), {
+                kv: typedEnv.CACHE,
+                windowMs: rateLimitPolicy.windowMs,
+                limit: tenantLimit,
+                source: ctx,
+              })
+            : undefined
+        const denied = !rate.allowed ? rate : tenantRate && !tenantRate.allowed ? tenantRate : null
+        if (denied) {
           ctx.set.status = 429
-          return createErrorEnvelope('RATE_LIMITED', 'Too many requests')
+          const retryAfterSeconds = Math.max(1, Math.ceil((denied.resetAt - Date.now()) / 1000))
+          ;(ctx.set.headers as MutableHeaders)['Retry-After'] = String(retryAfterSeconds)
+          const upgradeUrl = rateLimitPolicy.upgradeUrl
+          return createErrorEnvelope('RATE_LIMITED', 'Too many requests', {
+            dimension: category,
+            kind: 'rate',
+            scope: denied === rate ? 'caller' : 'tenant',
+            limit: denied === rate ? rateLimitPolicy.limit : tenantLimit,
+            retryAfterSeconds,
+            ...(upgradeUrl && { upgradeUrl }),
+          })
         }
       }
 

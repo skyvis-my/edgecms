@@ -76,6 +76,18 @@ export type CommandContext = {
    * same context) can reuse it instead of re-fetching the same row.
    */
   cachedEntry?: EntryRow | null
+  /**
+   * Host hooks for top-level commands (HS-05 metering, HS-06 limits), set by
+   * request entry points. Skipped for dry runs.
+   */
+  hostHooks?: CommandHostHooks
+}
+
+export type CommandHostHooks = {
+  /** Return a failed result to reject the command before it runs. */
+  beforeExecute?: (envelope: CommandEnvelope) => Promise<CommandResult | undefined>
+  /** Called with each top-level result. Must not throw. */
+  afterExecute?: (envelope: CommandEnvelope, result: CommandResult) => void
 }
 
 /**
@@ -1163,6 +1175,12 @@ export async function executeCommand(
   ctx: CommandContext,
   envelope: CommandEnvelope
 ): Promise<CommandResult> {
+  const hooks = envelope.dryRun ? undefined : ctx.hostHooks
+  if (hooks?.beforeExecute) {
+    const rejected = await hooks.beforeExecute(envelope)
+    if (rejected) return rejected
+  }
+
   const result =
     envelope.type === 'transaction'
       ? await handleTransaction(ctx, envelope)
@@ -1177,5 +1195,6 @@ export async function executeCommand(
     envelope,
     result,
   })
+  hooks?.afterExecute?.(envelope, result)
   return result
 }

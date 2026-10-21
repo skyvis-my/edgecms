@@ -2,6 +2,7 @@ import { logger } from '@/observability/logger'
 import { eventBus as defaultEventBus, type EventType } from '@/webhooks/event-bus'
 import type {
   ResolvedHostPolicies,
+  TenantLimitReached,
   TenantEventType,
   TenantLifecycleEvent,
 } from './host-policies'
@@ -20,7 +21,7 @@ export interface TenantEventPublisher {
   publish(
     event: TenantEventType,
     tenant: TenantSnapshot,
-    details?: { previousStatus?: string; actorId?: string }
+    details?: { previousStatus?: string; actorId?: string; limit?: TenantLimitReached }
   ): Promise<void>
 }
 
@@ -72,6 +73,7 @@ export function createTenantEventPublisher(
               tenantId: snapshot.id,
               previousStatus: details.previousStatus,
               actorId: details.actorId,
+              ...(details.limit && { limit: details.limit }),
             },
           },
           // Await webhook enqueueing so the Worker does not drop it after the response.
@@ -93,6 +95,7 @@ export function createTenantEventPublisher(
         tenant: snapshot,
         ...(details.previousStatus !== undefined && { previousStatus: details.previousStatus }),
         ...(details.actorId !== undefined && { actorId: details.actorId }),
+        ...(details.limit && { limit: details.limit }),
       }
       try {
         await host.onTenantEvent(payload)

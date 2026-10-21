@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm'
+import { estimateDecodedSize } from './base64-size'
 import type { Database } from '@/database/db'
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
@@ -59,12 +60,11 @@ function bytesFromBase64(base64: string): Uint8Array {
   return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
 }
 
-function estimateDecodedSize(base64: string): number {
-  const normalized = base64.trim()
-  if (normalized.length === 0) return 0
-  const padding = normalized.endsWith('==') ? 2 : normalized.endsWith('=') ? 1 : 0
-  return Math.floor((normalized.length * 3) / 4) - padding
+/** Stored bytes of an asset: original plus variants. */
+function storedAssetBytes(asset: { size?: number | null; variants?: Array<{ fileSize?: number | null }> }) {
+  return (asset.size ?? 0) + (asset.variants ?? []).reduce((v, variant) => v + (variant.fileSize ?? 0), 0)
 }
+
 
 export const DEFAULT_ASSET_UPLOAD_MAX_BYTES = 5 * 1024 * 1024
 export const DEFAULT_ASSET_UPLOAD_MAX_DIMENSION = 2048
@@ -331,7 +331,7 @@ export const assetsService = {
     const tenantScope = tenantId ?? 'global'
     const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
     if (uniqueIds.length === 0) {
-      return { deletedIds: [] as string[] }
+      return { deletedIds: [] as string[], deletedBytes: 0 }
     }
 
     const existingAssets = await assetsRepository.findByIds(db, uniqueIds, tenantScope)
@@ -344,6 +344,11 @@ export const assetsService = {
       existingAssets.map((asset) => asset.id),
       tenantScope
     )
+    // Bytes (original plus variants) no longer counted as stored (HS-05 metering).
+    const deletedSet = new Set(deletedIds)
+    const deletedBytes = existingAssets
+      .filter((asset) => deletedSet.has(asset.id))
+      .reduce((sum, asset) => sum + storedAssetBytes(asset), 0)
 
     if (deletedIds.length > 0 && workerEnv) {
       scheduleAssetVectorWork(
@@ -358,7 +363,7 @@ export const assetsService = {
       )
     }
 
-    return { deletedIds }
+    return { deletedIds, deletedBytes }
   },
 
   async hardDelete(
@@ -368,11 +373,11 @@ export const assetsService = {
     tenantId?: string,
     workerEnv?: Env,
     defer?: DeferAssetVectorWork
-  ): Promise<{ deletedIds: string[]; r2Failures: string[] }> {
+  ): Promise<{ deletedIds: string[]; r2Failures: string[]; deletedBytes: number }> {
     const tenantScope = tenantId ?? 'global'
     const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
     if (uniqueIds.length === 0) {
-      return { deletedIds: [], r2Failures: [] }
+      return { deletedIds: [], r2Failures: [], deletedBytes: 0 }
     }
 
     // Inclusion-aware fetch: soft-deleted rows (deletedAt set) are the
@@ -383,7 +388,7 @@ export const assetsService = {
       tenantScope
     )
     if (existingAssets.length === 0) {
-      return { deletedIds: [], r2Failures: [] }
+      return { deletedIds: [], r2Failures: [], deletedBytes: 0 }
     }
 
     const keysById = new Map(
@@ -401,6 +406,11 @@ export const assetsService = {
       tenantScope
     )
     const keysToDelete = deletedIds.flatMap((id) => keysById.get(id) ?? [])
+    // Soft-deleted rows were already subtracted from stored bytes when deleted.
+    const deletedSet = new Set(deletedIds)
+    const deletedBytes = existingAssets
+      .filter((asset) => deletedSet.has(asset.id) && !asset.deletedAt)
+      .reduce((sum, asset) => sum + storedAssetBytes(asset), 0)
 
     // Durable path: enqueue every key BEFORE attempting R2 deletes so a crash
     // between DB commit and r2.delete never leaks objects — pending rows are
@@ -453,7 +463,7 @@ export const assetsService = {
       )
     }
 
-    return { deletedIds, r2Failures }
+    return { deletedIds, r2Failures, deletedBytes }
   },
 
   async gcSoftDeleted(

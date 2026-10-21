@@ -4,6 +4,7 @@ import {
   type ResolvedHostPolicies,
   type TenantCreationActor,
 } from '@/host/host-policies'
+import type { LimitEnforcer } from '@/host/limits'
 import type { TenantEventPublisher } from '@/host/tenant-events'
 import { tenantsService } from '@/tenants/tenants.service'
 
@@ -58,6 +59,8 @@ export type OnboardingTenantDeps = {
   events?: TenantEventPublisher
   /** Whether the user is a super-admin; passed to the host policy. */
   isSuperAdmin?: boolean
+  /** HS-06 tenant quota for this app instance (default: allow). */
+  limits?: LimitEnforcer
 }
 
 const defaultHost = resolveHostPolicies()
@@ -83,7 +86,11 @@ export async function ensureUserHasOnboardingTenant(
     isSuperAdmin: deps.isSuperAdmin ?? false,
     source: 'onboarding',
   }
-  const authorized = await tenantsService.authorizeCreation(actor, deps.host ?? defaultHost)
+  const authorized = await tenantsService.authorizeCreation(
+    actor,
+    deps.host ?? defaultHost,
+    deps.limits
+  )
   if (!authorized.success) return authorized
 
   const name = buildTenantName(user)

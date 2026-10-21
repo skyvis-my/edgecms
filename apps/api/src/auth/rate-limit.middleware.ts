@@ -52,13 +52,25 @@ export function getRateLimitKey(
   return `${tenantScope}:${identity}:${method.toUpperCase()}:${normalizedPath}`
 }
 
-export function getRateLimitPolicy(pathname: string, method: string): RateLimitPolicy {
+/** Rate-limit surfaces; hosts set per-tenant policies per category (HS-07). */
+export type RateLimitCategory = 'auth' | 'ai_command' | 'admin_mutation' | 'public_read' | 'default'
+
+/** Framework policies, used when no host policy applies. */
+export const DEFAULT_RATE_LIMIT_POLICIES: Readonly<Record<RateLimitCategory, RateLimitPolicy>> = {
+  auth: AUTH_POLICY,
+  ai_command: AI_COMMAND_POLICY,
+  admin_mutation: ADMIN_MUTATION_POLICY,
+  public_read: PUBLIC_READ_POLICY,
+  default: DEFAULT_POLICY,
+}
+
+export function getRateLimitCategory(pathname: string, method: string): RateLimitCategory {
   const normalizedMethod = method.toUpperCase()
   if (pathname === '/api/auth' || pathname.startsWith('/api/auth/')) {
-    return AUTH_POLICY
+    return 'auth'
   }
   if (pathname === '/api/csrf') {
-    return AUTH_POLICY
+    return 'auth'
   }
   if (
     pathname === '/api/admin/ai/command' ||
@@ -66,21 +78,33 @@ export function getRateLimitPolicy(pathname: string, method: string): RateLimitP
     pathname.endsWith('/admin/ai/command') ||
     pathname.endsWith('/admin/ai/workflow')
   ) {
-    return AI_COMMAND_POLICY
+    return 'ai_command'
   }
   if (
     !SAFE_METHODS.has(normalizedMethod) &&
     (pathname.startsWith('/api/admin/') || pathname.includes('/admin/'))
   ) {
-    return ADMIN_MUTATION_POLICY
+    return 'admin_mutation'
   }
   if (
     SAFE_METHODS.has(normalizedMethod) &&
     (pathname.startsWith('/api/public/') || pathname.includes('/public/'))
   ) {
-    return PUBLIC_READ_POLICY
+    return 'public_read'
   }
-  return DEFAULT_POLICY
+  return 'default'
+}
+
+export function getRateLimitPolicy(pathname: string, method: string): RateLimitPolicy {
+  return DEFAULT_RATE_LIMIT_POLICIES[getRateLimitCategory(pathname, method)]
+}
+
+/**
+ * Bucket shared by every caller of one tenant in one category (HS-07
+ * `tenantLimit`), so a tenant's total is capped without touching other tenants.
+ */
+export function getTenantRateLimitKey(tenantSlug: string, category: RateLimitCategory): string {
+  return `tenant-total:${tenantSlug}:${category}`
 }
 
 export function consumeRateLimit(

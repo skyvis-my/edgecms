@@ -333,8 +333,9 @@ describe('assetsService', () => {
     mockRepo.findByIds.mockResolvedValueOnce([
       {
         id: 'a1',
+        size: 1000,
         originalKey: 'assets/original/a1.jpg',
-        variants: [{ objectKey: 'assets/variants/a1.webp' }],
+        variants: [{ objectKey: 'assets/variants/a1.webp', fileSize: 200 }],
       },
     ])
     mockRepo.softDeleteByIds.mockResolvedValue(['a1'])
@@ -343,7 +344,8 @@ describe('assetsService', () => {
 
     expect(r2.delete).not.toHaveBeenCalled()
     expect(mockRepo.softDeleteByIds).toHaveBeenCalledWith(db, ['a1'], 'global')
-    expect(result).toEqual({ deletedIds: ['a1'] })
+    // HS-05: stored bytes (original + variants) leave the media_bytes total.
+    expect(result).toEqual({ deletedIds: ['a1'], deletedBytes: 1200 })
   })
 
   it('softDelete soft deletes a single asset id', async () => {
@@ -358,7 +360,7 @@ describe('assetsService', () => {
 
     const result = await assetsService.softDelete(db, r2, 'a1')
 
-    expect(result).toEqual({ deletedIds: ['a1'] })
+    expect(result).toEqual({ deletedIds: ['a1'], deletedBytes: 0 })
     expect(mockRepo.softDeleteByIds).toHaveBeenCalledWith(db, ['a1'], 'global')
   })
 
@@ -367,8 +369,9 @@ describe('assetsService', () => {
       {
         id: 'a1',
         tenantId: 't1',
+        size: 500,
         originalKey: 'tenants/t1/assets/a1/photo.jpg',
-        variants: [{ objectKey: 'tenants/t1/assets/a1/thumb.webp' }],
+        variants: [{ objectKey: 'tenants/t1/assets/a1/thumb.webp', fileSize: 50 }],
       },
     ])
     mockRepo.deleteByIds.mockResolvedValueOnce(['a1'])
@@ -382,7 +385,8 @@ describe('assetsService', () => {
     ).mock.calls.map(([key]) => key)
     expect(deletedKeys).toContain('tenants/t1/assets/a1/photo.jpg')
     expect(deletedKeys).toContain('tenants/t1/assets/a1/thumb.webp')
-    expect(result).toEqual({ deletedIds: ['a1'], r2Failures: [] })
+    // A live asset hard-deleted directly leaves media_bytes here.
+    expect(result).toEqual({ deletedIds: ['a1'], r2Failures: [], deletedBytes: 550 })
   })
 
   it('hardDelete lists R2 failures without throwing after DB commit', async () => {
@@ -440,7 +444,7 @@ describe('assetsService', () => {
     expect(mockRepo.findByIdsIncludingDeleted).not.toHaveBeenCalled()
     expect(mockRepo.deleteByIds).not.toHaveBeenCalled()
     expect(r2.delete).not.toHaveBeenCalled()
-    expect(result).toEqual({ deletedIds: [], r2Failures: [] })
+    expect(result).toEqual({ deletedIds: [], r2Failures: [], deletedBytes: 0 })
   })
 
   it('gcSoftDeleted collects only rows older than the cutoff', async () => {

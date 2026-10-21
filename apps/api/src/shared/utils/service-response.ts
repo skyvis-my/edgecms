@@ -35,7 +35,11 @@ export function toServiceResponse<
             ? 401
             : result.error.code === 'FORBIDDEN'
               ? 403
-              : (options?.defaultErrorStatus ?? 400))
+              : result.error.code === 'QUOTA_EXCEEDED'
+                ? 402
+                : result.error.code === 'RATE_LIMITED'
+                  ? 429
+                  : (options?.defaultErrorStatus ?? 400))
     set.status = status
     return result
   }

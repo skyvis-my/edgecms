@@ -64,6 +64,8 @@ import { createTenantsController } from '@/tenants/tenants.controller'
 import { type HostPolicies, resolveHostPolicies } from '@/host/host-policies'
 import { createTenantEventPublisher } from '@/host/tenant-events'
 import { invitesController } from '@/invites/invites.controller'
+import { createHostRuntime, createHostRuntimePlugin, getHostRuntime } from '@/host/host-context'
+import { createTenantRateLimitResolver } from '@/host/rate-limits'
 import { usersRepository } from '@/users/users.repository'
 import { API_VERSION } from '@/version'
 import {
@@ -173,6 +175,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
   if (options.host?.auth) configureAuthPolicies(options.host.auth)
   const tenantEvents = createTenantEventPublisher(host)
   const scopedTenantsController = createTenantsController({ host, events: tenantEvents })
+  const hostRuntime = createHostRuntime(host, tenantEvents)
 
   const coreRoutes = createCoreApiRoutes({
     scopedPluginsController,
@@ -182,6 +185,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
   const securityPlugin = createApiSecurityGuardPlugin({
     hstsHeader: startupHstsHeader,
     resolveAllowedCorsOrigin,
+    resolveTenantRateLimit: createTenantRateLimitResolver(host.rateLimits),
   })
 
   const observabilityPlugin = createRequestObservabilityPlugin({
@@ -192,6 +196,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
   return applyTenantPathAliases(
     applyPublicAssetFormatAliases(
       new Elysia()
+        .use(createHostRuntimePlugin(hostRuntime))
         .use(securityPlugin)
         .use(observabilityPlugin)
         .use(auditTrailPlugin)
@@ -353,7 +358,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
             }
           }
         })
-        .post('/api/bootstrap/provision-tenant', { auth: true }, async ({ user, set }) => {
+        .post('/api/bootstrap/provision-tenant', { auth: true }, async ({ user, set, request }) => {
           const db = createDb((env as Env).DB)
           const result = await ensureUserHasOnboardingTenant(
             db,
@@ -361,6 +366,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
             {
               host,
               events: tenantEvents,
+              limits: getHostRuntime(request).limits,
               isSuperAdmin: isSuperAdminUser(
                 user as { email: string; emailVerified?: boolean; role?: unknown },
                 env as Env
@@ -522,7 +528,29 @@ export type {
   TenantCreationSource,
   TenantEventType,
   TenantLifecycleEvent,
+  TenantLimitReached,
+  TenantRateLimitPolicy,
+  TenantRateLimitRequest,
 } from '@/host/host-policies'
+export {
+  createD1UsageRollupSink,
+  noopUsageSink,
+  type D1UsageRollupSink,
+  type D1UsageRollupSinkOptions,
+  type UsageEvent,
+  type UsageMetric,
+  type UsageSink,
+} from '@/host/usage'
+export {
+  defaultTenantLimits,
+  type LimitCheck,
+  type LimitDecision,
+  type LimitDenial,
+  type LimitDimension,
+  type LimitTenant,
+  type TenantLimits,
+} from '@/host/limits'
+export type { RateLimitCategory, RateLimitPolicy } from '@/auth/rate-limit.middleware'
 export {
   createMetricsRegistry,
   type MetricSink,

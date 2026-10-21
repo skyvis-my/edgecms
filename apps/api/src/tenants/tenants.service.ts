@@ -23,6 +23,7 @@ import type {
   TenantCreationActor,
 } from '@/host/host-policies'
 import { type TenantEventPublisher, tenantStatusTransitionEvent } from '@/host/tenant-events'
+import type { LimitEnforcer } from '@/host/limits'
 
 /** Input for creating a tenant. */
 export interface CreateTenantInput {
@@ -48,6 +49,8 @@ export interface CreateTenantOptions {
 export interface TenantLifecycleContext {
   events?: TenantEventPublisher
   actorId?: string
+  /** HS-06 limit check for tenant creation (default: allow). */
+  limits?: LimitEnforcer
 }
 
 /** Tenant lifecycle states (HS-04). `inactive` is a legacy alias of `disabled`. */
@@ -400,7 +403,8 @@ export const tenantsService = {
    */
   async authorizeCreation(
     actor: TenantCreationActor,
-    host: Pick<ResolvedHostPolicies, 'canCreateTenant'>
+    host: Pick<ResolvedHostPolicies, 'canCreateTenant'>,
+    limits?: LimitEnforcer
   ): Promise<ServiceResult<{ initialStatus: InitialTenantStatus }>> {
     const decision = await host.canCreateTenant(actor)
     if (!decision.allowed) {
@@ -411,6 +415,17 @@ export const tenantsService = {
           message: decision.reason ?? 'Tenant creation is not allowed for this account',
         },
       }
+    }
+    // HS-06: the tenant quota applies after the creation policy allows the actor.
+    const exceeded = await limits?.check(undefined, {
+      dimension: 'tenants',
+      amount: 1,
+      actor: { userId: actor.userId, email: actor.email },
+    })
+    if (exceeded) {
+      // `details` (dimension, upgrade URL) rides along in the error envelope.
+      const error = { code: exceeded.code, message: exceeded.message, details: exceeded.details }
+      return { success: false, error }
     }
     return { success: true, data: { initialStatus: decision.initialStatus } }
   },
@@ -446,7 +461,7 @@ export const tenantsService = {
     host: Pick<ResolvedHostPolicies, 'canCreateTenant'>,
     lifecycle: TenantLifecycleContext = {}
   ): Promise<ServiceResult<TenantRow>> {
-    const authorized = await tenantsService.authorizeCreation(actor, host)
+    const authorized = await tenantsService.authorizeCreation(actor, host, lifecycle.limits)
     if (!authorized.success) return authorized
     return tenantsService.createAuthorized(db, input, actor, authorized.data.initialStatus, lifecycle)
   },

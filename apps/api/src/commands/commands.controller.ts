@@ -10,6 +10,8 @@ import { type CommandContext, executeCommand } from './engine'
 import type { WaitUntilContext } from './deferred-work'
 import { getRequestPathname } from '@/shared/utils/request-url'
 import { createErrorEnvelope } from '@/shared/utils/service-response'
+import { createCommandHostHooks, getCommandLimitError } from '@/host/command-hooks'
+import { getHostRuntime } from '@/host/host-context'
 
 /**
  * Resolve the Cloudflare execution context from the Elysia request context.
@@ -151,6 +153,11 @@ export const commandsController = new Elysia({ prefix: '/api/admin/commands', no
       executionCtx: getCommandExecutionCtx(elysiaCtx),
       syncChannel,
       idempotencyKey: idempotencyKey || undefined,
+      hostHooks: createCommandHostHooks(getHostRuntime(elysiaCtx.request), {
+        source: elysiaCtx,
+        tenant: tenantCtx?.tenant,
+        actorId: user.id,
+      }),
       requestMeta: {
         requestId:
           (elysiaCtx as unknown as { requestId?: string }).requestId ?? crypto.randomUUID(),
@@ -186,6 +193,13 @@ export const commandsController = new Elysia({ prefix: '/api/admin/commands', no
       return { success: true as const, data: result }
     }
   
+    // HS-06: limit rejections carry the dimension and upgrade link.
+    const limitError = getCommandLimitError(result)
+    if (limitError && result.error) {
+      set.status = limitError.status
+      return createErrorEnvelope(result.error.code, result.error.message, limitError.details)
+    }
+
     // Error handling — map error codes to HTTP status
     if (result.error) {
       set.status = COMMAND_ERROR_STATUS_MAP[result.error.code] ?? 500

@@ -9,6 +9,7 @@ import { withTenantBindings } from './with-tenant-bindings'
 import { tenantsService } from './tenants.service'
 import { toServiceResponse } from '@/shared/utils/service-response'
 import { resolveHostPolicies, type ResolvedHostPolicies } from '@/host/host-policies'
+import { getHostRuntime } from '@/host/host-context'
 import { createTenantEventPublisher, type TenantEventPublisher } from '@/host/tenant-events'
 
 async function resolveTenantId(
@@ -169,7 +170,7 @@ export function createTenantsController(options: TenantsControllerOptions = {}) 
         mediaUploadMaxDimension: t.Optional(t.Number({ minimum: 1 })),
         mediaAllowedMimeTypes: t.Optional(t.Array(t.String({ minLength: 1 }))),
       }),
-    }, async ({ db, body, set, user }) => {
+    }, async ({ db, body, set, user, request }) => {
       const superAdminDenial = evaluateSuperAdmin(user)
       if (superAdminDenial?.status === 401) {
         set.status = 401
@@ -181,7 +182,10 @@ export function createTenantsController(options: TenantsControllerOptions = {}) 
         isSuperAdmin: superAdminDenial === null,
         source: 'admin-api' as const,
       }
-      const result = await tenantsService.createForActor(db, body, actor, host, { events })
+      const result = await tenantsService.createForActor(db, body, actor, host, {
+        events,
+        limits: getHostRuntime(request).limits,
+      })
       return toServiceResponse(set, result, { successStatus: 201 })
     })
 
