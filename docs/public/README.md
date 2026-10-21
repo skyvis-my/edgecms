@@ -14,6 +14,7 @@ Use these docs when evaluating or adopting EdgeCMS outside the internal release 
 - `docs/public/plugin-sdk.md`: trusted plugin authoring contract.
 - `docs/public/sample-plugins.md`: sample plugin acceptance specs.
 - `docs/public/mcp-server.md`: Model Context Protocol (MCP) server tools, endpoints, and client setup.
+- `docs/public/hosting-seams.md`: `createApp({ host })` policies for multi-customer hosts (tenant creation, tenant states, lifecycle events).
 - `templates/starter/README.md`: acceptance checklist for a future starter template.
 
 ## Proof Index

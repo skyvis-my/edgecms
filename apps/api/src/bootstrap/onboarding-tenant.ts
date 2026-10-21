@@ -1,4 +1,10 @@
 import type { Database } from '@/database/db'
+import {
+  resolveHostPolicies,
+  type ResolvedHostPolicies,
+  type TenantCreationActor,
+} from '@/host/host-policies'
+import type { TenantEventPublisher } from '@/host/tenant-events'
 import { tenantsService } from '@/tenants/tenants.service'
 
 type TenantRow = {
@@ -45,9 +51,21 @@ function buildBaseSlug(user: OnboardingUser): string {
   return 'workspace'
 }
 
+export type OnboardingTenantDeps = {
+  /** Host policies for this app instance (HS-02). Defaults keep self-serve onboarding. */
+  host?: Pick<ResolvedHostPolicies, 'canCreateTenant'>
+  /** Lifecycle event publisher for this app instance (HS-08). */
+  events?: TenantEventPublisher
+  /** Whether the user is a super-admin; passed to the host policy. */
+  isSuperAdmin?: boolean
+}
+
+const defaultHost = resolveHostPolicies()
+
 export async function ensureUserHasOnboardingTenant(
   db: Database,
-  user: OnboardingUser
+  user: OnboardingUser,
+  deps: OnboardingTenantDeps = {}
 ): Promise<ProvisionResult> {
   const existing = await tenantsService.findUserTenants(db, user.id)
   if (!existing.success) return existing
@@ -59,41 +77,38 @@ export async function ensureUserHasOnboardingTenant(
     return { success: true, data: first }
   }
 
+  const actor: TenantCreationActor = {
+    userId: user.id,
+    email: user.email ?? '',
+    isSuperAdmin: deps.isSuperAdmin ?? false,
+    source: 'onboarding',
+  }
+  const authorized = await tenantsService.authorizeCreation(actor, deps.host ?? defaultHost)
+  if (!authorized.success) return authorized
+
   const name = buildTenantName(user)
   const baseSlug = buildBaseSlug(user)
 
-  let createdTenant: TenantRow | null = null
   for (let index = 0; index < 20; index++) {
     const slug = index === 0 ? baseSlug : `${baseSlug}-${index + 1}`
-    const created = await tenantsService.create(db, { name, slug })
+    // The user is added as owner in the same write as the tenant.
+    const created = await tenantsService.createAuthorized(
+      db,
+      { name, slug },
+      actor,
+      authorized.data.initialStatus,
+      { events: deps.events }
+    )
     if (created.success) {
-      createdTenant = created.data
-      break
+      return { success: true, data: created.data }
     }
     if (created.error.code !== 'CONFLICT') {
       return created
     }
   }
 
-  if (!createdTenant) {
-    return {
-      success: false,
-      error: { code: 'CONFLICT', message: 'Unable to allocate a unique tenant slug' },
-    }
+  return {
+    success: false,
+    error: { code: 'CONFLICT', message: 'Unable to allocate a unique tenant slug' },
   }
-
-  const membership = await tenantsService.addUserToTenant(db, createdTenant.id, {
-    userId: user.id,
-    role: 'owner',
-  })
-  if (!membership.success) {
-    // Compensation: owner insert failed → remove orphan tenant (no owner).
-    // CONFLICT (already member) is benign — keep the tenant.
-    if (membership.error.code !== 'CONFLICT') {
-      await tenantsService.deleteById(db, createdTenant.id).catch(() => undefined)
-    }
-    return membership
-  }
-
-  return { success: true, data: createdTenant }
 }

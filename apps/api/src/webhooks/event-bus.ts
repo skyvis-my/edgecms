@@ -19,6 +19,8 @@
  * - Entry bulk: entry.bulk_updated
  * - Relations: relation.linked, relation.unlinked
  * - Collections: collection.created, collection.updated, collection.deleted
+ * - Tenants (HS-08, global scope): tenant.created, tenant.activated,
+ *   tenant.suspended, tenant.deleted; tenant.limit_reached is reserved (HS-06)
  */
 import { logger } from '@/observability/logger'
 
@@ -35,6 +37,11 @@ export type EventType =
   | 'collection.created'
   | 'collection.updated'
   | 'collection.deleted'
+  | 'tenant.created'
+  | 'tenant.activated'
+  | 'tenant.suspended'
+  | 'tenant.deleted'
+  | 'tenant.limit_reached'
 
 /**
  * Webhook event payload structure.

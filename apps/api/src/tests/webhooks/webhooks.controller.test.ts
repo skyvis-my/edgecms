@@ -16,11 +16,13 @@ vi.mock('cloudflare:workers', () => ({
   env: { DB: mockDb, CACHE: {} as KVNamespace, MEDIA: {} as R2Bucket },
 }))
 
+let mockUser: { id: string; email?: string; role?: string } = { id: 'u1' }
+
 vi.mock('@/auth/auth.middleware', () => ({
   betterAuthPlugin: new Elysia().macro({
     auth: {
       derive() {
-        return { user: { id: 'u1' } }
+        return { user: mockUser }
       },
     },
   }),
@@ -35,7 +37,42 @@ const { webhooksController } = await import(
 describe('webhooksController', () => {
   const app = new Elysia().use(webhooksController)
 
-  beforeEach(() => vi.clearAllMocks())
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockUser = { id: 'u1' }
+  })
+
+  it('only lets super-admins subscribe to tenant lifecycle events (HS-08)', async () => {
+    mockWebhooksService.create.mockResolvedValue({ success: true, data: { id: 'w1' } })
+    const post = () =>
+      app.handle(
+        new Request('http://localhost/api/admin/webhooks', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ url: 'https://x.com', events: ['tenant.created'] }),
+        })
+      )
+
+    mockUser = { id: 'u1', email: 'editor@example.com', role: 'editor' }
+    await post()
+    expect(mockWebhooksService.create).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      expect.anything(),
+      { allowTenantLifecycleEvents: false }
+    )
+
+    mockUser = { id: 'u2', email: 'root@example.com', role: 'superadmin' }
+    await post()
+    expect(mockWebhooksService.create).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      undefined,
+      expect.anything(),
+      { allowTenantLifecycleEvents: true }
+    )
+  })
 
   it('POST / returns 201 on success and 400 on failure', async () => {
     mockWebhooksService.create.mockResolvedValueOnce({ success: true, data: { id: 'w1' } })

@@ -29,7 +29,9 @@ export const tenantsKeys = {
 /**
  * Type definitions for tenant entities
  */
-export type TenantStatus = 'active' | 'suspended'
+/** HS-04: `suspended` locks admin but keeps public reads; `pending`/`disabled` block all but super-admins. */
+export const TENANT_STATUSES = ['pending', 'active', 'suspended', 'disabled'] as const
+export type TenantStatus = (typeof TENANT_STATUSES)[number]
 export const TENANT_USER_ROLES = ['owner', 'admin', 'member'] as const
 export type TenantUserRole = (typeof TENANT_USER_ROLES)[number]
 const tenantUserRoleSchema = z.enum(TENANT_USER_ROLES)
