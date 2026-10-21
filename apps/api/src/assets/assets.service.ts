@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm'
-import { estimateDecodedSize } from './base64-size'
+import { estimateDecodedSize, storedAssetBytes } from './storage-bytes'
 import type { Database } from '@/database/db'
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
@@ -58,11 +58,6 @@ async function runInChunks<T>(items: T[], chunkSize: number, fn: (item: T) => Pr
 function bytesFromBase64(base64: string): Uint8Array {
   const buf = Buffer.from(base64, 'base64')
   return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
-}
-
-/** Stored bytes of an asset: original plus variants. */
-function storedAssetBytes(asset: { size?: number | null; variants?: Array<{ fileSize?: number | null }> }) {
-  return (asset.size ?? 0) + (asset.variants ?? []).reduce((v, variant) => v + (variant.fileSize ?? 0), 0)
 }
 
 

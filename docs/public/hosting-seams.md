@@ -102,9 +102,9 @@ Users enrol an authenticator app with recovery codes under **Settings → Profil
 | Metric | Quantity |
 | --- | --- |
 | `public_reads` | 1 per successful public REST or GraphQL read the Worker served. Reads answered by the CDN never reach the Worker and are not counted. |
-| `admin_mutations` | 1 per executed command (a transaction counts once). Dry runs and failed commands are not counted. |
+| `admin_mutations` | 1 per executed command (a transaction counts once). Dry runs, failed commands and idempotent replays are not counted. |
 | `ai_tokens` | Input plus output tokens of one model call; `detail` is the model tier (`nano`, `mid`, `heavy`). |
-| `media_bytes` | Signed change in stored bytes (original plus variants): `+` on upload, `-` when an asset is deleted. Soft-deleted assets stop counting even though R2 keeps them until garbage collection. |
+| `media_bytes` | Signed change in stored bytes (original plus image variants): `+` on upload, `-` when an asset is deleted. Soft-deleted assets stop counting even though R2 keeps them until garbage collection. |
 | `entries` | Signed change in entry count: `+1` per `createEntry`, `-1` per `deleteEntry`, including inside transactions. |
 
 Commands sent through the admin API, MCP and AI routes are metered. Imports and scheduled publishing are not. Global (non-tenant) routes are not metered, because there is no tenant to attribute them to.
@@ -113,7 +113,7 @@ Recording never fails or slows a request. The framework hands each batch to `wai
 
 ### D1 daily rollups
 
-`createD1UsageRollupSink({ db: env.DB })` sums events into `usage_daily` (tenant, UTC day, metric, detail). Migration `0035_usage_daily.sql` creates the table; apply it with the other migrations. The sink buffers in the isolate and writes one D1 batch at most every 10 s (`flushIntervalMs`), or sooner once 50 rows are pending (`maxBufferedRows`). A failed flush keeps its rows for the next one. Counts still in the buffer when an isolate is evicted are lost, so treat these rollups as approximate. For billing-grade counts, send events to a Queue and aggregate them there.
+`createD1UsageRollupSink({ db: env.DB })` sums events into `usage_daily` (tenant, UTC day, metric, detail). Migration `0035_usage_daily.sql` creates the table; apply it with the other migrations. The sink buffers in the isolate. When an event arrives at least 10 s (`flushIntervalMs`) after the last write, or once 50 rows are pending (`maxBufferedRows`), it writes the buffer in one D1 batch. There is no timer, so rows wait in the buffer until the next event arrives; call `flush()` yourself if you need them written sooner. A failed flush keeps its rows for the next one. Counts still in the buffer when an isolate is evicted are lost, so treat these rollups as approximate. For billing-grade counts, send events to a Queue and aggregate them there.
 
 ## Limit policy (HS-06)
 
@@ -163,4 +163,6 @@ Every API request except health checks and `/api/docs` is rate limited per calle
 
 On tenant routes (`/api/tenants/:tenantSlug/...`), `host.rateLimits({ tenantSlug, category, defaultPolicy })` can return `{ windowMs, limit, tenantLimit?, upgradeUrl? }`. Buckets are keyed by tenant, so one tenant's traffic never uses another tenant's budget. `limit` applies per caller. `tenantLimit` is an optional budget shared by all callers of that tenant in the category. Return nothing to keep the framework policy.
 
-The slug comes from the URL and is not yet verified, so a request for an unknown tenant reaches your resolver too. Results are cached per app instance for 30 s, per tenant and category. Invalid policies (non-positive or non-integer numbers) and a resolver that throws fall back to the framework policy. Over-limit requests get `429 RATE_LIMITED` with `Retry-After` and `details: { dimension: <category>, kind: 'rate', scope: 'caller' | 'tenant', limit, retryAfterSeconds, upgradeUrl? }`.
+Counters live in isolate memory and KV without atomic increments, the same as the framework policies. Under concurrent traffic across isolates, the effective budget can exceed `limit` and `tenantLimit`. For exact enforcement, apply the limit in the host with a Durable Object or Cloudflare's rate limiting binding.
+
+The slug comes from the URL and is not yet verified, so a request for an unknown tenant reaches your resolver too. Answer unknown slugs quickly (for example from a cached tenant list). Results are cached per app instance for 30 s, per tenant and category. Invalid policies (non-positive or non-integer numbers) and a resolver that throws fall back to the framework policy. Over-limit requests get `429 RATE_LIMITED` with `Retry-After` and `details: { dimension: <category>, kind: 'rate', scope: 'caller' | 'tenant', limit, retryAfterSeconds, upgradeUrl? }`.

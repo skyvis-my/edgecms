@@ -172,6 +172,24 @@ describe('HS-05 public read metering', () => {
     expect(sink.events).toHaveLength(3)
   })
 
+  it('sees the tenant from a plugin-scoped derive inside a tenant group, like tenantMiddleware', async () => {
+    const sink = collectingSink()
+    const tenantPlugin = new Elysia({ name: 'tenant-like' }).derive('plugin', ({ params }) =>
+      (params as { tenantSlug?: string }).tenantSlug === 'acme'
+        ? { tenant: { tenant: acme, resources: { mode: 'shared' as const } } }
+        : {}
+    )
+    const routes = new Elysia().get('/api/public/articles', () => ({ success: true }))
+    const app = new Elysia()
+      .use(createHostRuntimePlugin(createHostRuntime({ usageSink: sink })))
+      .group('/api/tenants/:tenantSlug', (group) => group.use(tenantPlugin).use(routes))
+
+    const res = await app.handle(new Request('http://x/api/tenants/acme/api/public/articles'))
+    expect(res.status).toBe(200)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(sink.events.map((e) => [e.tenantId, e.metric])).toEqual([['t-acme', 'public_reads']])
+  })
+
   it('a failing sink does not fail the public read', async () => {
     const app = publicApp(
       createHostRuntime({
@@ -498,6 +516,20 @@ describe('HS-05/HS-06 command hooks', () => {
     ])
   })
 
+  it('does not meter an idempotent replay of an earlier run', async () => {
+    const { runtime, sink } = runtimeWith(() => true)
+    const source = waitUntilSource()
+    const hooks = createCommandHostHooks(runtime, { source, tenant: acme })!
+    const replayed = envelope('createEntry', { idempotencyKey: 'k1' })
+    await hooks.beforeExecute!(replayed)
+    hooks.afterExecute!(replayed, {
+      ...success('createEntry'),
+      executedAt: new Date(Date.now() - 60_000).toISOString(),
+    })
+    await source.settle()
+    expect(sink.events).toHaveLength(0)
+  })
+
   it('global routes are neither limited nor metered', () => {
     const { runtime } = runtimeWith(() => false)
     expect(createCommandHostHooks(runtime, { source: undefined, tenant: undefined })).toBeUndefined()
@@ -585,5 +617,29 @@ describe('HS-06 tenant creation quota', () => {
   it('keeps today behavior without a limits provider', async () => {
     const result = await tenantsService.authorizeCreation(actor, resolveHostPolicies())
     expect(result).toEqual({ success: true, data: { initialStatus: 'active' } })
+  })
+})
+
+describe('HS-05/HS-06 media byte measures', () => {
+  it('estimates only the variants the service stores (images) and meters stored rows', async () => {
+    const { estimateUploadBytes, storedAssetBytes } = await import('@/assets/storage-bytes')
+    const fourBytes = btoa('abcd')
+    expect(
+      estimateUploadBytes({
+        filename: 'a.png',
+        mimeType: 'image/png',
+        contentBase64: fourBytes,
+        variants: [{ contentBase64: fourBytes }, {}],
+      })
+    ).toBe(8)
+    expect(
+      estimateUploadBytes({
+        filename: 'a.pdf',
+        mimeType: 'application/pdf',
+        contentBase64: fourBytes,
+        variants: [{ contentBase64: fourBytes }],
+      })
+    ).toBe(4)
+    expect(storedAssetBytes({ size: 10, variants: [{ fileSize: 3 }, { fileSize: null }] })).toBe(13)
   })
 })

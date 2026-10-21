@@ -69,7 +69,12 @@ export function createTenantRateLimitResolver(
       })
       policy = defaultPolicy
     }
-    if (cache.size >= MAX_CACHE_ENTRIES) cache.clear()
+    // Evict the oldest entry only, so unknown slugs cannot flush every tenant's policy.
+    if (cache.size >= MAX_CACHE_ENTRIES) {
+      const oldest = cache.keys().next().value
+      if (oldest !== undefined) cache.delete(oldest)
+    }
+    cache.delete(key)
     cache.set(key, { policy, expiresAt: at + CACHE_TTL_MS })
     return policy
   }

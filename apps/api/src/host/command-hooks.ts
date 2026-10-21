@@ -59,9 +59,13 @@ export function createCommandHostHooks(
   const tenant = options.tenant ? toLimitTenant(options.tenant) : undefined
   if (!tenant) return undefined
   const actor = options.actorId ? { userId: options.actorId } : undefined
+  // When each envelope started. A result executed before that is an
+  // idempotent replay of an earlier run and was already metered.
+  const startedAt = new WeakMap<CommandEnvelope, number>()
 
   return {
     async beforeExecute(envelope) {
+      startedAt.set(envelope, Date.now())
       const exceeded = await runtime.limits.check(options.source, {
         dimension: 'commands',
         amount: 1,
@@ -81,7 +85,9 @@ export function createCommandHostHooks(
       }
       return undefined
     },
-    afterExecute(_envelope, result) {
+    afterExecute(envelope, result) {
+      const started = startedAt.get(envelope)
+      if (started !== undefined && Date.parse(result.executedAt) < started) return
       const done = succeeded(result)
       if (done.length === 0) return
       const entryDelta = done.reduce(

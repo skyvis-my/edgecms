@@ -10,7 +10,7 @@ import {
   normalizeAllowedAssetMimeTypes,
   type UploadAssetInput,
 } from './assets.service'
-import { estimateDecodedSize } from './base64-size'
+import { estimateUploadBytes, storedAssetBytes } from './storage-bytes'
 import { createErrorEnvelope } from '@/shared/utils/service-response'
 import { getHostRuntime } from '@/host/host-context'
 import { respondLimitExceeded, toLimitTenant } from '@/host/limits'
@@ -245,18 +245,10 @@ export const assetsController = new Elysia({ prefix: '/api/admin/assets' })
             ? ((ctx as { user?: { id?: string } }).user?.id ?? undefined)
             : undefined
         const hostRuntime = getHostRuntime(ctx.request)
-        // Original plus browser-made variants: what this upload adds to storage.
-        const uploadBytes =
-          estimateDecodedSize(uploadInput.contentBase64) +
-          (uploadInput.variants ?? []).reduce(
-            (sum, variant) =>
-              sum + (variant.contentBase64 ? estimateDecodedSize(variant.contentBase64) : 0),
-            0
-          )
         if (tenantCtx?.tenant) {
           const exceeded = await hostRuntime.limits.check(ctx, {
             dimension: 'media_bytes',
-            amount: uploadBytes,
+            amount: estimateUploadBytes(uploadInput),
             tenant: toLimitTenant(tenantCtx.tenant),
             ...(actorId && { actor: { userId: actorId } }),
           })
@@ -276,12 +268,13 @@ export const assetsController = new Elysia({ prefix: '/api/admin/assets' })
             maxUploadDimension,
             allowedMimeTypes
           )
-          if (tenantCtx?.tenant) {
+          // Meter what was stored, the same measure deletes subtract.
+          if (tenantCtx?.tenant && asset) {
             hostRuntime.usage.record(ctx, {
               tenantId: tenantCtx.tenant.id,
               tenantSlug: tenantCtx.tenant.slug,
               metric: 'media_bytes',
-              quantity: uploadBytes,
+              quantity: storedAssetBytes(asset),
             })
           }
           ctx.set.status = 201

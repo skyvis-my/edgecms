@@ -120,12 +120,21 @@ export const aiController = new Elysia({ prefix: '/api/admin/ai' })
         const limitFailure = (result.results ?? []).find((r) => getCommandLimitError(r))
         const limitError = limitFailure && getCommandLimitError(limitFailure)
         if (limitFailure?.error && limitError) {
+          // Commands before the rejected one already ran; keep their results.
           set.status = limitError.status
-          return createErrorEnvelope(
-            limitFailure.error.code,
-            limitFailure.error.message,
-            limitError.details
-          )
+          return {
+            ...createErrorEnvelope(
+              limitFailure.error.code,
+              limitFailure.error.message,
+              limitError.details
+            ),
+            data: {
+              commands: result.commands,
+              explanation: result.explanation,
+              results: result.results ?? [],
+              previewReceipt: result.previewReceipt,
+            },
+          }
         }
         set.status = 500
         return {

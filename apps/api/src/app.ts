@@ -64,7 +64,7 @@ import { createTenantsController } from '@/tenants/tenants.controller'
 import { type HostPolicies, resolveHostPolicies } from '@/host/host-policies'
 import { createTenantEventPublisher } from '@/host/tenant-events'
 import { invitesController } from '@/invites/invites.controller'
-import { createHostRuntime, createHostRuntimePlugin, getHostRuntime } from '@/host/host-context'
+import { createHostRuntime, createHostRuntimePlugin } from '@/host/host-context'
 import { createTenantRateLimitResolver } from '@/host/rate-limits'
 import { usersRepository } from '@/users/users.repository'
 import { API_VERSION } from '@/version'
@@ -174,8 +174,12 @@ export const createApp = (options: CreateAppOptions = {}) => {
   const host = resolveHostPolicies(options.host)
   if (options.host?.auth) configureAuthPolicies(options.host.auth)
   const tenantEvents = createTenantEventPublisher(host)
-  const scopedTenantsController = createTenantsController({ host, events: tenantEvents })
   const hostRuntime = createHostRuntime(host, tenantEvents)
+  const scopedTenantsController = createTenantsController({
+    host,
+    events: tenantEvents,
+    limits: hostRuntime.limits,
+  })
 
   const coreRoutes = createCoreApiRoutes({
     scopedPluginsController,
@@ -358,7 +362,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
             }
           }
         })
-        .post('/api/bootstrap/provision-tenant', { auth: true }, async ({ user, set, request }) => {
+        .post('/api/bootstrap/provision-tenant', { auth: true }, async ({ user, set }) => {
           const db = createDb((env as Env).DB)
           const result = await ensureUserHasOnboardingTenant(
             db,
@@ -366,7 +370,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
             {
               host,
               events: tenantEvents,
-              limits: getHostRuntime(request).limits,
+              limits: hostRuntime.limits,
               isSuperAdmin: isSuperAdminUser(
                 user as { email: string; emailVerified?: boolean; role?: unknown },
                 env as Env
