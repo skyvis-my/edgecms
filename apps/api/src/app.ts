@@ -19,7 +19,7 @@ import {
 import { rbacController } from '@/auth/rbac.controller'
 import { auditTrailPlugin } from '@/audit/audit-trail.plugin'
 import { privacyController } from '@/privacy/privacy.controller'
-import { resolveAuthPolicies } from '@/auth/auth-policies'
+import { configureAuthPolicies, resolveAuthPolicies } from '@/auth/auth-policies'
 import {
   isMfaVerifiedSession,
   MFA_REQUIRED_CODE,
@@ -170,6 +170,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
     : createLoadedPluginRoutesController()
 
   const host = resolveHostPolicies(options.host)
+  if (options.host?.auth) configureAuthPolicies(options.host.auth)
   const tenantEvents = createTenantEventPublisher(host)
   const scopedTenantsController = createTenantsController({ host, events: tenantEvents })
 

@@ -239,7 +239,12 @@ describe('tenantsController (repo-backed)', () => {
         })
       )
       expect(response.status).toBe(200)
-      expect(mockService.update).toHaveBeenCalledWith(mockDb, 't1', { requireMfa: true })
+      expect(mockService.update).toHaveBeenCalledWith(
+        mockDb,
+        't1',
+        { requireMfa: true },
+        expect.anything()
+      )
       expect([...kvStore.keys()].some((key) => key.includes('t1'))).toBe(true)
     } finally {
       mockEnv.CACHE = previousCache

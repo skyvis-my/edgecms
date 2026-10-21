@@ -19,6 +19,7 @@ mock.module('../../tenants/tenants.repository', () => ({
 const mockGetSession = vi.fn()
 mock.module('@/auth/auth', () => ({
   createAuth: () => ({ api: { getSession: mockGetSession } }),
+  createAuthForEnv: () => ({ api: { getSession: mockGetSession } }),
 }))
 
 const { Elysia: MockElysia } = await import('elysia')

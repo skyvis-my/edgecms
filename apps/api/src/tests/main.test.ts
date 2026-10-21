@@ -1061,3 +1061,23 @@ describe('better-auth passthrough', () => {
     })
   })
 })
+
+describe('createApp host.auth (HS-01 / HS-11)', () => {
+  it('applies auth policies passed at composition time', async () => {
+    const appModule = await importAppModule()
+    const policies = await import('@/auth/auth-policies')
+    try {
+      const sender = { send: async () => {} }
+      appModule.createApp({
+        host: { auth: { signupPolicy: 'invite-only', emailSender: sender, requireMfaForSuperAdmins: true } },
+      })
+      expect(policies.resolveAuthPolicies({ SIGNUP_POLICY: 'open' })).toEqual({
+        signupPolicy: 'invite-only',
+        emailSender: sender,
+        requireMfaForSuperAdmins: true,
+      })
+    } finally {
+      policies.__resetAuthPoliciesForTests()
+    }
+  })
+})
