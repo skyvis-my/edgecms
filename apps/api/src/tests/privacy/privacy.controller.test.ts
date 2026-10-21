@@ -10,10 +10,11 @@ vi.mock('cloudflare:workers', () => ({
 }))
 vi.mock('@/database/db', () => ({ createDb: (): Database => fixture.db }))
 
-const USERS: Record<string, { id: string; email: string; role: string }> = {
-  alice: { id: 'alice', email: 'alice@example.com', role: 'editor' },
-  bob: { id: 'bob', email: 'bob@example.com', role: 'admin' },
-  root: { id: 'root', email: 'root@example.com', role: 'viewer' },
+const USERS: Record<string, { id: string; email: string; emailVerified: boolean; role: string }> = {
+  alice: { id: 'alice', email: 'alice@example.com', emailVerified: true, role: 'editor' },
+  bob: { id: 'bob', email: 'bob@example.com', emailVerified: true, role: 'admin' },
+  root: { id: 'root', email: 'root@example.com', emailVerified: true, role: 'viewer' },
+  'root-unverified': { id: 'root-2', email: 'root@example.com', emailVerified: false, role: 'viewer' },
 }
 
 vi.mock('@/auth/auth.middleware', () => ({
@@ -61,6 +62,10 @@ describe('privacyController', () => {
     expect(fixture.sqlite.query(`SELECT COUNT(*) n FROM user WHERE id = 'alice'`).get()).toEqual({
       n: 1,
     })
+  })
+
+  it('denies an unverified SUPER_ADMIN_EMAILS address', async () => {
+    expect((await call('root-unverified', 'GET', '/api/admin/users/alice/data-export')).status).toBe(403)
   })
 
   it('lets super-admins export and delete any user', async () => {
