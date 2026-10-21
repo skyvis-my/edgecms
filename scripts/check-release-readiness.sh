@@ -122,6 +122,10 @@ API_VERSION_FILE="$REPO_ROOT/apps/api/src/version.ts"
 WRANGLER_FILE="$REPO_ROOT/apps/api/wrangler.toml"
 API_PACKAGE_JSON="$REPO_ROOT/apps/api/package.json"
 PRODUCTION_ENV="production"
+# RELEASE_SCOPE=library checks a framework release (versions, CHANGELOG, wrangler
+# environments) and skips hosting checks: the public repo keeps placeholder IDs
+# and no deploy workflows by design. The default scope checks a hosted deploy.
+RELEASE_SCOPE="${RELEASE_SCOPE:-hosted}"
 
 if [ ! -f "$ROOT_PACKAGE_JSON" ]; then
   fail "package.json exists" "missing file: package.json"
@@ -168,11 +172,13 @@ else
 fi
 
 if [ -f "$WRANGLER_FILE" ]; then
-  PLACEHOLDER_MATCHES="$(grep -n -E "STAGING_DATABASE_ID|STAGING_KV_NAMESPACE_ID|PRODUCTION_DATABASE_ID|PRODUCTION_KV_NAMESPACE_ID" "$WRANGLER_FILE" || true)"
-  if [ -z "$PLACEHOLDER_MATCHES" ]; then
-    pass "wrangler.toml Cloudflare binding placeholders removed"
-  else
-    fail "wrangler.toml Cloudflare binding placeholders removed" "$PLACEHOLDER_MATCHES"
+  if [ "$RELEASE_SCOPE" != "library" ]; then
+    PLACEHOLDER_MATCHES="$(grep -n -E "STAGING_DATABASE_ID|STAGING_KV_NAMESPACE_ID|PRODUCTION_DATABASE_ID|PRODUCTION_KV_NAMESPACE_ID" "$WRANGLER_FILE" || true)"
+    if [ -z "$PLACEHOLDER_MATCHES" ]; then
+      pass "wrangler.toml Cloudflare binding placeholders removed"
+    else
+      fail "wrangler.toml Cloudflare binding placeholders removed" "$PLACEHOLDER_MATCHES"
+    fi
   fi
 
   if grep -q -E "^\[env\.${PRODUCTION_ENV}\]" "$WRANGLER_FILE"; then
@@ -198,8 +204,10 @@ else
   fail "apps/api/package.json exists" "missing file: apps/api/package.json"
 fi
 
-check_deploy_workflow_gate ".github/workflows/deploy-staging.yml" "deploy:staging"
-check_deploy_workflow_gate ".github/workflows/deploy-production.yml" "deploy:production"
+if [ "$RELEASE_SCOPE" != "library" ]; then
+  check_deploy_workflow_gate ".github/workflows/deploy-staging.yml" "deploy:staging"
+  check_deploy_workflow_gate ".github/workflows/deploy-production.yml" "deploy:production"
+fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
