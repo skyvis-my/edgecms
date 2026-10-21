@@ -1,4 +1,5 @@
 import type { Database } from '@/database/db'
+import { isTenantAiEnabled } from './ai-access'
 import type { Env } from '@/env'
 import { entriesRepository } from '@/entries/entries.repository'
 import { collectionsRepository } from '@/collections/collections.repository'
@@ -122,6 +123,10 @@ export const ragService = {
     tenantId?: string
   ): Promise<boolean> {
     try {
+      // HS-14: published content is not embedded for tenants with AI turned off.
+      if (!(await isTenantAiEnabled({ db, workerEnv: env, tenantId }))) {
+        return false
+      }
       const entry = await entriesRepository.findById(db, entryId, tenantId)
       if (!entry || entry.status !== 'published') {
         return false
@@ -184,6 +189,7 @@ export const ragService = {
     const { db, env, query, tenantId, collectionSlug, limit = 5 } = params
     const cleanQuery = query.trim()
     if (!cleanQuery) return []
+    if (!(await isTenantAiEnabled({ db, workerEnv: env, tenantId }))) return []
 
     const queryVector = await getEmbedding(env, cleanQuery)
 

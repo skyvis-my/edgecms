@@ -24,6 +24,14 @@ export const tenants = sqliteTable(
     mediaAllowedMimeTypes: text('mediaAllowedMimeTypes', { mode: 'json' })
       .notNull()
       .$type<string[]>(),
+    /**
+     * HS-14: AI features (and the providers they send content to) for this
+     * tenant. New tenants start disabled; migration 0033 keeps existing
+     * tenants enabled so upgrades do not change behavior.
+     */
+    aiEnabled: integer('aiEnabled', { mode: 'boolean' })
+      .notNull()
+      .$defaultFn(() => false),
     /** ISO 8601 timestamp. */
     createdAt: text('createdAt').notNull(),
     /** ISO 8601 timestamp. */

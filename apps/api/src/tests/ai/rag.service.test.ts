@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'bun:test'
 import type { Database } from '@/database/db'
 import type { Env } from '@/env'
+import { aiSwitchD1 } from './ai-enabled-d1'
 import {
   extractTextFromContent,
   getEmbedding,
@@ -125,6 +126,7 @@ describe('Vectorize Content RAG Pipeline (C-18)', () => {
         ASSET_VECTORS: {
           upsert: mockUpsert,
         },
+        DB: aiSwitchD1(true),
       } as unknown as Env
 
       const indexed = await ragService.indexPublishedEntry(mockDb, mockEnv, 'entry-published', 'tenant-1')
@@ -134,6 +136,13 @@ describe('Vectorize Content RAG Pipeline (C-18)', () => {
       expect(upsertArgs[0]!.id).toBe('content:tenant-1:entry-published')
       expect(upsertArgs[0]!.metadata.title).toBe('Building Edge CMS')
       expect(upsertArgs[0]!.metadata.collectionSlug).toBe('articles')
+
+      // HS-14: the same entry is not embedded while the tenant's AI switch is off.
+      mockUpsert.mockClear()
+      const offEnv = { ...mockEnv, DB: aiSwitchD1(false) } as unknown as Env
+      const offResult = await ragService.indexPublishedEntry(mockDb, offEnv, 'entry-published', 'tenant-1')
+      expect(offResult).toBe(false)
+      expect(mockUpsert).not.toHaveBeenCalled()
     })
   })
 
@@ -169,6 +178,7 @@ describe('Vectorize Content RAG Pipeline (C-18)', () => {
         ASSET_VECTORS: {
           query: mockQuery,
         },
+        DB: aiSwitchD1(true),
       } as unknown as Env
 
       const results = await ragService.searchRag({

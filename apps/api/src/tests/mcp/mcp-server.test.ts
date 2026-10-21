@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'bun:test'
 import type { Database } from '@/database/db'
 import type { CommandContext } from '@/commands/engine'
+import type { Env } from '@/env'
+import { aiSwitchD1 } from '../ai/ai-enabled-d1'
 import { processMcpMessage, MCP_TOOLS } from '@/mcp/mcp-server'
 import { collectionsRepository } from '@/collections/collections.repository'
 import { entriesRepository } from '@/entries/entries.repository'
@@ -38,6 +40,8 @@ describe('Native MCP Server Adapter Gated by Command Engine (C-01)', () => {
       source: 'ai',
     },
     tenantScope: 'tenant-smoke',
+    // HS-14: the tenant's AI switch is on for these tool tests.
+    env: { DB: aiSwitchD1(true) } as unknown as Env,
   }
 
   beforeEach(() => {

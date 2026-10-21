@@ -1,5 +1,6 @@
 import { Elysia, type AnyElysia } from 'elysia'
 import { aiController } from '@/ai/ai.controller'
+import { aiSettingsController } from '@/ai/ai-settings.controller'
 import { assetsController } from '@/assets/assets.controller'
 import { auditController } from '@/audit/audit.controller'
 import { cacheStatsController } from '@/cache/cache-stats.controller'
@@ -31,6 +32,7 @@ export function createCoreApiRoutes(options: CoreApiRoutesOptions) {
     .use(graphqlController)
     .use(assetsController)
     .use(aiController)
+    .use(aiSettingsController)
     .use(collectionsController)
     .use(commandsController)
     .use(entriesController)

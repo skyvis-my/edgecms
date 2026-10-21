@@ -1,6 +1,7 @@
 import { Elysia, t } from 'elysia'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
 import { withTenantBindings } from '@/tenants/with-tenant-bindings'
+import { AI_DISABLED_CODE, AI_DISABLED_MESSAGE, isTenantAiEnabled } from './ai-access'
 import { executeGeneratedCommands, runAiWorkflow } from './ai.service'
 import { aiImportsController, isAiImportReviewEnabled, aiImportReviewDisabled } from './ai-imports.controller'
 import { getRequestPathname } from '@/shared/utils/request-url'
@@ -26,6 +27,12 @@ export { isAiImportReviewEnabled, aiImportReviewDisabled }
 export const aiController = new Elysia({ prefix: '/api/admin/ai' })
   .use(betterAuthPlugin)
   .use(withTenantBindings)
+  // HS-14: every AI and AI-import route below is refused while the tenant's switch is off.
+  .onBeforeHandle(async ({ tenantCtx, workerEnv, db, set }) => {
+    if (await isTenantAiEnabled({ db, workerEnv, tenantId: tenantCtx?.tenant.id })) return
+    set.status = 403
+    return createErrorEnvelope(AI_DISABLED_CODE, AI_DISABLED_MESSAGE)
+  })
   .use(aiImportsController)
 
   /**

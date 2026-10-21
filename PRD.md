@@ -185,7 +185,7 @@ Generic hooks that let anyone run EdgeCMS as a multi-customer service, including
 | **HS-11** | Multi-factor authentication (TOTP and recovery codes through Better Auth), with a per-tenant "require MFA" setting and a deployment-wide requirement for super-admins. The admin has an OTP screen but the API does not verify a second factor yet. | Planned |
 | **HS-12** | Audit log hardening: hash-chained entries for tamper evidence, configurable retention (at least 1 year), per-tenant export, and coverage of sign-ins, permission changes and super-admin actions as well as commands. See [operations and security](docs/public/operations-security.md#audit-ledger-hs-12). | Shipped |
 | **HS-13** | Personal data requests: export and delete one user's personal data (account, sessions, memberships, authored-by references pseudonymized) with an audit receipt. See [operations and security](docs/public/operations-security.md#personal-data-requests-hs-13). | Shipped |
-| **HS-14** | Per-tenant AI switch: AI features and the providers they send content to are disabled until a tenant admin enables them, and the admin shows which providers will receive content. | Planned |
+| **HS-14** | Per-tenant AI switch: AI features and the providers they send content to are disabled until a tenant admin enables them, and the admin shows which providers will receive content. New tenants start off; migration `0033` keeps existing tenants on. See [AI command safety](docs/public/ai-command-safety.md#per-tenant-ai-switch-hs-14). | Shipped |
 
 ## 11. Adoption and operations
 
