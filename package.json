@@ -62,6 +62,7 @@
     "check:tests": "bun run test:api && bun run test:admin && bun run test:scripts && bun run test:schemas && bun run test:create-app && bun run test:runtime && bun run test:plugin-sdk && bun run test:client",
     "check:lint": "bun run lint",
     "check:release": "bash scripts/check-release-readiness.sh",
+    "check:release:library": "RELEASE_SCOPE=library bash scripts/check-release-readiness.sh",
     "check:package": "bun run --filter create-edgecms-app check:package && bun run --filter @edgecms/plugin-sdk check && bun run --filter @edgecms/runtime check && bun run --filter @edgecms/client check",
     "publish:packages": "bun scripts/publish-packages.ts --publish",
     "publish:packages:dry-run": "bun scripts/publish-packages.ts --dry-run",

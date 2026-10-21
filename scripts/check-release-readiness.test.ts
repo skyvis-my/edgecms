@@ -329,4 +329,35 @@ describe('check-release-readiness.sh', () => {
     expect(stdout).toContain('[FAIL] package.json wires local public read perf proof')
     expect(stdout).toContain('missing script perf:public-read:local')
   })
+
+  it('library scope skips hosting checks but keeps version checks', async () => {
+    const fixtureRoot = await createFixture()
+    createdRoots.push(fixtureRoot)
+    const { rm, readFile, writeFile: write } = await import('node:fs/promises')
+    await rm(path.join(fixtureRoot, '.github/workflows/deploy-staging.yml'))
+    await rm(path.join(fixtureRoot, '.github/workflows/deploy-production.yml'))
+    const wranglerPath = path.join(fixtureRoot, 'apps/api/wrangler.toml')
+    await write(wranglerPath, `${await readFile(wranglerPath, 'utf8')}\n# database_id = "STAGING_DATABASE_ID"\n`)
+
+    const run = async (env: Record<string, string>) => {
+      const proc = Bun.spawn(['bash', 'scripts/check-release-readiness.sh', fixtureRoot], {
+        cwd: process.cwd(),
+        env: { ...process.env, ...env },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      const stdout = await new Response(proc.stdout).text()
+      return { stdout, exitCode: await proc.exited }
+    }
+
+    const library = await run({ RELEASE_SCOPE: 'library' })
+    expect(library.exitCode).toBe(0)
+    expect(library.stdout).toContain('[PASS] package.json version: 0.1.0')
+    expect(library.stdout).not.toContain('deploy-staging.yml')
+    expect(library.stdout).not.toContain('placeholders removed')
+
+    const hosted = await run({ RELEASE_SCOPE: 'hosted' })
+    expect(hosted.exitCode).toBe(1)
+    expect(hosted.stdout).toContain('[FAIL] wrangler.toml Cloudflare binding placeholders removed')
+  })
 })
