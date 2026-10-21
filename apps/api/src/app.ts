@@ -18,6 +18,7 @@ import {
 } from '@/auth/csrf.middleware'
 import { rbacController } from '@/auth/rbac.controller'
 import { auditTrailPlugin } from '@/audit/audit-trail.plugin'
+import { privacyController } from '@/privacy/privacy.controller'
 import { hasSuperAdminRole, isSuperAdminEmail, parseSuperAdminEmails } from '@/auth/super-admin'
 import { ensureUserHasOnboardingTenant } from '@/bootstrap/onboarding-tenant'
 import { createErrorEnvelope, toServiceResponse } from '@/shared/utils/service-response'
@@ -266,6 +267,9 @@ export const createApp = (options: CreateAppOptions = {}) => {
 
         // Global admin routes — tenant management (super-admin)
         .use(tenantsController)
+
+        // HS-13 personal data requests (global only)
+        .use(privacyController)
 
         // Global routes (backward compatibility for single-tenant deployments)
         .use(coreRoutes)
