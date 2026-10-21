@@ -46,7 +46,12 @@ jobs:
       - name: Publish packages
         run: |
           if [ "${{ github.event_name == 'release' || inputs.dry_run == false }}" = "true" ]; then
-            bun run publish:packages
+            if [ -z "$NPM_TOKEN" ]; then
+              echo "::notice::NPM_TOKEN is not set, so packages were qualified but not published to npm."
+              bun run publish:packages:dry-run
+            else
+              bun run publish:packages
+            fi
           else
             bun run publish:packages:dry-run
           fi
