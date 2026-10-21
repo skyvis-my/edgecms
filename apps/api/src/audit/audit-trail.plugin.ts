@@ -52,6 +52,8 @@ export function classifyAdminAuditRequest(pathname: string, method: string): Adm
   if (!rest) return null
   const area = rest.split('/')[0] ?? ''
   if (!AUDITED_AREAS.has(area)) return null
+  // Personal data requests write their own pseudonymized receipt (HS-13).
+  if (/^users\/[^/]+\/data-(export|deletion)\/?$/.test(rest)) return null
   if (area === 'audit' ? method !== 'GET' : !MUTATING_METHODS.has(method)) return null
 
   const scope = tenantMatch ? { tenantSlug: safeDecode(tenantMatch[1]!) } : 'global'

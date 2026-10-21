@@ -33,6 +33,11 @@ describe('CSRF Middleware', () => {
       expect(requiresCsrf('/api/tenants/acme/admin/entries/456', 'DELETE')).toBe(true)
     })
 
+    it('returns true for self-service account mutations (HS-13)', () => {
+      expect(requiresCsrf('/api/me/data-deletion', 'POST')).toBe(true)
+      expect(requiresCsrf('/api/me/data-export', 'GET')).toBe(false)
+    })
+
     it('returns false for non-admin mutations', () => {
       expect(requiresCsrf('/api/auth/login', 'POST')).toBe(false)
       expect(requiresCsrf('/api/tenants/acme/public/entries', 'POST')).toBe(false)

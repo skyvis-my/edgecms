@@ -27,7 +27,12 @@ export type CsrfCookieOptions = {
 
 export function requiresCsrf(pathname: string, method: string): boolean {
   if (SAFE_METHODS.has(method)) return false
-  return pathname.startsWith('/api/admin/') || pathname.includes('/admin/')
+  return (
+    pathname.startsWith('/api/admin/') ||
+    pathname.includes('/admin/') ||
+    // HS-13: self-service account deletion
+    pathname.startsWith('/api/me/')
+  )
 }
 
 function timingSafeEqual(a: string, b: string): boolean {
