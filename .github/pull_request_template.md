@@ -1,6 +1,9 @@
 ## Summary
 
 
+PRD: <!-- requirement IDs from PRD.md, e.g. DL-08, P5; or n/a for chores. Run /prd-check to find them. -->
+
+
 ## Verification
 
 - [ ] `bun run check:merge-markers`

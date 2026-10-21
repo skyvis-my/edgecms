@@ -105,6 +105,10 @@ Routes requiring auth use the `{ auth: true }` macro which resolves `user` and `
 - `routeTree.gen.ts` is auto-generated — never edit manually
 - **Best Practices:** See `docs/best-practices.md` for project-wide conventions and `docs/elysia-typescript-backend-api-best-practices.md` for ElysiaJS + TypeScript backend API standards.
 
+## Product Direction
+
+Every feature must fit `PRD.md`. Run `/prd-check <feature>` before building and `/prd-check` on the diff before opening a PR; follow its verdict. Full rules: `AGENTS.md` → Product Direction.
+
 ## Key Constraints
 
 - **Cloudflare Workers compatibility:** `compatibility_date >= 2025-06-01` required for ElysiaJS CloudflareAdapter. Use `nodejs_compat` flag.

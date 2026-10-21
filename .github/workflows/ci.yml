@@ -18,6 +18,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prd-reference:
+    name: PRD reference
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Check PR cites PRD.md
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: bun scripts/check-prd-reference.ts
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -104,7 +120,7 @@ jobs:
 
   e2e-smoke:
     name: E2E Smoke (Playwright)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [lint, typecheck, test]
     steps:
       - uses: actions/checkout@v4
@@ -132,7 +148,7 @@ jobs:
 
   remote-e2e-smoke:
     name: Remote E2E Smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [lint, typecheck, test]
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e_smoke_base_url != '' }}
     steps:
