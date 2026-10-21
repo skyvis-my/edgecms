@@ -44,7 +44,7 @@ describe('F08 — Packed consumer runtime qualification', () => {
     expect(response.status).toBe(200)
 
     const payload = (await response.json()) as { version?: string; status?: string }
-    expect(payload.version).toBe('0.1.0')
+    expect(payload.version).toBe('0.2.0')
     expect(typeof payload.status).toBe('string')
   })
 

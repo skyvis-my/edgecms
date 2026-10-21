@@ -12,7 +12,7 @@
     },
     "apps/admin": {
       "name": "edgecms-admin",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@edgecms/client": "workspace:*",
         "@edgecms/schemas": "workspace:*",
@@ -96,7 +96,7 @@
     },
     "apps/api": {
       "name": "edgecms-api",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@ai-sdk/openai": "^3.0.124",
         "@casl/ability": "^6.8.1",
@@ -124,7 +124,7 @@
     },
     "packages/client": {
       "name": "@edgecms/client",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "devDependencies": {
         "@types/react": "^19.0.0",
         "@types/react-dom": "^19.0.0",
@@ -141,7 +141,7 @@
     },
     "packages/create-app": {
       "name": "create-edgecms-app",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "bin": {
         "create-edgecms-app": "./src/index.ts",
       },
@@ -151,14 +151,14 @@
     },
     "packages/plugin-sdk": {
       "name": "@edgecms/plugin-sdk",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "devDependencies": {
         "typescript": "5.9.3",
       },
     },
     "packages/runtime": {
       "name": "@edgecms/runtime",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "devDependencies": {
         "@cloudflare/workers-types": "^4.20260702.1",
         "@elysia/eden": "^2.0.0-beta.6",
@@ -169,7 +169,7 @@
     },
     "packages/schemas": {
       "name": "@edgecms/schemas",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "dependencies": {
         "@sinclair/typebox": "^0.34.52",
       },

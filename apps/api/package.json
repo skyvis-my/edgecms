@@ -1,7 +1,7 @@
 {
   "name": "edgecms-api",
   "description": "EdgeCMS API Worker - Content Management System powered by ElysiaJS on Cloudflare Workers",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "module": "src/main.ts",
   "type": "module",
