@@ -17,6 +17,7 @@ import {
   formatCsrfCookieHeader,
 } from '@/auth/csrf.middleware'
 import { rbacController } from '@/auth/rbac.controller'
+import { auditTrailPlugin } from '@/audit/audit-trail.plugin'
 import {
   hasSuperAdminRole,
   isSuperAdminEmail,
@@ -183,6 +184,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
       new Elysia()
         .use(securityPlugin)
         .use(observabilityPlugin)
+        .use(auditTrailPlugin)
         .use(
           openapi({
             path: '/api/docs',

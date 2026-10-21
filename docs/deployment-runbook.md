@@ -113,6 +113,7 @@ wrangler secret put <SECRET_NAME> --env <env>
 | `GEMINI_API_KEY` | Google Gemini API key (fallback AI provider) | Yes (if AI enabled) |
 | `AI_GATEWAY_URL` | Cloudflare AI Gateway endpoint URL | Yes (if AI enabled) |
 | `ENABLE_AI_IMPORT_REVIEW` | Enables post-launch AI import review beta endpoints | No for `0.1.0`; yes only for beta |
+| `AUDIT_RETENTION_DAYS` | Audit ledger retention in days; values under 365 are raised to 365 | No (default 365) |
 
 ### Example: Setting All Secrets for Production
 

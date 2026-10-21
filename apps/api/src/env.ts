@@ -26,6 +26,8 @@ export interface Env {
   AI_GATEWAY_ROUTE_ID?: string
   AI_GATEWAY_GUARDRAILS_PROFILE_ID?: string
   ENABLE_AI_IMPORT_REVIEW?: string
+  /** HS-12: audit event retention in days (minimum and default 365). */
+  AUDIT_RETENTION_DAYS?: string
   EDGE_PLUGINS_JSON?: string
   EDGE_PLUGIN_HOOK_TIMEOUT_MS?: string
   CF_API_TOKEN?: string
@@ -65,6 +67,7 @@ export const envSchema = {
   AI_GATEWAY_ROUTE_ID: 'string',
   AI_GATEWAY_GUARDRAILS_PROFILE_ID: 'string',
   ENABLE_AI_IMPORT_REVIEW: 'string',
+  AUDIT_RETENTION_DAYS: 'string',
   EDGE_PLUGINS_JSON: 'string',
   EDGE_PLUGIN_HOOK_TIMEOUT_MS: 'string',
   WEBHOOK_ALLOWED_HOSTS: 'string',

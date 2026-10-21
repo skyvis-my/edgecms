@@ -8,6 +8,7 @@ export type AuthorizationSubject =
   | 'TenantAdminApi'
   | 'GlobalAdminUsers'
   | 'TenantAdminUsers'
+  | 'TenantAdminAudit'
   | 'collection:*'
   | 'collection'
   | 'entry'
@@ -80,10 +81,24 @@ function isTenantAdminUsersPath(pathname: string, method: string): boolean {
   return /^\/api\/tenants\/[^/]+\/api\/admin\/users\/?$/.test(pathname)
 }
 
+function isTenantAdminAuditPath(pathname: string, method: string): boolean {
+  if (method !== 'GET') return false
+  return /^\/api\/tenants\/[^/]+\/api\/admin\/audit(?:\/|$)/.test(pathname)
+}
+
 function resolveRequirement(
   pathname: string,
   method: string
 ): AuthorizationRequirement | undefined {
+  if (isTenantAdminAuditPath(pathname, method)) {
+    return {
+      action: 'read',
+      subject: 'TenantAdminAudit',
+      unauthenticatedMessage: 'Authentication required',
+      forbiddenMessage: 'Tenant owner or admin access required',
+    }
+  }
+
   if (isTenantAdminUsersPath(pathname, method)) {
     return {
       action: 'read',
@@ -173,6 +188,7 @@ export function createAuthorizationAbility(
 
   if (principal.tenantRole === 'owner' || principal.tenantRole === 'admin') {
     can('read', 'TenantAdminUsers')
+    can('read', 'TenantAdminAudit')
   }
 
   // Apply custom permissions from database

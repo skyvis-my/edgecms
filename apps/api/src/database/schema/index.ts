@@ -6,6 +6,7 @@
  */
 
 export * from './assets.schema'
+export * from './audit-events.schema'
 export * from './ai-imports.schema'
 export * from './auth.schema'
 export * from './cache.schema'
