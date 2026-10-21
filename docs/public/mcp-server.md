@@ -195,3 +195,5 @@ In agent configurations or custom MCP tool integrations, configure the remote HT
 - **Actor Provenance**: All MCP tool executions record `actor.source = 'ai'` and attach the authenticated caller's identity in the audit trail.
 - **Optimistic Locking**: Command envelopes support optimistic locking versions to reject stale edits.
 - **Tenant Isolation**: Queries and mutations strictly enforce tenant foreign key filters on Cloudflare D1 and KV bindings.
+- **Tenant AI switch (HS-14)**: On tenant-scoped MCP paths (`/api/tenants/:slug/api/mcp` and `/api/tenants/:slug/api/admin/mcp`), every request is refused with HTTP 403 and JSON-RPC error `-32003` (`data.code = "AI_DISABLED"`) while the tenant's AI switch is off. Global MCP paths have no tenant switch.
+- **Tenant override**: The optional `tenantId` tool argument is rejected on tenant-scoped MCP paths when it names another tenant. On global paths it is honored only when that tenant's AI switch is on. It does not check the caller's membership in that tenant, so expose global MCP paths only to deployment-level API keys.

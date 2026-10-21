@@ -49,14 +49,24 @@ const mockGetSession = vi.fn(async ({ headers }: { headers: Headers }) => {
   return null
 })
 
-mock.module('@/auth/auth', () => ({
-  createAuth: vi.fn(() => ({
-    handler: vi.fn(() => new Response('Not Found', { status: 404 })),
-    api: {
-      getSession: mockGetSession,
-    },
-  })),
-}))
+mock.module('@/auth/auth', () => {
+  const authModule = {
+    createAuth: vi.fn(() => ({
+      handler: vi.fn(() => new Response('Not Found', { status: 404 })),
+      api: {
+        getSession: mockGetSession,
+      },
+    })),
+  }
+  return {
+    ...authModule,
+    createAuthForEnv: (env: { DB: unknown; BETTER_AUTH_SECRET?: string }, baseURL: string) =>
+      (authModule.createAuth as (...args: unknown[]) => unknown)(env.DB, {
+        secret: env.BETTER_AUTH_SECRET,
+        baseURL,
+      }),
+  }
+})
 
 const mockEnsureUserHasOnboardingTenant = vi.fn().mockResolvedValue({
   success: true,

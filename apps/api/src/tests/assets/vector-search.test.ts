@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'bun:test'
 import type { Env } from '@/env'
+import { aiSwitchD1 } from '../ai/ai-enabled-d1'
 import {
   indexAssetVector,
   removeAssetVectors,
@@ -41,6 +42,7 @@ describe('vector-search', () => {
       const upsertMock = vi.fn()
       const env = {
         ASSET_VECTORS: { upsert: upsertMock },
+        DB: aiSwitchD1(true),
         CF_API_TOKEN: 'cf-token',
         CLOUDFLARE_ACCOUNT_ID: 'cf-account',
       } as unknown as Env
@@ -58,6 +60,7 @@ describe('vector-search', () => {
       const upsertMock = vi.fn().mockResolvedValue({})
       const env = {
         ASSET_VECTORS: { upsert: upsertMock },
+        DB: aiSwitchD1(true),
         CF_API_TOKEN: 'cf-token',
         CLOUDFLARE_ACCOUNT_ID: 'cf-account',
       } as unknown as Env
@@ -96,6 +99,7 @@ describe('vector-search', () => {
       const upsertMock = vi.fn().mockResolvedValue({})
       const env = {
         ASSET_VECTORS: { upsert: upsertMock },
+        DB: aiSwitchD1(true),
         CF_API_TOKEN: 'cf-token',
         CLOUDFLARE_ACCOUNT_ID: 'cf-account',
       } as unknown as Env
@@ -128,6 +132,7 @@ describe('vector-search', () => {
       const upsertMock = vi.fn()
       const env = {
         ASSET_VECTORS: { upsert: upsertMock },
+        DB: aiSwitchD1(true),
         CF_API_TOKEN: 'cf-token',
         CLOUDFLARE_ACCOUNT_ID: 'cf-account',
       } as unknown as Env
@@ -198,6 +203,7 @@ describe('vector-search', () => {
       const queryMock = vi.fn()
       const env = {
         ASSET_VECTORS: { query: queryMock },
+        DB: aiSwitchD1(true),
         CF_API_TOKEN: 'cf-token',
         CLOUDFLARE_ACCOUNT_ID: 'cf-account',
       } as unknown as Env
@@ -221,6 +227,7 @@ describe('vector-search', () => {
       })
       const env = {
         ASSET_VECTORS: { query: queryMock },
+        DB: aiSwitchD1(true),
         CF_API_TOKEN: 'cf-token',
         CLOUDFLARE_ACCOUNT_ID: 'cf-account',
       } as unknown as Env
@@ -255,6 +262,7 @@ describe('vector-search', () => {
       const queryMock = vi.fn().mockResolvedValue({})
       const env = {
         ASSET_VECTORS: { query: queryMock },
+        DB: aiSwitchD1(true),
         CF_API_TOKEN: 'cf-token',
         CLOUDFLARE_ACCOUNT_ID: 'cf-account',
       } as unknown as Env
@@ -279,6 +287,7 @@ describe('vector-search', () => {
       const queryMock = vi.fn()
       const env = {
         ASSET_VECTORS: { query: queryMock },
+        DB: aiSwitchD1(true),
         CF_API_TOKEN: 'cf-token',
         CLOUDFLARE_ACCOUNT_ID: 'cf-account',
       } as unknown as Env
@@ -294,6 +303,7 @@ describe('vector-search', () => {
       const queryMock = vi.fn().mockRejectedValue(new Error('Vectorize service unavailable'))
       const env = {
         ASSET_VECTORS: { query: queryMock },
+        DB: aiSwitchD1(true),
         CF_API_TOKEN: 'cf-token',
         CLOUDFLARE_ACCOUNT_ID: 'cf-account',
       } as unknown as Env
@@ -322,6 +332,7 @@ describe('vector-search', () => {
       })
       const env = {
         ASSET_VECTORS: { query: queryMock },
+        DB: aiSwitchD1(true),
         CF_API_TOKEN: 'cf-token',
         CLOUDFLARE_ACCOUNT_ID: 'cf-account',
       } as unknown as Env
@@ -336,5 +347,26 @@ describe('vector-search', () => {
       const matches = await searchAssetVectorIds(env, { query: 'query', topK: 5 })
       expect(matches).toEqual([{ id: 'global:valid-1', score: 0.99 }])
     })
+  })
+})
+
+describe('vector-search with the tenant AI switch off (HS-14)', () => {
+  it('neither embeds nor queries', async () => {
+    const upsert = vi.fn()
+    const query = vi.fn()
+    const fetchMock = vi.fn()
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    const env = {
+      ASSET_VECTORS: { upsert, query },
+      DB: aiSwitchD1(false),
+      CF_API_TOKEN: 'cf-token',
+      CLOUDFLARE_ACCOUNT_ID: 'cf-account',
+    } as unknown as Env
+
+    await indexAssetVector(env, { id: 'a1', filename: 'logo.png', mimeType: 'image/png' }, 'tenant-1')
+    expect(await searchAssetVectorIds(env, { query: 'logo', topK: 2 }, 'tenant-1')).toEqual([])
+    expect(upsert).not.toHaveBeenCalled()
+    expect(query).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

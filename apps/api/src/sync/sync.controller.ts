@@ -25,6 +25,7 @@ type SyncUserLike = {
   id: string
   role?: unknown
   email?: unknown
+  emailVerified?: boolean | null
 }
 
 function isGlobalSyncAdmin(
@@ -37,7 +38,11 @@ function isGlobalSyncAdmin(
   if (hasSuperAdminRole((session as { role?: unknown } | undefined)?.role)) return true
   return (
     typeof user.email === 'string' &&
-    isSuperAdminEmail(user.email, parseSuperAdminEmails(workerEnv.SUPER_ADMIN_EMAILS))
+    isSuperAdminEmail(
+      user.email,
+      parseSuperAdminEmails(workerEnv.SUPER_ADMIN_EMAILS),
+      user.emailVerified
+    )
   )
 }
 

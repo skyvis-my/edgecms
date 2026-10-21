@@ -49,6 +49,7 @@ import { Route as AuthenticatedTenantsTenantSlugPluginsIndexRouteImport } from '
 import { Route as AuthenticatedTenantsTenantSlugPublishingIndexRouteImport } from './routes/_authenticated/tenants/$tenantSlug/publishing/index'
 import { Route as AuthenticatedTenantsTenantSlugSettingsIndexRouteImport } from './routes/_authenticated/tenants/$tenantSlug/settings/index'
 import { Route as AuthenticatedTenantsTenantSlugSettingsAccountRouteImport } from './routes/_authenticated/tenants/$tenantSlug/settings/account'
+import { Route as AuthenticatedTenantsTenantSlugSettingsAiRouteImport } from './routes/_authenticated/tenants/$tenantSlug/settings/ai'
 import { Route as AuthenticatedTenantsTenantSlugSettingsAppearanceRouteImport } from './routes/_authenticated/tenants/$tenantSlug/settings/appearance'
 import { Route as AuthenticatedTenantsTenantSlugSettingsDisplayRouteImport } from './routes/_authenticated/tenants/$tenantSlug/settings/display'
 import { Route as AuthenticatedTenantsTenantSlugSettingsNotificationsRouteImport } from './routes/_authenticated/tenants/$tenantSlug/settings/notifications'
@@ -287,6 +288,12 @@ const AuthenticatedTenantsTenantSlugSettingsAccountRoute =
     path: '/account',
     getParentRoute: () => AuthenticatedTenantsTenantSlugSettingsRouteRoute,
   } as any)
+const AuthenticatedTenantsTenantSlugSettingsAiRoute =
+  AuthenticatedTenantsTenantSlugSettingsAiRouteImport.update({
+    id: '/ai',
+    path: '/ai',
+    getParentRoute: () => AuthenticatedTenantsTenantSlugSettingsRouteRoute,
+  } as any)
 const AuthenticatedTenantsTenantSlugSettingsAppearanceRoute =
   AuthenticatedTenantsTenantSlugSettingsAppearanceRouteImport.update({
     id: '/appearance',
@@ -401,6 +408,7 @@ export interface FileRoutesByFullPath {
   '/tenants/$tenantSlug/collections/create': typeof AuthenticatedTenantsTenantSlugCollectionsCreateRoute
   '/tenants/$tenantSlug/collections/create-singleton': typeof AuthenticatedTenantsTenantSlugCollectionsCreateSingletonRoute
   '/tenants/$tenantSlug/settings/account': typeof AuthenticatedTenantsTenantSlugSettingsAccountRoute
+  '/tenants/$tenantSlug/settings/ai': typeof AuthenticatedTenantsTenantSlugSettingsAiRoute
   '/tenants/$tenantSlug/settings/appearance': typeof AuthenticatedTenantsTenantSlugSettingsAppearanceRoute
   '/tenants/$tenantSlug/settings/display': typeof AuthenticatedTenantsTenantSlugSettingsDisplayRoute
   '/tenants/$tenantSlug/settings/notifications': typeof AuthenticatedTenantsTenantSlugSettingsNotificationsRoute
@@ -452,6 +460,7 @@ export interface FileRoutesByTo {
   '/tenants/$tenantSlug/collections/create': typeof AuthenticatedTenantsTenantSlugCollectionsCreateRoute
   '/tenants/$tenantSlug/collections/create-singleton': typeof AuthenticatedTenantsTenantSlugCollectionsCreateSingletonRoute
   '/tenants/$tenantSlug/settings/account': typeof AuthenticatedTenantsTenantSlugSettingsAccountRoute
+  '/tenants/$tenantSlug/settings/ai': typeof AuthenticatedTenantsTenantSlugSettingsAiRoute
   '/tenants/$tenantSlug/settings/appearance': typeof AuthenticatedTenantsTenantSlugSettingsAppearanceRoute
   '/tenants/$tenantSlug/settings/display': typeof AuthenticatedTenantsTenantSlugSettingsDisplayRoute
   '/tenants/$tenantSlug/settings/notifications': typeof AuthenticatedTenantsTenantSlugSettingsNotificationsRoute
@@ -507,6 +516,7 @@ export interface FileRoutesById {
   '/_authenticated/tenants/$tenantSlug/collections/create': typeof AuthenticatedTenantsTenantSlugCollectionsCreateRoute
   '/_authenticated/tenants/$tenantSlug/collections/create-singleton': typeof AuthenticatedTenantsTenantSlugCollectionsCreateSingletonRoute
   '/_authenticated/tenants/$tenantSlug/settings/account': typeof AuthenticatedTenantsTenantSlugSettingsAccountRoute
+  '/_authenticated/tenants/$tenantSlug/settings/ai': typeof AuthenticatedTenantsTenantSlugSettingsAiRoute
   '/_authenticated/tenants/$tenantSlug/settings/appearance': typeof AuthenticatedTenantsTenantSlugSettingsAppearanceRoute
   '/_authenticated/tenants/$tenantSlug/settings/display': typeof AuthenticatedTenantsTenantSlugSettingsDisplayRoute
   '/_authenticated/tenants/$tenantSlug/settings/notifications': typeof AuthenticatedTenantsTenantSlugSettingsNotificationsRoute
@@ -562,6 +572,7 @@ export interface FileRouteTypes {
     | '/tenants/$tenantSlug/collections/create'
     | '/tenants/$tenantSlug/collections/create-singleton'
     | '/tenants/$tenantSlug/settings/account'
+    | '/tenants/$tenantSlug/settings/ai'
     | '/tenants/$tenantSlug/settings/appearance'
     | '/tenants/$tenantSlug/settings/display'
     | '/tenants/$tenantSlug/settings/notifications'
@@ -613,6 +624,7 @@ export interface FileRouteTypes {
     | '/tenants/$tenantSlug/collections/create'
     | '/tenants/$tenantSlug/collections/create-singleton'
     | '/tenants/$tenantSlug/settings/account'
+    | '/tenants/$tenantSlug/settings/ai'
     | '/tenants/$tenantSlug/settings/appearance'
     | '/tenants/$tenantSlug/settings/display'
     | '/tenants/$tenantSlug/settings/notifications'
@@ -667,6 +679,7 @@ export interface FileRouteTypes {
     | '/_authenticated/tenants/$tenantSlug/collections/create'
     | '/_authenticated/tenants/$tenantSlug/collections/create-singleton'
     | '/_authenticated/tenants/$tenantSlug/settings/account'
+    | '/_authenticated/tenants/$tenantSlug/settings/ai'
     | '/_authenticated/tenants/$tenantSlug/settings/appearance'
     | '/_authenticated/tenants/$tenantSlug/settings/display'
     | '/_authenticated/tenants/$tenantSlug/settings/notifications'
@@ -981,6 +994,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedTenantsTenantSlugSettingsAccountRouteImport
       parentRoute: typeof AuthenticatedTenantsTenantSlugSettingsRouteRoute
     }
+    '/_authenticated/tenants/$tenantSlug/settings/ai': {
+      id: '/_authenticated/tenants/$tenantSlug/settings/ai'
+      path: '/ai'
+      fullPath: '/tenants/$tenantSlug/settings/ai'
+      preLoaderRoute: typeof AuthenticatedTenantsTenantSlugSettingsAiRouteImport
+      parentRoute: typeof AuthenticatedTenantsTenantSlugSettingsRouteRoute
+    }
     '/_authenticated/tenants/$tenantSlug/settings/appearance': {
       id: '/_authenticated/tenants/$tenantSlug/settings/appearance'
       path: '/appearance'
@@ -1114,6 +1134,7 @@ const AuthenticatedSettingsRouteRouteWithChildren =
 
 interface AuthenticatedTenantsTenantSlugSettingsRouteRouteChildren {
   AuthenticatedTenantsTenantSlugSettingsAccountRoute: typeof AuthenticatedTenantsTenantSlugSettingsAccountRoute
+  AuthenticatedTenantsTenantSlugSettingsAiRoute: typeof AuthenticatedTenantsTenantSlugSettingsAiRoute
   AuthenticatedTenantsTenantSlugSettingsAppearanceRoute: typeof AuthenticatedTenantsTenantSlugSettingsAppearanceRoute
   AuthenticatedTenantsTenantSlugSettingsDisplayRoute: typeof AuthenticatedTenantsTenantSlugSettingsDisplayRoute
   AuthenticatedTenantsTenantSlugSettingsNotificationsRoute: typeof AuthenticatedTenantsTenantSlugSettingsNotificationsRoute
@@ -1124,6 +1145,8 @@ const AuthenticatedTenantsTenantSlugSettingsRouteRouteChildren: AuthenticatedTen
   {
     AuthenticatedTenantsTenantSlugSettingsAccountRoute:
       AuthenticatedTenantsTenantSlugSettingsAccountRoute,
+    AuthenticatedTenantsTenantSlugSettingsAiRoute:
+      AuthenticatedTenantsTenantSlugSettingsAiRoute,
     AuthenticatedTenantsTenantSlugSettingsAppearanceRoute:
       AuthenticatedTenantsTenantSlugSettingsAppearanceRoute,
     AuthenticatedTenantsTenantSlugSettingsDisplayRoute:

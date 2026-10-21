@@ -5,7 +5,7 @@ import type { TenantContext } from '@/tenants/tenant-context'
 import { verifyTenantMembership } from '@/tenants/tenant-context'
 import { AUDIT_GLOBAL_SCOPE } from './audit-chain'
 
-type AuditUser = { id: string; email?: string | null; role?: unknown }
+type AuditUser = { id: string; email?: string | null; emailVerified?: boolean | null; role?: unknown }
 
 const TENANT_AUDIT_ROLES = new Set(['owner', 'admin'])
 
@@ -17,11 +17,15 @@ export function getAuditDb(workerEnv: Pick<Env, 'DB'> | undefined, fallback: Dat
   return workerEnv?.DB ? createDb(workerEnv.DB) : fallback
 }
 
-/** Super-admin by role or SUPER_ADMIN_EMAILS. Fails closed (no dev-mode bypass). */
+/** Super-admin by role or a verified SUPER_ADMIN_EMAILS address. Fails closed (no dev-mode bypass). */
 export function isSuperAdminUser(user: AuditUser | undefined, workerEnv: Partial<Env>): boolean {
   if (!user) return false
   if (hasSuperAdminRole(user.role)) return true
-  return isSuperAdminEmail(user.email ?? undefined, parseSuperAdminEmails(workerEnv.SUPER_ADMIN_EMAILS))
+  return isSuperAdminEmail(
+    user.email ?? undefined,
+    parseSuperAdminEmails(workerEnv.SUPER_ADMIN_EMAILS),
+    user.emailVerified
+  )
 }
 
 export type AuditScopeAccess =

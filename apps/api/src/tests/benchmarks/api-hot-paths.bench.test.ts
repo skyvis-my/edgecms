@@ -439,14 +439,24 @@ function installBenchmarkModuleMocks(): void {
     env: mockWorkerEnv,
   }))
 
-  mock.module('@/auth/auth', () => ({
-    createAuth: vi.fn(() => ({
-      handler: mockAuthHandler,
-      api: {
-        getSession: mockGetSession,
-      },
-    })),
-  }))
+  mock.module('@/auth/auth', () => {
+    const authModule = {
+      createAuth: vi.fn(() => ({
+        handler: mockAuthHandler,
+        api: {
+          getSession: mockGetSession,
+        },
+      })),
+    }
+    return {
+      ...authModule,
+      createAuthForEnv: (env: { DB: unknown; BETTER_AUTH_SECRET?: string }, baseURL: string) =>
+        (authModule.createAuth as (...args: unknown[]) => unknown)(env.DB, {
+          secret: env.BETTER_AUTH_SECRET,
+          baseURL,
+        }),
+    }
+  })
 
   mock.module('@/public/public.service', () => ({
     publicService: mockPublicService,

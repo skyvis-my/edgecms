@@ -13,6 +13,12 @@ const host: HostPolicies = {
   onTenantEvent: async (event) => {
     console.log(event.event, event.tenant.slug)
   },
+  // HS-01 / HS-11: signup policy, email sender and super-admin MFA.
+  auth: {
+    signupPolicy: 'invite-only',
+    emailSender: { send: async ({ to, subject, text }) => myMailer.send(to, subject, text) },
+    requireMfaForSuperAdmins: true,
+  },
 }
 
 export const app = createApp({ host })
@@ -49,3 +55,23 @@ The legacy `inactive` status, and any status not listed above, behaves like `dis
 | `tenant.limit_reached` | Reserved for HS-06. Not emitted yet. |
 
 Events go to `host.onTenantEvent` and to the webhook event bus. Both are awaited inside the request, so a slow listener slows tenant changes. Enqueue the work instead of calling slow APIs. Webhook delivery uses global scope: only super-admins can subscribe a global webhook (created on `/api/admin/webhooks` without a tenant) to `tenant.*` events, because those events describe every tenant. A tenant-scoped webhook cannot subscribe to them.
+
+## Sign-up and email verification (HS-01)
+
+`host.auth.signupPolicy` (or the `SIGNUP_POLICY` var) is `open`, `invite-only` or `disabled`. The default is `open` so existing deployments keep working; use `disabled` for new ones.
+
+- Every account creation path is checked, including Microsoft and Google sign-in. The first account of an empty database is always allowed, so a fresh install can be bootstrapped.
+- `invite-only` accepts a new account only with an unused, unexpired invite for that email. Super-admins create invites with `POST /api/admin/invites` (`email`, optional `tenantSlug` and `tenantRole`, `expiresInHours`); the token is returned once, only its SHA-256 hash is stored, and it can be revoked with `DELETE /api/admin/invites/:id`. The admin sign-up page reads `?invite=<token>`.
+- With `host.auth.emailSender` (or `AUTH_EMAIL_SENDER=console` in development), email/password accounts must verify their email before they can sign in. EdgeCMS ships no email provider.
+- Super-admin by `SUPER_ADMIN_EMAILS` requires a verified email. A listed address can be registered only when verification is enforced (an email sender is set) or the identity provider verified it.
+- Unlike `canCreateTenant` and `onTenantEvent`, auth policies apply to the whole Worker isolate.
+
+## Multi-factor authentication (HS-11)
+
+Users enrol an authenticator app with recovery codes under **Settings → Profile**; sign-in then asks for a code.
+
+- `host.auth.requireMfaForSuperAdmins` (or `SUPER_ADMIN_REQUIRE_MFA=true`) blocks super-admins on admin routes until they sign in with a second factor.
+- `requireMfa: true` on `PUT /api/admin/tenants/:slug` does the same for everyone on that tenant's admin and MCP routes. Public reads are not affected.
+- Blocked requests get `403 MFA_REQUIRED`. Access tokens are not minted for such sessions, and changing a tenant's setting invalidates its existing tokens.
+- Microsoft and Google sign-ins get no EdgeCMS second-factor challenge, so they do not satisfy an MFA requirement.
+

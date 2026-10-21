@@ -64,6 +64,8 @@ export interface UpdateTenantInput {
   mediaUploadMaxBytes?: number
   mediaUploadMaxDimension?: number
   mediaAllowedMimeTypes?: string[]
+  /** HS-11: require an MFA-verified session on this tenant's admin routes. */
+  requireMfa?: boolean
 }
 
 /** Input for provisioning tenant resources. */

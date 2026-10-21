@@ -1,3 +1,4 @@
+import { twoFactorClient } from 'better-auth/client/plugins'
 import { createAuthClient } from 'better-auth/react'
 import { resolveApiBasePath } from './api-base-path'
 import { clearAccessTokens } from './access-token'
@@ -25,9 +26,11 @@ function resolveAuthBaseUrl() {
  * - `authClient.signOut()` for session termination
  * - `authClient.useSession()` React hook for session state
  * - `authClient.getSession()` for imperative session checks
+ * - `authClient.twoFactor.*` for TOTP enrolment and second-factor challenges
  */
 export const authClient = createAuthClient({
   baseURL: resolveAuthBaseUrl(),
+  plugins: [twoFactorClient()],
 })
 
 type SessionResult = {
@@ -91,4 +94,4 @@ export async function signOut() {
 /**
  * Convenience re-exports for common auth operations.
  */
-export const { signIn, signUp, useSession } = authClient
+export const { signIn, signUp, useSession, twoFactor } = authClient

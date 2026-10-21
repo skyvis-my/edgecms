@@ -12,10 +12,11 @@ vi.mock('@/database/db', () => ({
   createDb: () => db,
 }))
 
-const USERS: Record<string, { id: string; email: string; role: string }> = {
-  'admin-a': { id: 'admin-a', email: 'a@example.com', role: 'viewer' },
-  'member-a': { id: 'member-a', email: 'm@example.com', role: 'viewer' },
-  root: { id: 'root', email: 'root@example.com', role: 'viewer' },
+const USERS: Record<string, { id: string; email: string; emailVerified: boolean; role: string }> = {
+  'admin-a': { id: 'admin-a', email: 'a@example.com', emailVerified: true, role: 'viewer' },
+  'member-a': { id: 'member-a', email: 'm@example.com', emailVerified: true, role: 'viewer' },
+  root: { id: 'root', email: 'root@example.com', emailVerified: true, role: 'viewer' },
+  'root-unverified': { id: 'root-2', email: 'root@example.com', emailVerified: false, role: 'viewer' },
 }
 
 vi.mock('@/auth/auth.middleware', () => ({
@@ -109,6 +110,10 @@ describe('auditController', () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as { data: { events: { metadata: { marker: string } }[] } }
     expect(body.data.events.map((e) => e.metadata.marker)).toEqual(['global'])
+  })
+
+  it('denies the global chain to an unverified SUPER_ADMIN_EMAILS address', async () => {
+    expect((await get(appGlobal, '/api/admin/audit/export', 'root-unverified')).status).toBe(403)
   })
 
   it('lets super-admins read a tenant chain', async () => {

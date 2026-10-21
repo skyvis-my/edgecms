@@ -50,7 +50,7 @@ export function UserAuthForm({ className, redirectTo, ...props }: UserAuthFormPr
   async function onSubmit(data: z.infer<typeof formSchema>) {
     setIsLoading(true)
 
-    const { error } = await signIn.email({
+    const { data: result, error } = await signIn.email({
       email: data.email,
       password: data.password,
     })
@@ -58,7 +58,16 @@ export function UserAuthForm({ className, redirectTo, ...props }: UserAuthFormPr
     setIsLoading(false)
 
     if (error) {
-      toast.error(error.message ?? 'Sign in failed. Please check your credentials.')
+      toast.error(
+        error.code === 'EMAIL_NOT_VERIFIED'
+          ? 'Verify your email first. We sent you a new link.'
+          : (error.message ?? 'Sign in failed. Please check your credentials.')
+      )
+      return
+    }
+
+    if (result && 'twoFactorRedirect' in result && result.twoFactorRedirect) {
+      navigate({ to: '/otp', search: { redirect: redirectTo }, replace: true })
       return
     }
 

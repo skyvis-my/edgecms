@@ -1,5 +1,5 @@
 import { Outlet } from '@tanstack/react-router'
-import { Bell, Monitor, Palette, UserCog, Wrench } from 'lucide-react'
+import { Bell, Monitor, Palette, Sparkles, UserCog, Wrench } from 'lucide-react'
 import { ConfigDrawer } from '@/components/config-drawer'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
@@ -39,6 +39,10 @@ export function Settings() {
       href: `${settingsBasePath}/display`,
       icon: <Monitor size={18} />,
     },
+    // HS-14: the AI switch is per tenant, so it only exists inside a tenant.
+    ...(tenantSlug
+      ? [{ title: 'AI', href: `${settingsBasePath}/ai`, icon: <Sparkles size={18} /> }]
+      : []),
   ]
 
   return (

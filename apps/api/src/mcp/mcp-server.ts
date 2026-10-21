@@ -7,6 +7,7 @@ import {
   markPreviewReceiptConsumed,
   verifyPreviewReceipt,
 } from '@/ai/preview-receipt.service'
+import { AI_DISABLED_MESSAGE, isTenantAiEnabled } from '@/ai/ai-access'
 import { ragService } from '@/ai/rag.service'
 import type { CommandEnvelope, CommandResult, CommandType } from '@edgecms/schemas/commands'
 
@@ -166,6 +167,22 @@ export async function handleMcpToolCall(
   name: string,
   args: Record<string, unknown> = {}
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  // A tenant-scoped endpoint never serves another tenant's content.
+  const requestedTenant = typeof args.tenantId === 'string' ? args.tenantId : undefined
+  if (ctx.tenantScope && requestedTenant && requestedTenant !== ctx.tenantScope) {
+    return {
+      content: [
+        { type: 'text', text: 'Error: tenantId override is not allowed on a tenant-scoped MCP endpoint' },
+      ],
+      isError: true,
+    }
+  }
+  // HS-14: the effective tenant (context or override) must have AI turned on.
+  const effectiveTenant = ctx.tenantScope ?? requestedTenant
+  if (!(await isTenantAiEnabled({ db: ctx.db, workerEnv: ctx.env, tenantId: effectiveTenant }))) {
+    return { content: [{ type: 'text', text: `Error: ${AI_DISABLED_MESSAGE}` }], isError: true }
+  }
+
   try {
     switch (name) {
       case 'edgecms_list_collections': {

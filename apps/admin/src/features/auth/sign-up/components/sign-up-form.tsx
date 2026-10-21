@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useNavigate } from '@tanstack/react-router'
-import { Loader2 } from 'lucide-react'
+import { Loader2, MailCheck } from 'lucide-react'
 import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { toast } from 'sonner'
@@ -38,12 +38,33 @@ const formSchema = z
     path: ['confirmPassword'],
   })
 
-type SignUpFormProps = React.HTMLAttributes<HTMLFormElement> & {
-  onboarding?: boolean
+function signUpErrorMessage(error: { code?: string; message?: string }): string {
+  switch (error.code) {
+    case 'SIGNUP_DISABLED':
+      return 'Sign-up is closed on this workspace. Ask an administrator for an account.'
+    case 'INVITE_REQUIRED':
+      return 'Sign-up needs an invite. Use the link from your invite email.'
+    case 'INVITE_INVALID':
+      return 'This invite is invalid, expired, already used or for another email address.'
+    default:
+      return error.message ?? 'Sign up failed. Please try again.'
+  }
 }
 
-export function SignUpForm({ className, onboarding = false, ...props }: SignUpFormProps) {
+type SignUpFormProps = React.HTMLAttributes<HTMLFormElement> & {
+  onboarding?: boolean
+  /** Single-use invite token from the invite link (`?invite=`). */
+  inviteToken?: string
+}
+
+export function SignUpForm({
+  className,
+  onboarding = false,
+  inviteToken,
+  ...props
+}: SignUpFormProps) {
   const [isLoading, setIsLoading] = useState(false)
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState<string | null>(null)
   const navigate = useNavigate()
 
   const form = useForm<z.infer<typeof formSchema>>({
@@ -60,16 +81,23 @@ export function SignUpForm({ className, onboarding = false, ...props }: SignUpFo
   async function onSubmit(data: z.infer<typeof formSchema>) {
     setIsLoading(true)
 
-    const { error } = await signUp.email({
+    const { data: result, error } = await signUp.email({
       name: `${data.firstName.trim()} ${data.lastName.trim()}`.trim(),
       email: data.email,
       password: data.password,
+      fetchOptions: inviteToken ? { headers: { 'x-edgecms-invite-token': inviteToken } } : undefined,
     })
 
     setIsLoading(false)
 
     if (error) {
-      toast.error(error.message ?? 'Sign up failed. Please try again.')
+      toast.error(signUpErrorMessage(error))
+      return
+    }
+
+    // With email verification on, the account exists but has no session yet.
+    if (result && result.token === null) {
+      setPendingVerificationEmail(data.email)
       return
     }
 
@@ -112,6 +140,22 @@ export function SignUpForm({ className, onboarding = false, ...props }: SignUpFo
     await refreshSessionAfterLogin()
     toast.success('Account created successfully!')
     navigate({ to: '/', replace: true })
+  }
+
+  if (pendingVerificationEmail) {
+    return (
+      <div className='grid gap-3 text-sm' role='status'>
+        <MailCheck className='size-8 text-primary' aria-hidden />
+        <p className='font-medium'>Check your inbox</p>
+        <p className='text-muted-foreground'>
+          We sent a verification link to <strong>{pendingVerificationEmail}</strong>. Open it to
+          finish creating your account, then sign in.
+        </p>
+        <Button variant='outline' onClick={() => navigate({ to: '/sign-in', replace: true })}>
+          Go to sign in
+        </Button>
+      </div>
+    )
   }
 
   return (

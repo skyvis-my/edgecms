@@ -4,7 +4,7 @@ import { betterAuthPlugin } from '@/auth/auth.middleware'
 import { isSuperAdminUser, parseSuperAdminEmails } from '@/auth/super-admin'
 import type { createDb } from '@/database/db'
 import type { Env } from '@/env'
-import { bumpAuthRevision } from '@/auth/auth-revision'
+import { bumpAuthRevision, bumpPermissionRevision } from '@/auth/auth-revision'
 import { withTenantBindings } from './with-tenant-bindings'
 import { tenantsService } from './tenants.service'
 import { toServiceResponse } from '@/shared/utils/service-response'
@@ -91,7 +91,7 @@ function evaluateSuperAdmin(
 }
 
 /** Super-admin authorization guard configuration. */
-const superAdminRoute = {
+export const superAdminRoute = {
   auth: true as const,
   beforeHandle({
     user,
@@ -211,6 +211,7 @@ export function createTenantsController(options: TenantsControllerOptions = {}) 
         mediaUploadMaxBytes: t.Optional(t.Number({ minimum: 1 })),
         mediaUploadMaxDimension: t.Optional(t.Number({ minimum: 1 })),
         mediaAllowedMimeTypes: t.Optional(t.Array(t.String({ minLength: 1 }))),
+        requireMfa: t.Optional(t.Boolean()),
       }),
     }, async ({ db, params, body, set, user }) => {
       const resolved = await resolveTenantOr404(db, params.tenantSlug, set)
@@ -219,6 +220,10 @@ export function createTenantsController(options: TenantsControllerOptions = {}) 
         events,
         actorId: user.id,
       })
+      if (result.success && body.requireMfa !== undefined) {
+        // Access tokens minted under the old MFA setting must be re-minted.
+        await bumpPermissionRevision((env as unknown as Env).CACHE, resolved.tenantId)
+      }
       return toServiceResponse(set, result)
     })
 

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'bun:test'
 import type { Database } from '@/database/db'
 import type { CommandContext } from '@/commands/engine'
+import type { Env } from '@/env'
+import { aiSwitchD1 } from '../ai/ai-enabled-d1'
 import { processMcpMessage, MCP_TOOLS } from '@/mcp/mcp-server'
 import { collectionsRepository } from '@/collections/collections.repository'
 import { entriesRepository } from '@/entries/entries.repository'
@@ -38,6 +40,8 @@ describe('Native MCP Server Adapter Gated by Command Engine (C-01)', () => {
       source: 'ai',
     },
     tenantScope: 'tenant-smoke',
+    // HS-14: the tenant's AI switch is on for these tool tests.
+    env: { DB: aiSwitchD1(true) } as unknown as Env,
   }
 
   beforeEach(() => {
@@ -389,6 +393,37 @@ describe('Native MCP Server Adapter Gated by Command Engine (C-01)', () => {
     expect(response.error).toEqual({
       code: -32601,
       message: 'Method not found: unknown/method',
+    })
+  })
+
+  describe('tenant boundaries and the AI switch (HS-14)', () => {
+    it('rejects a tenantId override on a tenant-scoped endpoint', async () => {
+      const response = await processMcpMessage(ctx, {
+        jsonrpc: '2.0',
+        id: 41,
+        method: 'tools/call',
+        params: { name: 'edgecms_get_entry', arguments: { entryId: 'e1', tenantId: 'other' } },
+      })
+      const result = response.result as { isError?: boolean; content: Array<{ text: string }> }
+      expect(result.isError).toBe(true)
+      expect(result.content[0]!.text).toContain('tenantId override is not allowed')
+    })
+
+    it('refuses tools for an override tenant whose AI switch is off', async () => {
+      const globalCtx: CommandContext = {
+        ...ctx,
+        tenantScope: undefined,
+        env: { DB: aiSwitchD1(false) } as unknown as Env,
+      }
+      const response = await processMcpMessage(globalCtx, {
+        jsonrpc: '2.0',
+        id: 42,
+        method: 'tools/call',
+        params: { name: 'edgecms_list_collections', arguments: { tenantId: 'ai-off' } },
+      })
+      const result = response.result as { isError?: boolean; content: Array<{ text: string }> }
+      expect(result.isError).toBe(true)
+      expect(result.content[0]!.text).toContain('AI features are turned off')
     })
   })
 })
