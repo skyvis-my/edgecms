@@ -337,6 +337,17 @@ describe('Main API app (Elysia integration)', () => {
     })
   })
 
+  it('does not report superadmin on /api/me for an unverified listed email', async () => {
+    const app = await importApp()
+    mockWorkerEnv.SUPER_ADMIN_EMAILS = 'test@example.com'
+    buildMockAuth({
+      user: { id: 'user-123', name: 'Test User', email: 'test@example.com', emailVerified: false, role: 'viewer' },
+      session: { id: 'session-123' },
+    })
+    const response = await app.handle(new Request('http://localhost/api/me'))
+    expect(((await response.json()) as { role: string }).role).toBe('viewer')
+  })
+
   it('returns effective superadmin role from /api/me when email is configured', async () => {
     const app = await importApp()
     mockWorkerEnv.SUPER_ADMIN_EMAILS = 'test@example.com'
@@ -345,6 +356,7 @@ describe('Main API app (Elysia integration)', () => {
         id: 'user-123',
         name: 'Test User',
         email: 'test@example.com',
+        emailVerified: true,
         role: 'viewer',
       },
       session: {
@@ -1007,7 +1019,7 @@ describe('access-token minting with MFA requirements (HS-11)', () => {
 
   function rootSession(mfaVerified: boolean) {
     return {
-      user: { id: 'u-root', name: 'Root', email: 'root@example.com', role: 'viewer' },
+      user: { id: 'u-root', name: 'Root', email: 'root@example.com', emailVerified: true, role: 'viewer' },
       session: { id: 's-root', userId: 'u-root', mfaVerified },
     }
   }

@@ -178,7 +178,7 @@ describe('MCP super-admin MFA requirement (HS-11)', () => {
 
   function rootSession(mfaVerified: boolean) {
     return {
-      user: { id: 'u-root', email: 'root@example.com', role: 'viewer' },
+      user: { id: 'u-root', email: 'root@example.com', emailVerified: true, role: 'viewer' },
       session: { id: 's-root', mfaVerified },
     }
   }

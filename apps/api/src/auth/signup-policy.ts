@@ -3,6 +3,7 @@ import type { Database } from '@/database/db'
 import { invitesService } from '@/invites/invites.service'
 import { usersRepository } from '@/users/users.repository'
 import type { SignupPolicy } from './auth-policies'
+import { isListedSuperAdminEmail } from './super-admin'
 
 /** Header alternative to the `inviteToken` sign-up body field. */
 export const INVITE_TOKEN_HEADER = 'x-edgecms-invite-token'
@@ -36,6 +37,26 @@ export function readInviteToken(ctx: HookContext): string | undefined {
 
 function rejectSignup(code: string, message: string): never {
   throw new APIError('FORBIDDEN', { code, message })
+}
+
+/**
+ * An address in SUPER_ADMIN_EMAILS can be registered only when its ownership
+ * is proven: an email sender is configured (so the account must verify
+ * before it can sign in) or the identity provider already verified it.
+ * Without this, anyone could claim a listed address before its owner does.
+ */
+export function enforceSuperAdminEmailSignup(input: {
+  email: string
+  superAdminEmails: string[]
+  emailVerified: boolean
+  verificationEnforced: boolean
+}): void {
+  if (input.emailVerified || input.verificationEnforced) return
+  if (!isListedSuperAdminEmail(input.email, input.superAdminEmails)) return
+  rejectSignup(
+    'SUPER_ADMIN_EMAIL_UNVERIFIED',
+    'This address is reserved for a super-admin and needs email verification, which is not configured. Sign in with a verified identity provider or ask the operator to configure an email sender.'
+  )
 }
 
 /**

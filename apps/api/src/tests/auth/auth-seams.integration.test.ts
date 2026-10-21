@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'bun:test'
 import { __resetAuthCacheForTests, createAuth } from '@/auth/auth'
 import type { AuthEmailMessage, AuthPolicies } from '@/auth/auth-policies'
-import { enforceSignupPolicy } from '@/auth/signup-policy'
+import { enforceSignupPolicy, enforceSuperAdminEmailSignup } from '@/auth/signup-policy'
 import { createDb } from '@/database/db'
 import { invitesService } from '@/invites/invites.service'
 import { CookieJar, TEST_ORIGIN, callAuth, totpFromUri } from '../helpers/auth-client'
@@ -10,12 +10,13 @@ import { createSqliteD1 } from '../helpers/sqlite-d1'
 const SECRET = 'integration-test-secret-at-least-32-characters'
 const PASSWORD = 'correct-horse-battery'
 
-function setup(policies: Partial<AuthPolicies> = {}) {
+function setup(policies: Partial<AuthPolicies> = {}, superAdminEmails: string[] = []) {
   const { d1, sqlite } = createSqliteD1()
   const auth = createAuth(d1, {
     secret: SECRET,
     baseURL: TEST_ORIGIN,
     policies: { signupPolicy: 'open', requireMfaForSuperAdmins: false, ...policies },
+    superAdminEmails,
   })
   return { auth, sqlite, db: createDb(d1) }
 }
@@ -82,6 +83,45 @@ describe('global role input (privilege escalation guard)', () => {
     expect(res.status).toBe(400)
     const row = h.sqlite.query('select role from user where email = ?').get('mallory@example.com')
     expect(row).toEqual({ role: 'viewer' })
+  })
+})
+
+describe('SUPER_ADMIN_EMAILS addresses (squatting guard)', () => {
+  it('refuses self-registration of a listed address when verification is not enforced', async () => {
+    const h = setup({}, ['root@example.com'])
+    await signUp(h, 'someone@example.com')
+    const res = await signUp(h, 'Root@Example.com')
+    expect(res.status).toBe(403)
+    expect(res.json.code).toBe('SUPER_ADMIN_EMAIL_UNVERIFIED')
+    expect(userCount(h)).toBe(1)
+  })
+
+  it('allows it when a sender enforces verification, and the account starts unverified', async () => {
+    const sent: AuthEmailMessage[] = []
+    const h = setup({ emailSender: { send: async (m) => void sent.push(m) } }, ['root@example.com'])
+    const res = await signUp(h, 'root@example.com')
+    expect(res.status).toBe(200)
+    expect(sent).toHaveLength(1)
+    expect(h.sqlite.query('select emailVerified from user').get()).toEqual({ emailVerified: 0 })
+  })
+
+  it('allows provider-verified identities (social sign-in)', () => {
+    expect(() =>
+      enforceSuperAdminEmailSignup({
+        email: 'root@example.com',
+        superAdminEmails: ['root@example.com'],
+        emailVerified: true,
+        verificationEnforced: false,
+      })
+    ).not.toThrow()
+    expect(() =>
+      enforceSuperAdminEmailSignup({
+        email: 'root@example.com',
+        superAdminEmails: ['root@example.com'],
+        emailVerified: false,
+        verificationEnforced: false,
+      })
+    ).toThrow()
   })
 })
 

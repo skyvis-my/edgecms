@@ -27,7 +27,10 @@ function sessionFor(email: string) {
        values (?, ?, ?, 'viewer', 1, 0, 0)`
     )
     .run(id, email, email)
-  return { user: { id, name: email, email, role: 'viewer' }, session: { id: `s-${email}` } }
+  return {
+    user: { id, name: email, email, emailVerified: true, role: 'viewer' },
+    session: { id: `s-${email}` },
+  }
 }
 
 async function call(method: string, path: string, body?: unknown) {

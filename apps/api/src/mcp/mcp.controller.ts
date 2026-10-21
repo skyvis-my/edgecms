@@ -52,6 +52,7 @@ async function resolveMcpAuth(
       const missingMfa = isSuperAdminMissingMfa(
         {
           email: session.user.email,
+          emailVerified: session.user.emailVerified === true,
           userRole: (session.user as { role?: unknown }).role,
           sessionRole: (session.session as { role?: unknown } | undefined)?.role,
           mfaVerified: isMfaVerifiedSession(session),

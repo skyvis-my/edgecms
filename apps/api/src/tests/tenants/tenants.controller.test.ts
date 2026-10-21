@@ -26,7 +26,7 @@ const mockEnv = {
   SUPER_ADMIN_DEV_MODE: 'true' as string | undefined,
 }
 
-let mockUser: { id: string; email: string; role?: string } = { id: 'u1', email: 'admin@example.com' }
+let mockUser: { id: string; email: string; role?: string, emailVerified: true } = { id: 'u1', email: 'admin@example.com', emailVerified: true }
 
 const mockService = {
   findAll: vi.fn(),
@@ -84,7 +84,7 @@ describe('tenantsController (repo-backed)', () => {
     vi.resetAllMocks()
     mockEnv.SUPER_ADMIN_EMAILS = undefined
     mockEnv.SUPER_ADMIN_DEV_MODE = 'true'
-    mockUser = { id: 'u1', email: 'admin@example.com' }
+    mockUser = { id: 'u1', email: 'admin@example.com', emailVerified: true }
     mockService.findAll.mockResolvedValue(ok([]))
     createActors.length = 0
   })
@@ -99,7 +99,7 @@ describe('tenantsController (repo-backed)', () => {
   it('allows superadmin role when SUPER_ADMIN_EMAILS does not include user', async () => {
     mockEnv.SUPER_ADMIN_DEV_MODE = undefined
     mockEnv.SUPER_ADMIN_EMAILS = 'other@example.com'
-    mockUser = { id: 'u1', email: 'admin@example.com', role: 'superadmin' }
+    mockUser = { id: 'u1', email: 'admin@example.com', emailVerified: true, role: 'superadmin' }
     mockService.findAll.mockResolvedValueOnce(ok([{ id: 't1', slug: 'acme', name: 'Acme' }]))
 
     const response = await app.handle(new Request('http://localhost/api/admin/tenants'))
@@ -113,7 +113,7 @@ describe('tenantsController (repo-backed)', () => {
         id: 't1',
         slug: 'acme',
         name: 'Acme',
-        users: [{ id: 'u1', name: 'Alice', email: 'alice@test.com', role: 'owner' }],
+        users: [{ id: 'u1', name: 'Alice', email: 'alice@test.com', emailVerified: true, role: 'owner' }],
       })
     )
 
@@ -281,7 +281,7 @@ describe('tenantsController (repo-backed)', () => {
   it('user routes map success states', async () => {
     mockService.findByIdOrSlug.mockResolvedValue(ok({ id: 't1' }))
     mockService.findTenantUsersWithDetails.mockResolvedValueOnce(
-      ok([{ id: 'u1', name: 'Alice', email: 'alice@test.com', role: 'owner' }])
+      ok([{ id: 'u1', name: 'Alice', email: 'alice@test.com', emailVerified: true, role: 'owner' }])
     )
     mockService.addUserToTenant.mockResolvedValueOnce(ok({ tenantId: 't1', userId: 'u2' }))
     mockService.removeUserFromTenant.mockResolvedValueOnce(ok({ removed: true }))
@@ -291,7 +291,7 @@ describe('tenantsController (repo-backed)', () => {
     expect(users.status).toBe(200)
     const usersBody = (await users.json()) as {
       success: boolean
-      data: { id: string; name: string; email: string; role: string }[]
+      data: { id: string; name: string; email: string; role: string, emailVerified: true }[]
     }
     expect(usersBody.data[0]?.name).toBe('Alice')
     expect(usersBody.data[0]?.email).toBe('alice@test.com')
@@ -394,7 +394,7 @@ describe('tenantsController (repo-backed)', () => {
     it('rejects access when SUPER_ADMIN_EMAILS is not set and dev mode is disabled', async () => {
       mockEnv.SUPER_ADMIN_EMAILS = undefined
       mockEnv.SUPER_ADMIN_DEV_MODE = undefined
-      mockUser = { id: 'u1', email: 'anyone@example.com' }
+      mockUser = { id: 'u1', email: 'anyone@example.com', emailVerified: true }
 
       const response = await app.handle(new Request('http://localhost/api/admin/tenants'))
       expect(response.status).toBe(403)
@@ -403,7 +403,7 @@ describe('tenantsController (repo-backed)', () => {
     it('allows access when SUPER_ADMIN_DEV_MODE is explicitly enabled', async () => {
       mockEnv.SUPER_ADMIN_EMAILS = undefined
       mockEnv.SUPER_ADMIN_DEV_MODE = 'true'
-      mockUser = { id: 'u1', email: 'anyone@example.com' }
+      mockUser = { id: 'u1', email: 'anyone@example.com', emailVerified: true }
 
       const response = await app.handle(new Request('http://localhost/api/admin/tenants'))
       expect(response.status).toBe(200)
@@ -411,7 +411,7 @@ describe('tenantsController (repo-backed)', () => {
 
     it('allows super-admin user when email is in SUPER_ADMIN_EMAILS', async () => {
       mockEnv.SUPER_ADMIN_EMAILS = 'admin@example.com,superuser@example.com'
-      mockUser = { id: 'u1', email: 'admin@example.com' }
+      mockUser = { id: 'u1', email: 'admin@example.com', emailVerified: true }
 
       const response = await app.handle(new Request('http://localhost/api/admin/tenants'))
       expect(response.status).toBe(200)
@@ -419,7 +419,7 @@ describe('tenantsController (repo-backed)', () => {
 
     it('allows super-admin user with different case', async () => {
       mockEnv.SUPER_ADMIN_EMAILS = 'ADMIN@EXAMPLE.COM'
-      mockUser = { id: 'u1', email: 'admin@example.com' }
+      mockUser = { id: 'u1', email: 'admin@example.com', emailVerified: true }
 
       const response = await app.handle(new Request('http://localhost/api/admin/tenants'))
       expect(response.status).toBe(200)
@@ -427,7 +427,7 @@ describe('tenantsController (repo-backed)', () => {
 
     it('rejects non-super-admin user when SUPER_ADMIN_EMAILS is set', async () => {
       mockEnv.SUPER_ADMIN_EMAILS = 'admin@example.com'
-      mockUser = { id: 'u2', email: 'user@example.com' }
+      mockUser = { id: 'u2', email: 'user@example.com', emailVerified: true }
 
       const response = await app.handle(new Request('http://localhost/api/admin/tenants'))
       expect(response.status).toBe(403)
@@ -442,7 +442,7 @@ describe('tenantsController (repo-backed)', () => {
 
     it('handles multiple super-admin emails with whitespace', async () => {
       mockEnv.SUPER_ADMIN_EMAILS = ' admin@example.com , superuser@example.com , owner@example.com '
-      mockUser = { id: 'u3', email: 'owner@example.com' }
+      mockUser = { id: 'u3', email: 'owner@example.com', emailVerified: true }
 
       const response = await app.handle(new Request('http://localhost/api/admin/tenants'))
       expect(response.status).toBe(200)
@@ -464,7 +464,7 @@ describe('tenantsController (repo-backed)', () => {
     })
 
     it('default policy rejects a non-super-admin and creates nothing', async () => {
-      mockUser = { id: 'u2', email: 'user@example.com' }
+      mockUser = { id: 'u2', email: 'user@example.com', emailVerified: true }
 
       const response = await app.handle(createRequest())
 
@@ -481,7 +481,7 @@ describe('tenantsController (repo-backed)', () => {
     })
 
     it('default policy allows a super-admin', async () => {
-      mockUser = { id: 'u1', email: 'admin@example.com' }
+      mockUser = { id: 'u1', email: 'admin@example.com', emailVerified: true }
 
       const response = await app.handle(createRequest())
 
@@ -490,7 +490,7 @@ describe('tenantsController (repo-backed)', () => {
     })
 
     it('host policy can allow non-super-admins and pick a pending initial state', async () => {
-      mockUser = { id: 'u2', email: 'user@example.com' }
+      mockUser = { id: 'u2', email: 'user@example.com', emailVerified: true }
       const hostApp = new Elysia().use(
         createTenantsController({
           host: resolveHostPolicies({
@@ -514,7 +514,7 @@ describe('tenantsController (repo-backed)', () => {
     })
 
     it('host policy can deny a super-admin with its own reason', async () => {
-      mockUser = { id: 'u1', email: 'admin@example.com' }
+      mockUser = { id: 'u1', email: 'admin@example.com', emailVerified: true }
       const hostApp = new Elysia().use(
         createTenantsController({
           host: resolveHostPolicies({
@@ -532,7 +532,7 @@ describe('tenantsController (repo-backed)', () => {
     })
 
     it('a throwing host policy fails closed', async () => {
-      mockUser = { id: 'u1', email: 'admin@example.com' }
+      mockUser = { id: 'u1', email: 'admin@example.com', emailVerified: true }
       const hostApp = new Elysia().use(
         createTenantsController({
           host: resolveHostPolicies({
@@ -559,7 +559,7 @@ describe('tenantsController (repo-backed)', () => {
     })
 
     it('PUT and DELETE pass the acting user to lifecycle events', async () => {
-      mockUser = { id: 'u1', email: 'admin@example.com' }
+      mockUser = { id: 'u1', email: 'admin@example.com', emailVerified: true }
       mockService.findByIdOrSlug.mockResolvedValue(ok({ id: 't1', slug: 'acme', name: 'Acme' }))
       mockService.update.mockResolvedValueOnce(ok({ id: 't1', slug: 'acme', status: 'suspended' }))
       mockService.deleteById.mockResolvedValueOnce(ok({ id: 't1' }))
@@ -588,7 +588,7 @@ describe('tenantsController (repo-backed)', () => {
     })
 
     it('PUT accepts the HS-04 states', async () => {
-      mockUser = { id: 'u1', email: 'admin@example.com' }
+      mockUser = { id: 'u1', email: 'admin@example.com', emailVerified: true }
       mockService.findByIdOrSlug.mockResolvedValue(ok({ id: 't1', slug: 'acme', name: 'Acme' }))
       mockService.update.mockResolvedValue(ok({ id: 't1', slug: 'acme' }))
 

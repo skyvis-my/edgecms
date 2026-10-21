@@ -16,6 +16,7 @@ export type ActorSessionDetails = {
   actorSessionRoleRaw?: string
   /** True when the session was created by completing a second-factor challenge. */
   mfaVerified?: boolean
+  actorEmailVerified?: boolean
 }
 
 const ADMIN_MUTATION_PREFIXES = ['/api/admin/', '/api/tenants/']
@@ -110,6 +111,7 @@ export async function resolveActorSessionDetails(request: Request): Promise<Acto
       actorUserRoleRaw,
       actorSessionRoleRaw,
       mfaVerified: isMfaVerifiedSession(session),
+      actorEmailVerified: session.user.emailVerified === true,
     }
   })()
 

@@ -80,9 +80,9 @@ function buildApp() {
     .get('/api/tenants/:tenantSlug/api/public/entries', () => ({ success: true }))
 }
 
-function sessionFor(email: string, mfaVerified: boolean, role = 'viewer') {
+function sessionFor(email: string, mfaVerified: boolean, role = 'viewer', emailVerified = true) {
   return {
-    user: { id: `u-${email}`, name: email, email, role },
+    user: { id: `u-${email}`, name: email, email, emailVerified, role },
     session: { id: `s-${email}`, userId: `u-${email}`, mfaVerified },
   }
 }
@@ -154,6 +154,32 @@ describe('super-admin MFA requirement (SUPER_ADMIN_REQUIRE_MFA)', () => {
     )
     expect((await get('/api/admin/system/info', { authorization: `Bearer ${withMfa}` })).status).toBe(200)
     expect(mockGetSession).not.toHaveBeenCalled()
+  })
+})
+
+describe('super-admin by email needs a verified email', () => {
+  it('gives an unverified listed email no super-admin access', async () => {
+    mockGetSession.mockResolvedValue(sessionFor('root@example.com', true, 'viewer', false))
+    expect(await get('/api/admin/system/info')).toEqual({ status: 403, code: 'FORBIDDEN' })
+  })
+
+  it('gives a verified listed email super-admin access', async () => {
+    mockGetSession.mockResolvedValue(sessionFor('root@example.com', true, 'viewer', true))
+    expect((await get('/api/admin/system/info')).status).toBe(200)
+  })
+
+  it('ignores email-only super-admin tokens without the ev claim', async () => {
+    const unverified = await createAccessToken({ sub: 'u-root', email: 'root@example.com' }, JWT_SECRET)
+    const verified = await createAccessToken(
+      { sub: 'u-root', email: 'root@example.com', emailVerified: true },
+      JWT_SECRET
+    )
+    expect((await get('/api/admin/system/info', { authorization: `Bearer ${unverified}` })).code).toBe(
+      'FORBIDDEN'
+    )
+    expect((await get('/api/admin/system/info', { authorization: `Bearer ${verified}` })).status).toBe(
+      200
+    )
   })
 })
 

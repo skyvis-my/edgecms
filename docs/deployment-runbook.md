@@ -106,7 +106,7 @@ wrangler secret put <SECRET_NAME> --env <env>
 | `JWT_HS256_SECRET` | HS256 key for public API JWT verification | Yes |
 | `CF_API_TOKEN` | Cloudflare API token for runtime D1/KV/R2 provisioning | Yes |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID (used by runtime provisioning) | Yes |
-| `SUPER_ADMIN_EMAILS` | Comma-separated list of super-admin email addresses | Yes |
+| `SUPER_ADMIN_EMAILS` | Comma-separated list of super-admin email addresses (each account must have a verified email) | Yes |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated allowed origins (e.g., `https://cms.example.com`) | Yes |
 | `BASE_URL` | Canonical base URL of the deployment (e.g., `https://cms.example.com`) | Yes |
 | `QWEN_API_KEY` | Qwen (DashScope) API key for AI features | Yes (if AI enabled) |
@@ -158,6 +158,19 @@ These are fixed when the Worker starts (Worker vars or secrets, or `configureAut
 - **`invite-only`.** A super-admin creates an invite with `POST /api/admin/invites` (`{ "email": "...", "tenantSlug": "acme", "tenantRole": "admin" }`). The response contains the token once and a `signUpPath` (`/sign-up?invite=...`). Invites are bound to one email, work once, expire (default 72 hours) and can grant membership of one tenant. List with `GET /api/admin/invites`, revoke with `DELETE /api/admin/invites/:id`. The policy also blocks new accounts from Microsoft and Google sign-in.
 - **Email verification.** When an email sender is configured, email/password accounts must verify their address before they can sign in. Existing unverified accounts get a new link on their next sign-in attempt. To send real email, pass your own sender in code: `configureAuthPolicies({ emailSender: { send: async ({ to, subject, text }) => { /* your provider */ } } })`. EdgeCMS ships no email provider.
 - **MFA.** Users turn on two-factor authentication (authenticator app + recovery codes) under **Settings → Profile**. A super-admin can require it per tenant with `PUT /api/admin/tenants/:slug` and `{ "requireMfa": true }`; tenant admin and MCP routes then return `403 MFA_REQUIRED` for sessions that did not complete a second factor. Microsoft and Google sign-ins do not get an EdgeCMS second-factor challenge, so with MFA required those users must sign in with their password and authenticator code.
+
+### Super-admins listed in `SUPER_ADMIN_EMAILS`
+
+A listed address grants super-admin only when the account's email is **verified**, and it can only be registered when verification is enforced (an email sender is configured) or through Microsoft/Google sign-in with a verified email. Accounts with the `superadmin` role are unaffected.
+
+**Upgrading an existing deployment:** an operator account created before this check is usually unverified and loses super-admin. Fix it in one of these ways:
+
+- Configure an email sender; signing in sends a verification link.
+- Or, after confirming the account is yours (you can sign in with its password), mark it verified:
+
+```bash
+wrangler d1 execute DB --remote --env production --command "UPDATE user SET emailVerified = 1 WHERE email = 'you@example.com'"
+```
 
 Set them per environment, for example:
 

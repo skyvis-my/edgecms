@@ -63,6 +63,7 @@ Events go to `host.onTenantEvent` and to the webhook event bus. Both are awaited
 - Every account creation path is checked, including Microsoft and Google sign-in. The first account of an empty database is always allowed, so a fresh install can be bootstrapped.
 - `invite-only` accepts a new account only with an unused, unexpired invite for that email. Super-admins create invites with `POST /api/admin/invites` (`email`, optional `tenantSlug` and `tenantRole`, `expiresInHours`); the token is returned once, only its SHA-256 hash is stored, and it can be revoked with `DELETE /api/admin/invites/:id`. The admin sign-up page reads `?invite=<token>`.
 - With `host.auth.emailSender` (or `AUTH_EMAIL_SENDER=console` in development), email/password accounts must verify their email before they can sign in. EdgeCMS ships no email provider.
+- Super-admin by `SUPER_ADMIN_EMAILS` requires a verified email. A listed address can be registered only when verification is enforced (an email sender is set) or the identity provider verified it.
 - Unlike `canCreateTenant` and `onTenantEvent`, auth policies apply to the whole Worker isolate.
 
 ## Multi-factor authentication (HS-11)

@@ -108,11 +108,12 @@ describe('MFA helpers', () => {
 
   it('decides when a super-admin is missing MFA', () => {
     const required = { SUPER_ADMIN_REQUIRE_MFA: 'true', SUPER_ADMIN_EMAILS: 'root@example.com' }
-    const root = { email: 'root@example.com', mfaVerified: false }
+    const root = { email: 'root@example.com', emailVerified: true, mfaVerified: false }
     expect(isSuperAdminMissingMfa(root, required)).toBe(true)
     expect(isSuperAdminMissingMfa({ ...root, mfaVerified: true }, required)).toBe(false)
     expect(isSuperAdminMissingMfa(root, { SUPER_ADMIN_EMAILS: 'root@example.com' })).toBe(false)
     expect(isSuperAdminMissingMfa({ email: 'x@example.com', mfaVerified: false }, required)).toBe(false)
+    expect(isSuperAdminMissingMfa({ ...root, emailVerified: false }, required)).toBe(false)
     expect(
       isSuperAdminMissingMfa({ email: 'x@example.com', userRole: 'superadmin', mfaVerified: false }, required)
     ).toBe(true)

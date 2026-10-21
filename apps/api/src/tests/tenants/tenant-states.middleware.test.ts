@@ -48,8 +48,8 @@ function tenantWithStatus(status: string) {
   }
 }
 
-const member = { user: { id: 'member-1', email: 'editor@acme.test' }, session: { id: 's1' } }
-const superAdmin = { user: { id: 'root-1', email: 'root@example.com' }, session: { id: 's2' } }
+const member = { user: { id: 'member-1', email: 'editor@acme.test', emailVerified: true }, session: { id: 's1' } }
+const superAdmin = { user: { id: 'root-1', email: 'root@example.com', emailVerified: true }, session: { id: 's2' } }
 
 async function call(method: string, path: string) {
   const response = await app.handle(new Request(`http://localhost${path}`, { method }))
@@ -119,7 +119,7 @@ describe('tenant states (HS-04)', () => {
     })
 
     it('still rejects non-members on public reads when authenticated', async () => {
-      mockGetSession.mockResolvedValue({ user: { id: 'stranger', email: 'x@y.test' }, session: {} })
+      mockGetSession.mockResolvedValue({ user: { id: 'stranger', email: 'x@y.test', emailVerified: true }, session: {} })
       mockFindTenantUser.mockResolvedValue(undefined)
       expect((await call('GET', PUBLIC_READ)).status).toBe(403)
     })

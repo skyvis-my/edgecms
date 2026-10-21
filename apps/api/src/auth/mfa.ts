@@ -29,6 +29,7 @@ export function isMfaVerifiedSession(session: unknown): boolean {
 export function isSuperAdminMissingMfa(
   input: {
     email?: string | null
+    emailVerified?: boolean | null
     userRole?: unknown
     sessionRole?: unknown
     mfaVerified: boolean
@@ -39,6 +40,9 @@ export function isSuperAdminMissingMfa(
   if (!resolveAuthPolicies(env).requireMfaForSuperAdmins) return false
   return (
     hasSuperAdminRole(input.sessionRole) ||
-    isSuperAdminUser({ email: input.email, role: input.userRole }, env)
+    isSuperAdminUser(
+      { email: input.email, emailVerified: input.emailVerified, role: input.userRole },
+      env
+    )
   )
 }

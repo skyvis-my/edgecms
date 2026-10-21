@@ -225,6 +225,7 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
       let actorUserRoleRaw: string | undefined
       let actorEmail: string | undefined = fastActor?.actorEmail
       let actorMfaVerified = fastActor?.mfaVerified === true
+      let actorEmailVerified = fastActor?.emailVerified === true
       if (!fastActor && shouldResolveActorSession(pathname, method)) {
         try {
           const actor = await resolveActorSessionDetails(ctx.request)
@@ -234,6 +235,7 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
           actorUserRoleRaw = actor.actorUserRoleRaw
           actorEmail = actor.actorEmail
           actorMfaVerified = actor.mfaVerified === true
+          actorEmailVerified = actor.actorEmailVerified === true
         } catch (err) {
           logger.warn('actor_session_resolution_failed', {
             error: err instanceof Error ? err.message : String(err),
@@ -314,7 +316,7 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
             fastActor?.isSuperAdminByToken === true ||
             hasSuperAdminRole(actorSessionRoleRaw) ||
             hasSuperAdminRole(actorUserRoleRaw),
-          isSuperAdminByEmail: isSuperAdminEmail(actorEmail, superAdminEmails),
+          isSuperAdminByEmail: isSuperAdminEmail(actorEmail, superAdminEmails, actorEmailVerified),
         }
 
         let authorization = authorizeApiRequest({ pathname, method, principal })
@@ -351,6 +353,7 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
         const superAdminMissingMfa = isSuperAdminMissingMfa(
           {
             email: actorEmail,
+            emailVerified: actorEmailVerified,
             userRole: fastActor?.isSuperAdminByToken ? 'superadmin' : actorUserRoleRaw,
             sessionRole: actorSessionRoleRaw,
             mfaVerified: actorMfaVerified,

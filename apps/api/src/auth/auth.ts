@@ -12,7 +12,12 @@ import {
   type AuthPolicies,
   resolveAuthPolicies,
 } from './auth-policies'
-import { enforceSignupPolicy, readInviteToken } from './signup-policy'
+import {
+  enforceSignupPolicy,
+  enforceSuperAdminEmailSignup,
+  readInviteToken,
+} from './signup-policy'
+import { parseSuperAdminEmails } from './super-admin'
 
 export type CreateAuthOptions = {
   secret?: string
@@ -28,6 +33,8 @@ export type CreateAuthOptions = {
   }
   /** Signup, email verification and MFA policies. Defaults keep historical behavior. */
   policies?: AuthPolicies
+  /** Normalized SUPER_ADMIN_EMAILS; listed addresses need verified sign-up. */
+  superAdminEmails?: string[]
 }
 
 const DEFAULT_POLICIES: AuthPolicies = { signupPolicy: 'open', requireMfaForSuperAdmins: false }
@@ -118,6 +125,7 @@ function buildOptionsKey(options?: CreateAuthOptions): string {
     options?.google?.clientSecret ?? '',
     policies.signupPolicy,
     senderKey(policies.emailSender),
+    (options?.superAdminEmails ?? []).join(','),
   ].join('::')
 }
 
@@ -149,6 +157,7 @@ export function createAuth(
   const gateDb = createDb(d1)
   const policies = options?.policies ?? DEFAULT_POLICIES
   const emailSender = policies.emailSender
+  const superAdminEmails = options?.superAdminEmails ?? []
   const trustedOrigins = Array.from(
     new Set(
       [
@@ -221,6 +230,12 @@ export function createAuth(
       before: createAuthMiddleware(async (ctx) => {
         if (ctx.path !== '/sign-up/email') return
         const email = (ctx.body as { email?: unknown } | undefined)?.email
+        enforceSuperAdminEmailSignup({
+          email: typeof email === 'string' ? email : '',
+          superAdminEmails,
+          emailVerified: false,
+          verificationEnforced: Boolean(emailSender),
+        })
         await enforceSignupPolicy(gateDb, {
           policy: policies.signupPolicy,
           email: typeof email === 'string' ? email : '',
@@ -233,6 +248,12 @@ export function createAuth(
       user: {
         create: {
           async before(newUser, ctx) {
+            enforceSuperAdminEmailSignup({
+              email: newUser.email,
+              superAdminEmails,
+              emailVerified: newUser.emailVerified === true,
+              verificationEnforced: Boolean(emailSender),
+            })
             await enforceSignupPolicy(gateDb, {
               policy: policies.signupPolicy,
               email: newUser.email,
@@ -322,6 +343,7 @@ type AuthEnv = Pick<
   | 'SIGNUP_POLICY'
   | 'AUTH_EMAIL_SENDER'
   | 'SUPER_ADMIN_REQUIRE_MFA'
+  | 'SUPER_ADMIN_EMAILS'
 >
 
 /** Builds the auth instance for a Worker env, including composition-time policies. */
@@ -339,6 +361,7 @@ export function createAuthForEnv(env: AuthEnv, baseURL: string) {
       clientSecret: env.GOOGLE_CLIENT_SECRET,
     },
     policies: resolveAuthPolicies(env),
+    superAdminEmails: parseSuperAdminEmails(env.SUPER_ADMIN_EMAILS),
   })
 }
 

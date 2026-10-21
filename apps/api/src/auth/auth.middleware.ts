@@ -123,6 +123,7 @@ export const betterAuthPlugin = new Elysia({ name: 'better-auth' })
                 id: fast.actorId,
                 name: email || fast.actorId,
                 email,
+                emailVerified: fast.emailVerified === true,
                 role,
               },
               session: {

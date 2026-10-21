@@ -267,6 +267,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
           const superAdminMissingMfa = isSuperAdminMissingMfa(
             {
               email: actor.actorEmail,
+              emailVerified: actor.actorEmailVerified === true,
               userRole: actor.actorUserRoleRaw,
               sessionRole: actor.actorSessionRoleRaw,
               mfaVerified,
@@ -289,6 +290,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
               rv,
               pv,
               email: actor.actorEmail,
+              emailVerified: actor.actorEmailVerified === true,
               sa:
                 hasSuperAdminRole(actor.actorSessionRoleRaw) ||
                 hasSuperAdminRole(actor.actorUserRoleRaw),
@@ -359,7 +361,10 @@ export const createApp = (options: CreateAppOptions = {}) => {
             {
               host,
               events: tenantEvents,
-              isSuperAdmin: isSuperAdminUser(user as { email: string; role?: unknown }, env as Env),
+              isSuperAdmin: isSuperAdminUser(
+                user as { email: string; emailVerified?: boolean; role?: unknown },
+                env as Env
+              ),
             }
           )
           return toServiceResponse(set, result, { successStatus: 201 })
@@ -369,7 +374,11 @@ export const createApp = (options: CreateAppOptions = {}) => {
           const rawRole = (user as { role?: unknown }).role
           const role =
             hasSuperAdminRole(rawRole) ||
-            isSuperAdminEmail(user.email, parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS))
+            isSuperAdminEmail(
+              user.email,
+              parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS),
+              (user as { emailVerified?: unknown }).emailVerified === true
+            )
               ? 'superadmin'
               : typeof rawRole === 'string'
                 ? rawRole

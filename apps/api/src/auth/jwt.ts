@@ -33,6 +33,8 @@ export type AccessTokenClaims = {
   sa?: number
   /** 1 when the session behind this token completed a second factor (HS-11). */
   mfa?: number
+  /** 1 when the token's email is verified; email-based super-admin needs it. */
+  ev?: number
   iss?: string
   aud?: string | string[]
   exp?: number
@@ -50,6 +52,7 @@ export type CreateAccessTokenInput = {
   email?: string
   sa?: boolean
   mfa?: boolean
+  emailVerified?: boolean
 }
 
 export type CreateAccessTokenOptions = {
@@ -138,6 +141,7 @@ export async function createAccessToken(
   if (input.email) payload.email = input.email
   if (input.sa) payload.sa = 1
   if (input.mfa) payload.mfa = 1
+  if (input.emailVerified) payload.ev = 1
 
   const headerPart = base64UrlEncodeJson({ alg: 'HS256', typ: 'JWT' })
   const payloadPart = base64UrlEncodeJson(payload)
@@ -183,6 +187,7 @@ export function parseAccessClaims(payload: JwtPayload | unknown): AccessTokenCla
   if (email) claims.email = email
   if (record.sa === 1 || record.sa === true) claims.sa = 1
   if (record.mfa === 1 || record.mfa === true) claims.mfa = 1
+  if (record.ev === 1 || record.ev === true) claims.ev = 1
   if (typeof record.iat === 'number') claims.iat = record.iat
   if (typeof record.exp === 'number') claims.exp = record.exp
   if (typeof record.iss === 'string') claims.iss = record.iss

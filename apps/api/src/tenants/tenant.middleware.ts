@@ -163,7 +163,11 @@ export const tenantMiddleware = new Elysia({ name: 'tenant-middleware' })
     assertTenantMfa(request, tenant.requireMfa === true, fast.mfaVerified === true)
     if (
       fast.isSuperAdminByToken ||
-      isSuperAdminEmail(fast.actorEmail, parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS))
+      isSuperAdminEmail(
+        fast.actorEmail,
+        parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS),
+        fast.emailVerified
+      )
     ) {
       return {
         tenant: {
@@ -219,7 +223,11 @@ export const tenantMiddleware = new Elysia({ name: 'tenant-middleware' })
       hasSuperAdminRole(sessionUserRole) || hasSuperAdminRole(sessionPayloadRole)
     if (
       isSuperAdminByRole ||
-      isSuperAdminEmail(session.user.email, parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS))
+      isSuperAdminEmail(
+        session.user.email,
+        parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS),
+        session.user.emailVerified === true
+      )
     ) {
       return {
         tenant: {
