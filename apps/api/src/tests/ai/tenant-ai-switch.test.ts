@@ -22,11 +22,12 @@ vi.mock('cloudflare:workers', () => ({
 }))
 vi.mock('@/database/db', () => ({ createDb: (): Database => fixture.db }))
 
-const USERS: Record<string, { id: string; email: string; role: string }> = {
-  owner: { id: 'owner', email: 'owner@example.com', role: 'viewer' },
-  member: { id: 'member', email: 'member@example.com', role: 'viewer' },
-  outsider: { id: 'outsider', email: 'outsider@example.com', role: 'viewer' },
-  root: { id: 'root', email: 'root@example.com', role: 'viewer' },
+const USERS: Record<string, { id: string; email: string; emailVerified: boolean; role: string }> = {
+  owner: { id: 'owner', email: 'owner@example.com', emailVerified: true, role: 'viewer' },
+  member: { id: 'member', email: 'member@example.com', emailVerified: true, role: 'viewer' },
+  outsider: { id: 'outsider', email: 'outsider@example.com', emailVerified: true, role: 'viewer' },
+  root: { id: 'root', email: 'root@example.com', emailVerified: true, role: 'viewer' },
+  'root-unverified': { id: 'root-2', email: 'root@example.com', emailVerified: false, role: 'viewer' },
 }
 
 vi.mock('@/auth/auth.middleware', () => ({
@@ -219,6 +220,12 @@ describe('tenant AI settings endpoint', () => {
     expect(events[0]!.metadata).toMatchObject({ previous: false })
 
     expect((await call('off', 'POST', '/api/admin/ai/command', { prompt: 'x' })).status).toBe(200)
+  })
+
+  it('does not treat an unverified SUPER_ADMIN_EMAILS address as super-admin', async () => {
+    const res = await call('on', 'PUT', '/api/admin/settings/ai', { aiEnabled: false }, 'root-unverified')
+    expect(res.status).toBe(403)
+    expect(await isTenantAiEnabled({ db: fixture.db, tenantId: 'on' })).toBe(true)
   })
 
   it('lets super-admins change any tenant', async () => {

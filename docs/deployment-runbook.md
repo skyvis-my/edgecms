@@ -223,7 +223,7 @@ Default remote smoke validates health and deployed admin UI regressions. The opt
 
 Migrations must be applied **before** (or immediately after) deploying a new version that depends on schema changes.
 
-Migration `0033_auth_seams.sql` adds two-factor tables and a `session.mfaVerified` column. Apply it **before** deploying the version that contains it, or sign-in fails until it is applied.
+Migration `0034_auth_seams.sql` adds two-factor tables and a `session.mfaVerified` column. Apply it **before** deploying the version that contains it, or sign-in fails until it is applied.
 
 ```bash
 cd apps/api
