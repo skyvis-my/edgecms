@@ -13,8 +13,26 @@ import { type AuditCategory, auditService, resolveAuditRetentionDays } from './a
 const TENANT_ADMIN_PREFIX = /^\/api\/tenants\/([^/]+)\/api\/admin\/(.+)$/
 const GLOBAL_ADMIN_PREFIX = /^\/api\/admin\/(.+)$/
 /** Admin areas whose changes are security-relevant (permissions, tenants, settings). */
-const AUDITED_AREAS = new Set(['tenants', 'users', 'roles', 'settings', 'webhooks', 'plugins', 'system', 'audit'])
+const AUDITED_AREAS = new Set([
+  'tenants',
+  'users',
+  'roles',
+  'settings',
+  'webhooks',
+  'plugins',
+  'system',
+  'collections',
+  'audit',
+])
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
 
 export type AdminAuditTarget = {
   scope: 'global' | { tenantSlug: string }
@@ -36,7 +54,7 @@ export function classifyAdminAuditRequest(pathname: string, method: string): Adm
   if (!AUDITED_AREAS.has(area)) return null
   if (area === 'audit' ? method !== 'GET' : !MUTATING_METHODS.has(method)) return null
 
-  const scope = tenantMatch ? { tenantSlug: decodeURIComponent(tenantMatch[1]!) } : 'global'
+  const scope = tenantMatch ? { tenantSlug: safeDecode(tenantMatch[1]!) } : 'global'
   const touchesMembership = area === 'roles' || area === 'users' || /\/users(\/|$)/.test(rest)
   const category: AuditCategory =
     area === 'audit'
@@ -57,7 +75,7 @@ export function extractRouteParams(route: string | undefined, pathname: string):
   const params: Record<string, string> = {}
   templateParts.forEach((part, index) => {
     if (part.startsWith(':') && pathParts[index] !== undefined) {
-      params[part.slice(1)] = decodeURIComponent(pathParts[index]!)
+      params[part.slice(1)] = safeDecode(pathParts[index]!)
     }
   })
   return params

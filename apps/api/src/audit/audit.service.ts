@@ -14,8 +14,12 @@ import { auditRepository } from './audit.repository'
 
 /** HS-12: audit events are kept for at least one year. */
 export const MIN_AUDIT_RETENTION_DAYS = 365
-/** Retention is checked when an event lands on a multiple of this seq. */
+/**
+ * Retention is checked when an event lands on a multiple of this seq, or when
+ * the previous event is older than a day (so quiet chains are pruned too).
+ */
 export const AUDIT_RETENTION_CHECK_INTERVAL = 100
+const QUIET_CHAIN_CHECK_MS = 86_400_000
 const MAX_APPEND_ATTEMPTS = 10
 const VERIFY_PAGE_SIZE = 500
 export const MAX_EXPORT_PAGE_SIZE = 1000
@@ -99,13 +103,13 @@ async function appendOnce(
   db: Database,
   input: AuditEventInput,
   occurredAt: string
-): Promise<AuditEventRow> {
+): Promise<{ row: AuditEventRow; previousAt: string | null }> {
   for (let attempt = 1; ; attempt += 1) {
     const head = await auditRepository.findHead(db, input.scope)
     const row = await buildRow(input, head, occurredAt)
     try {
       await auditRepository.insert(db, row)
-      return row
+      return { row, previousAt: head?.occurredAt ?? null }
     } catch (err) {
       // A concurrent writer took this seq; re-read the head and re-link.
       if (attempt >= MAX_APPEND_ATTEMPTS || !isUniqueViolation(err)) throw err
@@ -124,8 +128,10 @@ export const auditService = {
     options: AppendOptions = {}
   ): Promise<AuditEventRow> {
     const now = options.now?.() ?? new Date()
-    const row = await appendOnce(db, input, input.occurredAt ?? now.toISOString())
-    if (row.seq % AUDIT_RETENTION_CHECK_INTERVAL === 0 && row.action !== AUDIT_PRUNE_ACTION) {
+    const { row, previousAt } = await appendOnce(db, input, input.occurredAt ?? now.toISOString())
+    const quietChain =
+      previousAt !== null && now.getTime() - Date.parse(previousAt) > QUIET_CHAIN_CHECK_MS
+    if (row.seq % AUDIT_RETENTION_CHECK_INTERVAL === 0 || quietChain) {
       await this.enforceRetention(db, input.scope, options).catch((err) => {
         logger.warn('audit_retention_failed', {
           scope: input.scope,

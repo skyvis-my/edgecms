@@ -1,11 +1,14 @@
-import { and, asc, desc, eq, gt, lt, lte, or } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, lt, lte } from 'drizzle-orm'
 import type { Database } from '@/database/db'
 import { auditEvents, type AuditEventRow } from '@/database/schema'
 
 export const auditRepository = {
-  async findHead(db: Database, scope: string): Promise<{ seq: number; hash: string } | null> {
+  async findHead(
+    db: Database,
+    scope: string
+  ): Promise<{ seq: number; hash: string; occurredAt: string } | null> {
     const rows = await db
-      .select({ seq: auditEvents.seq, hash: auditEvents.hash })
+      .select({ seq: auditEvents.seq, hash: auditEvents.hash, occurredAt: auditEvents.occurredAt })
       .from(auditEvents)
       .where(eq(auditEvents.scope, scope))
       .orderBy(desc(auditEvents.seq))
@@ -50,15 +53,5 @@ export const auditRepository = {
     await db
       .delete(auditEvents)
       .where(and(eq(auditEvents.scope, scope), lte(auditEvents.seq, seq)))
-  },
-
-  /** Events where the user is actor or target, across all scopes (HS-13 export). */
-  async listForSubject(db: Database, userId: string, limit: number): Promise<AuditEventRow[]> {
-    return db
-      .select()
-      .from(auditEvents)
-      .where(or(eq(auditEvents.actorId, userId), eq(auditEvents.targetId, userId)))
-      .orderBy(asc(auditEvents.occurredAt))
-      .limit(limit)
   },
 }

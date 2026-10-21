@@ -47,11 +47,17 @@ describe('audit chain primitives', () => {
         apiKey: 'k',
         nested: { password: 'p', refresh_token: 't', email: 'a@b.c', keep: 'ok' },
         list: [{ secret: 's' }],
+        tokenCount: 12,
+        bypassCache: true,
+        sessionId: 'sid',
       })
     ).toEqual({
       apiKey: '[redacted]',
       nested: { password: '[redacted]', refresh_token: '[redacted]', email: '[redacted]', keep: 'ok' },
       list: [{ secret: '[redacted]' }],
+      tokenCount: 12,
+      bypassCache: true,
+      sessionId: '[redacted]',
     })
   })
 
@@ -176,7 +182,7 @@ describe('auditService against real SQLite', () => {
     expect(await auditRepository.listPage(db, 'tenant-a', 0, 10)).toHaveLength(1)
   })
 
-  it('runs retention automatically on every Nth append', async () => {
+  it('runs retention automatically on every Nth append and on quiet chains', async () => {
     const { db } = createAuditTestDb()
     const old = Date.parse('2020-01-01T00:00:00.000Z')
     await auditService.append(
@@ -196,6 +202,23 @@ describe('auditService against real SQLite', () => {
     const first = await auditRepository.listPage(db, 'tenant-a', 0, 1)
     expect(first[0]!.seq).toBe(2)
     expect((await auditService.verify(db, 'tenant-a')).valid).toBe(true)
+  })
+
+  it('prunes a quiet chain on its next append', async () => {
+    const { db } = createAuditTestDb()
+    const start = Date.parse('2024-01-01T00:00:00.000Z')
+    const event = {
+      scope: 'quiet',
+      category: 'auth' as const,
+      action: 'x',
+      outcome: 'success' as const,
+      actorSource: 'system',
+    }
+    await auditService.append(db, event, { now: () => new Date(start) })
+    await auditService.append(db, event, { now: () => new Date(start + 500 * DAY) })
+    const remaining = await auditRepository.listPage(db, 'quiet', 0, 10)
+    expect(remaining.map((e) => e.seq)).toEqual([2, 3])
+    expect((await auditService.verify(db, 'quiet')).valid).toBe(true)
   })
 
   it('verifyAuditChain rejects events from another scope', async () => {

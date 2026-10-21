@@ -54,8 +54,26 @@ export type AuditChainVerification = {
   failure?: { seq: number; reason: AuditChainFailureReason }
 }
 
-const SECRET_KEY_PATTERN =
-  /pass(word)?|secret|token|api[-_]?key|authorization|cookie|credential|e-?mail|session/i
+const SECRET_KEY_FRAGMENTS = [
+  'password',
+  'passwd',
+  'secret',
+  'apikey',
+  'authorization',
+  'cookie',
+  'credential',
+  'email',
+]
+
+/** Keys whose values must never reach the ledger (normalized: lowercase, no separators). */
+function isSecretKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[-_\s]/g, '')
+  return (
+    SECRET_KEY_FRAGMENTS.some((fragment) => normalized.includes(fragment)) ||
+    /tokens?$/.test(normalized) ||
+    normalized.startsWith('session')
+  )
+}
 
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') {
@@ -96,7 +114,7 @@ export function redactAuditMetadata(value: unknown, depth = 0): unknown {
   if (value === null || typeof value !== 'object') return value
   const out: Record<string, unknown> = {}
   for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = SECRET_KEY_PATTERN.test(key) ? '[redacted]' : redactAuditMetadata(v, depth + 1)
+    out[key] = isSecretKey(key) ? '[redacted]' : redactAuditMetadata(v, depth + 1)
   }
   return out
 }

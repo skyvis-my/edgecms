@@ -75,6 +75,16 @@ async function resolveSessionUserId(
   }
 }
 
+async function userIdFromResponseBody(response: Response): Promise<string | null> {
+  if (!response.headers.get('content-type')?.includes('application/json')) return null
+  try {
+    const body = (await response.clone().json()) as { user?: { id?: unknown } } | null
+    return typeof body?.user?.id === 'string' ? body.user.id : null
+  } catch {
+    return null
+  }
+}
+
 /** HS-12: record sign-in, sign-up and sign-out outcomes in the global audit chain. */
 async function handleAuditedAuthRequest(
   auth: ReturnType<typeof createAuth>,
@@ -90,6 +100,8 @@ async function handleAuditedAuthRequest(
   if (action !== 'auth.sign_out' && response.status < 400) {
     const cookie = cookieHeaderFromResponse(response)
     userId = cookie ? await resolveSessionUserId(auth, new Headers({ cookie })) : null
+    // Sign-up with email verification returns the new user without a session.
+    userId ??= await userIdFromResponseBody(response)
   }
   await recordAuthAuditEvent({
     db: createDb(typedEnv.DB),

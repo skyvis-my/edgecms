@@ -59,13 +59,13 @@ Security-relevant actions are appended to the `audit_events` table in the main D
 
 Recorded today, with local tests in `apps/api/src/tests/audit/`:
 
-- Every executed command and transaction (`command.executed`, success or failure; dry runs are not recorded). The event stores the command id, type and entity references, not field values.
-- Sign-in, sign-up and sign-out through `/api/auth/*`, including failed sign-ins. Only the user id is stored: no email, IP address or user agent. Failed attempts carry no identity.
-- Role, membership, tenant, webhook, plugin and settings mutations under `/api/admin/*` and `/api/tenants/:slug/api/admin/*`, including denied attempts, and every audit export or verification.
+- Every executed command and transaction (`command.executed`, success or failure; dry runs are not recorded). The event stores the command id, type and entity references, not field values. A replayed envelope with the same idempotency key is recorded again with the same command id, so the ledger shows each request, not only the first execution.
+- Sign-in, sign-up and sign-out through `/api/auth/*`, including failed sign-ins. Starting a social sign-in is not recorded; its callback is. Only the user id is stored: no email, IP address or user agent. Failed attempts carry no identity.
+- Role, membership, tenant, collection schema, webhook, plugin and settings mutations under `/api/admin/*` and `/api/tenants/:slug/api/admin/*`, including denied attempts, and every audit export or verification.
 
 Tamper evidence: each event stores `prevHash` and `hash = sha256(prevHash + "\n" + canonicalJson(fields))`, where `canonicalJson` sorts keys recursively and the hashed fields are `id`, `scope`, `seq`, `category`, `action`, `outcome`, `actorDigest`, `actorSource`, `targetType`, `targetDigest`, `metadata` and `occurredAt`. User ids enter the hash only as `sha256("edgecms-audit-subject:" + id)`, so pseudonymizing them for a deletion request keeps the chain valid. The first event links to 64 zeros. Verification detects edited, removed or reordered events, and events re-attributed to any id other than a `deleted-user:` pseudonym. A chain is tamper-evident, not tamper-proof: someone with write access to D1 could rewrite the whole chain. Hosts should copy the `head` hash returned by each export to storage outside D1.
 
-Retention: `AUDIT_RETENTION_DAYS` (default and minimum 365). Every 100th event in a chain triggers pruning of events older than the window. The pruning is first recorded in the chain (`audit.retention_pruned` with the last removed `seq` and `hash`), so verification can tell retention from deletion.
+Retention: `AUDIT_RETENTION_DAYS` (default and minimum 365). Pruning of events older than the window runs on every 100th event in a chain and on the first event after a quiet day, so low-volume chains are pruned too. The pruning is first recorded in the chain (`audit.retention_pruned` with the last removed `seq` and `hash`), so verification can tell retention from deletion.
 
 Export and verification (no-store, cursor pages of up to 1000 events, metadata redacted for secrets and emails):
 
