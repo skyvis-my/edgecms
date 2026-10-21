@@ -84,6 +84,16 @@ describe('seed-smoke-db SQL', () => {
     expect(firstRun).toContain("'smoke-collection-posts'")
   })
 
+  it('writes Better Auth timestamps in Unix seconds', () => {
+    const options = parseSeedOptions([], {})
+    const sql = buildSeedSql(options, 'hash:value', new Date('2026-06-04T00:00:00.000Z'))
+    const seconds = String(Date.UTC(2026, 5, 4) / 1000)
+
+    expect(sql).toContain(`NULL, ${seconds}, ${seconds})`)
+    expect(sql).toContain(`'hash:value', ${seconds}, ${seconds})`)
+    expect(sql).not.toContain(String(Date.UTC(2026, 5, 4)))
+  })
+
   it('escapes SQL string values', () => {
     const options = {
       ...parseSeedOptions([], {}),
@@ -96,6 +106,11 @@ describe('seed-smoke-db SQL', () => {
 })
 
 describe('applyLocalMigrations', () => {
+  it('migrates the binding into the wrangler state that dev:api reads', async () => {
+    const { localMigrationCommand } = await import('./seed-smoke-db')
+    expect(localMigrationCommand).toEqual(['bunx', 'wrangler', 'd1', 'migrations', 'apply', 'DB', '--local'])
+  })
+
   it('resolves cleanly when runner exits with 0', async () => {
     const { applyLocalMigrations } = await import('./seed-smoke-db')
     await expect(applyLocalMigrations(async () => 0)).resolves.toBeUndefined()
@@ -103,6 +118,6 @@ describe('applyLocalMigrations', () => {
 
   it('rejects with error when runner exits with non-zero code', async () => {
     const { applyLocalMigrations } = await import('./seed-smoke-db')
-    await expect(applyLocalMigrations(async () => 1)).rejects.toThrow('cf d1 migrations apply failed')
+    await expect(applyLocalMigrations(async () => 1)).rejects.toThrow('d1 migrations apply failed')
   })
 })

@@ -55,7 +55,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:8787',
+        target: process.env.EDGECMS_API_PROXY_TARGET ?? 'http://localhost:8787',
         changeOrigin: true,
       },
     },

@@ -63,7 +63,8 @@ function sqlJson(value: unknown) {
 
 export function buildSeedSql(options: SeedOptions, passwordHash: string, now = new Date()) {
   const nowIso = now.toISOString()
-  const nowMs = now.getTime()
+  // Better Auth tables use Drizzle `mode: 'timestamp'`, which stores Unix seconds.
+  const nowSeconds = Math.floor(now.getTime() / 1000)
   const userId = 'smoke-user'
   const accountId = 'smoke-account-credential'
   const tenantId = 'smoke-tenant'
@@ -80,7 +81,7 @@ export function buildSeedSql(options: SeedOptions, passwordHash: string, now = n
 
   return `
 INSERT INTO "user" ("id", "name", "email", "role", "emailVerified", "image", "createdAt", "updatedAt")
-VALUES (${sqlString(userId)}, 'Smoke Admin', ${sqlString(options.email)}, 'admin', 1, NULL, ${nowMs}, ${nowMs})
+VALUES (${sqlString(userId)}, 'Smoke Admin', ${sqlString(options.email)}, 'admin', 1, NULL, ${nowSeconds}, ${nowSeconds})
 ON CONFLICT("id") DO UPDATE SET
   "name" = excluded."name",
   "email" = excluded."email",
@@ -89,7 +90,7 @@ ON CONFLICT("id") DO UPDATE SET
   "updatedAt" = excluded."updatedAt";
 
 INSERT INTO "account" ("id", "accountId", "providerId", "userId", "accessToken", "refreshToken", "idToken", "accessTokenExpiresAt", "refreshTokenExpiresAt", "scope", "password", "createdAt", "updatedAt")
-VALUES (${sqlString(accountId)}, ${sqlString(userId)}, 'credential', ${sqlString(userId)}, NULL, NULL, NULL, NULL, NULL, NULL, ${sqlString(passwordHash)}, ${nowMs}, ${nowMs})
+VALUES (${sqlString(accountId)}, ${sqlString(userId)}, 'credential', ${sqlString(userId)}, NULL, NULL, NULL, NULL, NULL, NULL, ${sqlString(passwordHash)}, ${nowSeconds}, ${nowSeconds})
 ON CONFLICT("id") DO UPDATE SET
   "password" = excluded."password",
   "updatedAt" = excluded."updatedAt";
@@ -123,21 +124,14 @@ ON CONFLICT("tenantId", "slug") DO UPDATE SET
 `.trim()
 }
 
+export const localMigrationCommand = ['bunx', 'wrangler', 'd1', 'migrations', 'apply', 'DB', '--local']
+
+// Uses wrangler (not cf) so migrations land in apps/api/.wrangler/state, the store `bun run dev:api` reads.
 export async function applyLocalMigrations(runner?: () => Promise<number>, cwd = apiDir) {
-  if (runner) {
-    const exitCode = await runner()
-    if (exitCode !== 0) throw new Error(`cf d1 migrations apply failed with exit code ${exitCode}`)
-    return
-  }
-  const localDatabaseId = process.env.D1_DATABASE_ID ?? 'LOCAL_DATABASE_ID'
-  const cmd = ['node', 'scripts/cf.mjs', 'd1', 'migrations', 'apply', localDatabaseId, '--local', '--dir', 'drizzle/migrations']
-  const proc = Bun.spawn(cmd, {
-    cwd,
-    stdout: 'inherit',
-    stderr: 'inherit',
-  })
-  const exitCode = await proc.exited
-  if (exitCode !== 0) throw new Error(`cf d1 migrations apply failed with exit code ${exitCode}`)
+  const exitCode = runner
+    ? await runner()
+    : await Bun.spawn(localMigrationCommand, { cwd, stdout: 'inherit', stderr: 'inherit' }).exited
+  if (exitCode !== 0) throw new Error(`d1 migrations apply failed with exit code ${exitCode}`)
 }
 
 async function runWranglerSeed(options: SeedOptions, sql: string) {
@@ -228,7 +222,7 @@ export async function main(args = Bun.argv.slice(2)) {
   console.log(`E2E_TENANT_SLUG=${options.tenantSlug}`)
   console.log(`E2E_COLLECTION_SLUG=${options.collectionSlug}`)
   console.log(
-    `Run: E2E_ADMIN_EMAIL=${options.email} E2E_ADMIN_PASSWORD=<seed password> E2E_TENANT_SLUG=${options.tenantSlug} E2E_COLLECTION_SLUG=${options.collectionSlug} bun run smoke:e2e:${options.env === 'production' ? 'production' : 'staging'} -- --live-persisted`
+    `Run: E2E_ADMIN_EMAIL=${options.email} E2E_ADMIN_PASSWORD=<seed password> E2E_TENANT_SLUG=${options.tenantSlug} E2E_COLLECTION_SLUG=${options.collectionSlug} bun run smoke:e2e:${options.env === 'local' ? 'local-live' : 'remote'} -- --live-persisted`
   )
 }
 
