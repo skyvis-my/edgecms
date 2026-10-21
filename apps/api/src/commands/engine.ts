@@ -16,6 +16,7 @@ import {
   type OutboxEntry,
 } from '@/webhooks/outbox.repository'
 import { relayOutbox } from '@/webhooks/outbox-relay'
+import { recordCommandAuditEvent } from '@/audit/audit-recorders'
 import { scheduleDeferredWork } from './deferred-work'
 import { buildMessagesForEvent, type WebhookQueueMessage } from '@/webhooks/queue-producer'
 import { commandsRepository } from './commands.repository'
@@ -1162,9 +1163,19 @@ export async function executeCommand(
   ctx: CommandContext,
   envelope: CommandEnvelope
 ): Promise<CommandResult> {
-  if (envelope.type === 'transaction') {
-    return handleTransaction(ctx, envelope)
-  }
+  const result =
+    envelope.type === 'transaction'
+      ? await handleTransaction(ctx, envelope)
+      : await executeSingleCommand(ctx, envelope)
 
-  return executeSingleCommand(ctx, envelope)
+  // HS-12: hash-chained audit event per executed command (never throws).
+  await recordCommandAuditEvent({
+    db: ctx.db,
+    env: ctx.env,
+    tenantScope:
+      ctx.tenantScope ?? (ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : null),
+    envelope,
+    result,
+  })
+  return result
 }

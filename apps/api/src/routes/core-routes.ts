@@ -1,6 +1,7 @@
 import { Elysia, type AnyElysia } from 'elysia'
 import { aiController } from '@/ai/ai.controller'
 import { assetsController } from '@/assets/assets.controller'
+import { auditController } from '@/audit/audit.controller'
 import { cacheStatsController } from '@/cache/cache-stats.controller'
 import { collectionsController } from '@/collections/collections.controller'
 import { commandsController } from '@/commands/commands.controller'
@@ -43,4 +44,5 @@ export function createCoreApiRoutes(options: CoreApiRoutesOptions) {
     .use(systemController)
     .use(webhooksController)
     .use(mcpController)
+    .use(auditController)
 }

@@ -1,6 +1,13 @@
 import { env } from 'cloudflare:workers'
 import { Elysia } from 'elysia'
 import type { Env } from '@/env'
+import {
+  type AuthAuditAction,
+  classifyAuthAuditAction,
+  cookieHeaderFromResponse,
+  recordAuthAuditEvent,
+} from '@/audit/audit-recorders'
+import { createDb } from '@/database/db'
 import { getRequestUrl } from '@/shared/utils/request-url'
 import { createAuth } from './auth'
 import { getSessionForRequest } from './session-cache'
@@ -51,7 +58,48 @@ export const handleBetterAuth = (request: Request) => {
     : `/api/auth${url.pathname}`
   const fullUrl = new URL(`${pathname}${url.search}`, url.origin)
   const fullRequest = new Request(fullUrl.toString(), request)
-  return auth.handler(fullRequest)
+  const auditAction = classifyAuthAuditAction(pathname, request.method)
+  if (!auditAction) return auth.handler(fullRequest)
+  return handleAuditedAuthRequest(auth, fullRequest, auditAction, pathname, typedEnv)
+}
+
+async function resolveSessionUserId(
+  auth: ReturnType<typeof createAuth>,
+  headers: Headers
+): Promise<string | null> {
+  try {
+    const session = await auth.api.getSession({ headers })
+    return session?.user?.id ?? null
+  } catch {
+    return null
+  }
+}
+
+/** HS-12: record sign-in, sign-up and sign-out outcomes in the global audit chain. */
+async function handleAuditedAuthRequest(
+  auth: ReturnType<typeof createAuth>,
+  request: Request,
+  action: AuthAuditAction,
+  pathname: string,
+  typedEnv: Env
+): Promise<Response> {
+  const signOutUserId =
+    action === 'auth.sign_out' ? await resolveSessionUserId(auth, request.headers) : null
+  const response: Response = await auth.handler(request)
+  let userId = signOutUserId
+  if (action !== 'auth.sign_out' && response.status < 400) {
+    const cookie = cookieHeaderFromResponse(response)
+    userId = cookie ? await resolveSessionUserId(auth, new Headers({ cookie })) : null
+  }
+  await recordAuthAuditEvent({
+    db: createDb(typedEnv.DB),
+    env: typedEnv,
+    action,
+    pathname,
+    response,
+    userId,
+  })
+  return response
 }
 
 export const betterAuthPlugin = new Elysia({ name: 'better-auth' })

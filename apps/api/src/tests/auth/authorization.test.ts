@@ -305,3 +305,23 @@ describe('authorizeApiRequest', () => {
     expect(tenantApiPost).toEqual({ allowed: true })
   })
 })
+
+describe('tenant audit log access (HS-12)', () => {
+  const pathname = '/api/tenants/acme/api/admin/audit/export'
+
+  it('allows tenant owners and admins', () => {
+    for (const tenantRole of ['owner', 'admin'] as const) {
+      expect(
+        authorizeApiRequest({ pathname, method: 'GET', principal: { actorId: 'u', tenantRole } })
+      ).toEqual({ allowed: true })
+    }
+  })
+
+  it('denies editors and members', () => {
+    for (const tenantRole of ['editor', 'member'] as const) {
+      expect(
+        authorizeApiRequest({ pathname, method: 'GET', principal: { actorId: 'u', tenantRole } })
+      ).toMatchObject({ allowed: false, status: 403 })
+    }
+  })
+})

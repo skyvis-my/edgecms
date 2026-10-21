@@ -53,6 +53,27 @@ Audit logs must not expose secrets. Redact at least:
 Do not claim public-safe audit logs unless redaction tests cover the specific surface.
 Local schema proof includes a payload redaction helper that replaces configured sensitive fields with `[redacted]`; each runtime audit surface still needs its own focused test before being treated as public-safe.
 
+## Audit Ledger (HS-12)
+
+Security-relevant actions are appended to the `audit_events` table in the main D1 database. Each tenant has its own chain; sign-ins and super-admin actions on global routes use the `global` chain.
+
+Recorded today, with local tests in `apps/api/src/tests/audit/`:
+
+- Every executed command and transaction (`command.executed`, success or failure; dry runs are not recorded). The event stores the command id, type and entity references, not field values.
+- Sign-in, sign-up and sign-out through `/api/auth/*`, including failed sign-ins. Only the user id is stored: no email, IP address or user agent. Failed attempts carry no identity.
+- Role, membership, tenant, webhook, plugin and settings mutations under `/api/admin/*` and `/api/tenants/:slug/api/admin/*`, including denied attempts, and every audit export or verification.
+
+Tamper evidence: each event stores `prevHash` and `hash = sha256(prevHash + "\n" + canonicalJson(fields))`, where `canonicalJson` sorts keys recursively and the hashed fields are `id`, `scope`, `seq`, `category`, `action`, `outcome`, `actorDigest`, `actorSource`, `targetType`, `targetDigest`, `metadata` and `occurredAt`. User ids enter the hash only as `sha256("edgecms-audit-subject:" + id)`, so pseudonymizing them for a deletion request keeps the chain valid. The first event links to 64 zeros. Verification detects edited, removed or reordered events, and events re-attributed to any id other than a `deleted-user:` pseudonym. A chain is tamper-evident, not tamper-proof: someone with write access to D1 could rewrite the whole chain. Hosts should copy the `head` hash returned by each export to storage outside D1.
+
+Retention: `AUDIT_RETENTION_DAYS` (default and minimum 365). Every 100th event in a chain triggers pruning of events older than the window. The pruning is first recorded in the chain (`audit.retention_pruned` with the last removed `seq` and `hash`), so verification can tell retention from deletion.
+
+Export and verification (no-store, cursor pages of up to 1000 events, metadata redacted for secrets and emails):
+
+- `GET /api/tenants/:slug/api/admin/audit/export?after=<seq>&limit=<n>` and `.../audit/verify` for tenant owners, tenant admins and super-admins.
+- `GET /api/admin/audit/export` and `/api/admin/audit/verify` for the global chain, super-admins only.
+
+The older `processed_commands` and `audit_log` tables still back idempotency and sync and are not hash-chained. Audit writes never fail the request they describe: a failed write is logged as `audit_event_write_failed`.
+
 ## Rate Limits
 
 Current API rate limit proof lives in `apps/api/src/tests/auth/rate-limit.middleware.test.ts`. Public, admin, and auth limits must stay documented with window and limit values before being treated as stable.

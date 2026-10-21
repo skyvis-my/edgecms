@@ -17,6 +17,7 @@ import {
   formatCsrfCookieHeader,
 } from '@/auth/csrf.middleware'
 import { rbacController } from '@/auth/rbac.controller'
+import { auditTrailPlugin } from '@/audit/audit-trail.plugin'
 import { hasSuperAdminRole, isSuperAdminEmail, parseSuperAdminEmails } from '@/auth/super-admin'
 import { ensureUserHasOnboardingTenant } from '@/bootstrap/onboarding-tenant'
 import { createErrorEnvelope, toServiceResponse } from '@/shared/utils/service-response'
@@ -167,6 +168,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
       new Elysia()
         .use(securityPlugin)
         .use(observabilityPlugin)
+        .use(auditTrailPlugin)
         .use(
           openapi({
             path: '/api/docs',
