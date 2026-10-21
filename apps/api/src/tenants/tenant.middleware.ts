@@ -19,6 +19,54 @@ import {
 } from './tenant-cache'
 
 /**
+ * Request surface that keeps serving while a tenant is `suspended`: published
+ * public reads (`GET`/`HEAD` under `/api/public`, excluding preview tokens)
+ * and the read-only GraphQL endpoint.
+ */
+export function isPublicReadRequest(method: string, pathname: string, tenantSlug: string): boolean {
+  const prefix = `/api/tenants/${tenantSlug}`
+  if (!pathname.startsWith(`${prefix}/`)) return false
+  // Accept both the canonical alias (`/public/...`) and the rewritten form (`/api/public/...`).
+  const rest = pathname.slice(prefix.length).replace(/^\/api(?=\/)/, '')
+  const upper = method.toUpperCase()
+  if (rest === '/graphql' || rest === '/graphql/') {
+    return upper === 'GET' || upper === 'HEAD' || upper === 'POST'
+  }
+  if (rest.startsWith('/public/')) {
+    if (rest.startsWith('/public/preview-token')) return false
+    return upper === 'GET' || upper === 'HEAD'
+  }
+  return false
+}
+
+/**
+ * HS-04 tenant states:
+ * - `active`: normal access.
+ * - `suspended`: admin, MCP, AI and sync are locked; public reads continue.
+ * - `pending`, `disabled` (and legacy `inactive` or unknown): super-admin only.
+ * Super-admins keep access in every state so they can inspect and recover.
+ */
+export function tenantStateAccess(
+  status: string,
+  publicRead: boolean
+): 'allow' | 'super-admin-only' {
+  if (status === 'active') return 'allow'
+  if (status === 'suspended' && publicRead) return 'allow'
+  return 'super-admin-only'
+}
+
+function tenantStateError(tenantSlug: string, tenantStatus: string) {
+  const code = tenantStatus === 'suspended' ? 'TENANT_SUSPENDED' : 'TENANT_UNAVAILABLE'
+  return status(403, {
+    success: false,
+    error: {
+      code,
+      message: `Tenant '${tenantSlug}' is not active (status: ${tenantStatus})`,
+    },
+  })
+}
+
+/**
  * Tenant resolution middleware for ElysiaJS.
  *
  * This middleware extracts the tenant slug from the URL path, validates
@@ -31,7 +79,8 @@ import {
  * - Extracts `tenantSlug` from path params
  * - Looks up tenant in the global database
  * - Returns 404 if tenant not found
- * - Returns 403 if tenant status is not 'active'
+ * - Applies tenant states (HS-04, see `tenantStateAccess`): `suspended` keeps
+ *   public reads, `pending`/`disabled` admit super-admins only
  * - Verifies authenticated users are members of the tenant
  * - Uses shared DB/KV/R2 infrastructure (tenant isolation via tenantId)
  * - Attaches `tenant` context to the request for downstream handlers
@@ -71,16 +120,14 @@ export const tenantMiddleware = new Elysia({ name: 'tenant-middleware' })
     })
   }
 
-  // Check tenant status
-  if (tenant.status !== 'active') {
-    throw status(403, {
-      success: false,
-      error: {
-        code: 'FORBIDDEN',
-        message: `Tenant '${tenantSlug}' is not active (status: ${tenant.status})`,
-      },
-    })
-  }
+  // HS-04: non-active tenants admit super-admins only, except public reads
+  // of a suspended tenant. Super-admin branches below return before the
+  // `superAdminOnly` checks.
+  const superAdminOnly =
+    tenantStateAccess(
+      tenant.status,
+      isPublicReadRequest(request.method, getRequestUrl(request).pathname, tenantSlug)
+    ) === 'super-admin-only'
 
   // Verify tenant membership for authenticated users
   // Public routes (unauthenticated) skip this check
@@ -117,6 +164,7 @@ export const tenantMiddleware = new Elysia({ name: 'tenant-middleware' })
         },
       }
     }
+    if (superAdminOnly) throw tenantStateError(tenantSlug, tenant.status)
     const fastRole = fast.tenantRole ?? fast.customTenantRole
     if (fastRole) {
       // Seed the per-request membership cache so downstream readers reuse it.
@@ -184,6 +232,8 @@ export const tenantMiddleware = new Elysia({ name: 'tenant-middleware' })
       }
     }
 
+    if (superAdminOnly) throw tenantStateError(tenantSlug, tenant.status)
+
     let rolePromise = getCachedMembership(request, session.user.id, tenant.id)
     if (!rolePromise) {
       rolePromise = getCachedMembership(request, session.user.id, tenantSlug)
@@ -204,6 +254,8 @@ export const tenantMiddleware = new Elysia({ name: 'tenant-middleware' })
       })
     }
   }
+
+  if (superAdminOnly) throw tenantStateError(tenantSlug, tenant.status)
 
   // Attach tenant context to request
   return {

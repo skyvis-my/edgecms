@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, mock, vi } from 'bun:test'
 import { Elysia } from 'elysia'
+import {
+  resolveHostPolicies,
+  type ResolvedHostPolicies,
+  type TenantCreationActor,
+} from '../../host/host-policies'
 
 type ServiceSuccess<T> = { success: true; data: T }
 type ServiceFailure = { success: false; error: { code: string; message: string } }
@@ -35,7 +40,25 @@ const mockService = {
   addUserToTenant: vi.fn(),
   removeUserFromTenant: vi.fn(),
   updateUserRole: vi.fn(),
+  // Stand-in for the real createForActor: ask the host policy, then create.
+  // The service-level behavior (owner membership, events) is covered in
+  // tenants.service.test.ts.
+  async createForActor(
+    db: unknown,
+    input: unknown,
+    actor: TenantCreationActor,
+    host: ResolvedHostPolicies,
+    lifecycle: unknown
+  ) {
+    createActors.push(actor)
+    const decision = await host.canCreateTenant(actor)
+    if (!decision.allowed) {
+      return fail('FORBIDDEN', decision.reason ?? 'Tenant creation is not allowed for this account')
+    }
+    return mockService.create(db, input, { initialStatus: decision.initialStatus }, lifecycle)
+  },
 }
+const createActors: TenantCreationActor[] = []
 
 mock.module('cloudflare:workers', () => ({ env: mockEnv }))
 mock.module('@/database/db', () => ({ createDb: () => mockDb }))
@@ -52,7 +75,7 @@ mock.module('@/auth/auth.middleware', () => ({
 }))
 mock.module('../../tenants/tenants.service', () => ({ tenantsService: mockService }))
 
-const { tenantsController } = await import(`../../tenants/tenants.controller?bypass=${Date.now()}`)
+const { tenantsController, createTenantsController } = await import(`../../tenants/tenants.controller?bypass=${Date.now()}`)
 
 describe('tenantsController (repo-backed)', () => {
   const app = new Elysia().use(tenantsController)
@@ -63,6 +86,7 @@ describe('tenantsController (repo-backed)', () => {
     mockEnv.SUPER_ADMIN_DEV_MODE = 'true'
     mockUser = { id: 'u1', email: 'admin@example.com' }
     mockService.findAll.mockResolvedValue(ok([]))
+    createActors.length = 0
   })
 
   it('GET / returns tenant list', async () => {
@@ -391,6 +415,162 @@ describe('tenantsController (repo-backed)', () => {
 
       const response = await app.handle(new Request('http://localhost/api/admin/tenants'))
       expect(response.status).toBe(200)
+    })
+  })
+
+  describe('HS-02 tenant creation policy', () => {
+    const createRequest = () =>
+      new Request('http://localhost/api/admin/tenants', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Acme', slug: 'acme' }),
+      })
+
+    beforeEach(() => {
+      mockEnv.SUPER_ADMIN_DEV_MODE = undefined
+      mockEnv.SUPER_ADMIN_EMAILS = 'admin@example.com'
+      mockService.create.mockResolvedValue(ok({ id: 't1', slug: 'acme', name: 'Acme' }))
+    })
+
+    it('default policy rejects a non-super-admin and creates nothing', async () => {
+      mockUser = { id: 'u2', email: 'user@example.com' }
+
+      const response = await app.handle(createRequest())
+
+      expect(response.status).toBe(403)
+      const body = (await response.json()) as { error: { code: string } }
+      expect(body.error.code).toBe('FORBIDDEN')
+      expect(mockService.create).not.toHaveBeenCalled()
+      expect(createActors[0]).toEqual({
+        userId: 'u2',
+        email: 'user@example.com',
+        isSuperAdmin: false,
+        source: 'admin-api',
+      })
+    })
+
+    it('default policy allows a super-admin', async () => {
+      mockUser = { id: 'u1', email: 'admin@example.com' }
+
+      const response = await app.handle(createRequest())
+
+      expect(response.status).toBe(201)
+      expect(createActors[0]?.isSuperAdmin).toBe(true)
+    })
+
+    it('host policy can allow non-super-admins and pick a pending initial state', async () => {
+      mockUser = { id: 'u2', email: 'user@example.com' }
+      const hostApp = new Elysia().use(
+        createTenantsController({
+          host: resolveHostPolicies({
+            canCreateTenant: (actor: TenantCreationActor) =>
+              actor.email.endsWith('@example.com')
+                ? { allowed: true, initialStatus: 'pending' }
+                : false,
+          }),
+        })
+      )
+
+      const response = await hostApp.handle(createRequest())
+
+      expect(response.status).toBe(201)
+      expect(mockService.create).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ slug: 'acme' }),
+        { initialStatus: 'pending' },
+        expect.anything()
+      )
+    })
+
+    it('host policy can deny a super-admin with its own reason', async () => {
+      mockUser = { id: 'u1', email: 'admin@example.com' }
+      const hostApp = new Elysia().use(
+        createTenantsController({
+          host: resolveHostPolicies({
+            canCreateTenant: () => ({ allowed: false, reason: 'Tenant quota reached' }),
+          }),
+        })
+      )
+
+      const response = await hostApp.handle(createRequest())
+
+      expect(response.status).toBe(403)
+      const body = (await response.json()) as { error: { message: string } }
+      expect(body.error.message).toBe('Tenant quota reached')
+      expect(mockService.create).not.toHaveBeenCalled()
+    })
+
+    it('a throwing host policy fails closed', async () => {
+      mockUser = { id: 'u1', email: 'admin@example.com' }
+      const hostApp = new Elysia().use(
+        createTenantsController({
+          host: resolveHostPolicies({
+            canCreateTenant: () => {
+              throw new Error('billing API down')
+            },
+          }),
+        })
+      )
+
+      const response = await hostApp.handle(createRequest())
+
+      expect(response.status).toBe(403)
+      expect(mockService.create).not.toHaveBeenCalled()
+    })
+
+    it('unauthenticated create returns 401', async () => {
+      mockUser = undefined as unknown as typeof mockUser
+
+      const response = await app.handle(createRequest())
+
+      expect(response.status).toBe(401)
+      expect(mockService.create).not.toHaveBeenCalled()
+    })
+
+    it('PUT and DELETE pass the acting user to lifecycle events', async () => {
+      mockUser = { id: 'u1', email: 'admin@example.com' }
+      mockService.findByIdOrSlug.mockResolvedValue(ok({ id: 't1', slug: 'acme', name: 'Acme' }))
+      mockService.update.mockResolvedValueOnce(ok({ id: 't1', slug: 'acme', status: 'suspended' }))
+      mockService.deleteById.mockResolvedValueOnce(ok({ id: 't1' }))
+
+      await app.handle(
+        new Request('http://localhost/api/admin/tenants/acme', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ status: 'suspended' }),
+        })
+      )
+      await app.handle(new Request('http://localhost/api/admin/tenants/acme', { method: 'DELETE' }))
+
+      expect(mockService.update).toHaveBeenCalledWith(
+        expect.anything(),
+        't1',
+        { status: 'suspended' },
+        expect.objectContaining({ actorId: 'u1', events: expect.anything() })
+      )
+      expect(mockService.deleteById).toHaveBeenCalledWith(
+        expect.anything(),
+        't1',
+        undefined,
+        expect.objectContaining({ actorId: 'u1', events: expect.anything() })
+      )
+    })
+
+    it('PUT accepts the HS-04 states', async () => {
+      mockUser = { id: 'u1', email: 'admin@example.com' }
+      mockService.findByIdOrSlug.mockResolvedValue(ok({ id: 't1', slug: 'acme', name: 'Acme' }))
+      mockService.update.mockResolvedValue(ok({ id: 't1', slug: 'acme' }))
+
+      for (const status of ['pending', 'active', 'suspended', 'disabled']) {
+        const response = await app.handle(
+          new Request('http://localhost/api/admin/tenants/acme', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ status }),
+          })
+        )
+        expect(response.status).toBe(200)
+      }
     })
   })
 })

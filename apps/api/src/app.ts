@@ -46,7 +46,9 @@ import { applyPublicAssetFormatAliases } from '@/public/public-assets-path-norma
 import { tenantMiddleware } from '@/tenants/tenant.middleware'
 import { tenantsService } from '@/tenants/tenants.service'
 import { applyTenantPathAliases } from '@/tenants/tenant-path-normalizer'
-import { tenantsController } from '@/tenants/tenants.controller'
+import { createTenantsController } from '@/tenants/tenants.controller'
+import { type HostPolicies, resolveHostPolicies } from '@/host/host-policies'
+import { createTenantEventPublisher } from '@/host/tenant-events'
 import { usersRepository } from '@/users/users.repository'
 import { API_VERSION } from '@/version'
 import {
@@ -133,6 +135,11 @@ export type CreateAppOptions = {
   pluginRuntime?: PluginRuntime
   metricSink?: MetricSink
   metricsRegistry?: MetricsRegistry
+  /**
+   * Host policies (PRD §10.1). Configured at composition time, owned by this
+   * app instance. Omitted hooks keep the framework defaults.
+   */
+  host?: HostPolicies
 }
 
 export const createApp = (options: CreateAppOptions = {}) => {
@@ -146,6 +153,10 @@ export const createApp = (options: CreateAppOptions = {}) => {
   const scopedPluginRoutesController = pluginRt
     ? pluginRt.createLoadedPluginRoutesController()
     : createLoadedPluginRoutesController()
+
+  const host = resolveHostPolicies(options.host)
+  const tenantEvents = createTenantEventPublisher(host)
+  const scopedTenantsController = createTenantsController({ host, events: tenantEvents })
 
   const coreRoutes = createCoreApiRoutes({
     scopedPluginsController,
@@ -263,7 +274,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
         })
 
         // Global admin routes — tenant management (super-admin)
-        .use(tenantsController)
+        .use(scopedTenantsController)
 
         // Global routes (backward compatibility for single-tenant deployments)
         .use(coreRoutes)
@@ -298,11 +309,19 @@ export const createApp = (options: CreateAppOptions = {}) => {
         })
         .post('/api/bootstrap/provision-tenant', { auth: true }, async ({ user, set }) => {
           const db = createDb((env as Env).DB)
-          const result = await ensureUserHasOnboardingTenant(db, {
-            id: user.id,
-            name: user.name,
-            email: user.email,
-          })
+          const typedEnv = env as Env
+          const rawRole = (user as { role?: unknown }).role
+          const result = await ensureUserHasOnboardingTenant(
+            db,
+            { id: user.id, name: user.name, email: user.email },
+            {
+              host,
+              events: tenantEvents,
+              isSuperAdmin:
+                hasSuperAdminRole(rawRole) ||
+                isSuperAdminEmail(user.email, parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS)),
+            }
+          )
           return toServiceResponse(set, result, { successStatus: 201 })
         })
         .get('/api/me', { auth: true }, ({ user }) => {
@@ -444,6 +463,15 @@ export {
   createPluginRegistry,
   type PluginRegistry,
 } from '@/plugins/plugin-registry'
+export type {
+  HostPolicies,
+  InitialTenantStatus,
+  TenantCreationActor,
+  TenantCreationDecision,
+  TenantCreationSource,
+  TenantEventType,
+  TenantLifecycleEvent,
+} from '@/host/host-policies'
 export {
   createMetricsRegistry,
   type MetricSink,

@@ -287,6 +287,31 @@ describe('webhooksService', () => {
       }
     })
 
+    it('accepts tenant lifecycle events on global webhooks (HS-08)', async () => {
+      mockWebhooksRepository.create.mockResolvedValue({ id: 'w1', events: ['tenant.created'] })
+
+      const result = await webhooksService.create(mockDb, {
+        url: 'https://example.com/webhook',
+        events: ['tenant.created', 'tenant.deleted'],
+      })
+
+      expect(result.success).toBe(true)
+    })
+
+    it('rejects tenant lifecycle events on tenant-scoped webhooks (HS-08)', async () => {
+      const result = await webhooksService.create(
+        mockDb,
+        { url: 'https://example.com/webhook', events: ['tenant.suspended'] },
+        'tenant-1'
+      )
+
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.code).toBe('VALIDATION_ERROR')
+        expect(result.error.message).toContain('tenant.suspended')
+      }
+    })
+
     it('auto-generates secret on creation', async () => {
       const mockWebhook = {
         id: 'test-uuid-123',

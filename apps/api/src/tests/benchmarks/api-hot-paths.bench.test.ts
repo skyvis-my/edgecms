@@ -99,6 +99,7 @@ const mockTenantsService = {
   findByIdOrSlug: vi.fn(async () => ({ success: true, data: mockTenant })),
   findByIdOrSlugWithUsers: vi.fn(async () => ({ success: true, data: { ...mockTenant, users: [] } })),
   create: vi.fn(async () => ({ success: true, data: mockTenant })),
+  createForActor: vi.fn(async () => ({ success: true, data: mockTenant })),
   update: vi.fn(async () => ({ success: true, data: mockTenant })),
   deleteBySlug: vi.fn(async () => ({ success: true, data: { slug: 'acme' } })),
   deleteById: vi.fn(async () => ({ success: true, data: { id: 'tenant-1' } })),

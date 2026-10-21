@@ -88,16 +88,34 @@ const VALID_EVENT_TYPES = [
   'collection.deleted',
 ]
 
-function validateEvents(events: string[]): { valid: true } | { valid: false; error: string } {
+/**
+ * Tenant lifecycle events (HS-08) are delivered with global scope, so only
+ * global webhooks may subscribe to them.
+ */
+const GLOBAL_ONLY_EVENT_TYPES = [
+  'tenant.created',
+  'tenant.activated',
+  'tenant.suspended',
+  'tenant.deleted',
+  'tenant.limit_reached',
+]
+
+function validateEvents(
+  events: string[],
+  tenantId?: string
+): { valid: true } | { valid: false; error: string } {
   if (!events || events.length === 0) {
     return { valid: false, error: 'Events array must contain at least one event type' }
   }
 
-  const invalidEvents = events.filter((e) => !VALID_EVENT_TYPES.includes(e))
+  const validTypes = tenantId
+    ? VALID_EVENT_TYPES
+    : [...VALID_EVENT_TYPES, ...GLOBAL_ONLY_EVENT_TYPES]
+  const invalidEvents = events.filter((e) => !validTypes.includes(e))
   if (invalidEvents.length > 0) {
     return {
       valid: false,
-      error: `Invalid event types: ${invalidEvents.join(', ')}. Valid types: ${VALID_EVENT_TYPES.join(', ')}`,
+      error: `Invalid event types: ${invalidEvents.join(', ')}. Valid types: ${validTypes.join(', ')}`,
     }
   }
 
@@ -150,7 +168,7 @@ export const webhooksService = {
     }
 
     // Validate events
-    const eventsValidation = validateEvents(input.events)
+    const eventsValidation = validateEvents(input.events, tenantId)
     if (!eventsValidation.valid) {
       return {
         success: false,
@@ -213,7 +231,7 @@ export const webhooksService = {
 
     // Validate events if being updated
     if (input.events) {
-      const eventsValidation = validateEvents(input.events)
+      const eventsValidation = validateEvents(input.events, tenantId)
       if (!eventsValidation.valid) {
         return {
           success: false,
