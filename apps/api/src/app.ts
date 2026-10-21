@@ -19,6 +19,13 @@ import {
 import { rbacController } from '@/auth/rbac.controller'
 import { auditTrailPlugin } from '@/audit/audit-trail.plugin'
 import { privacyController } from '@/privacy/privacy.controller'
+import { configureAuthPolicies } from '@/auth/auth-policies'
+import {
+  isMfaVerifiedSession,
+  MFA_REQUIRED_CODE,
+  MFA_REQUIRED_MESSAGE,
+  isSuperAdminMissingMfa,
+} from '@/auth/mfa'
 import {
   hasSuperAdminRole,
   isSuperAdminEmail,
@@ -56,6 +63,7 @@ import { applyTenantPathAliases } from '@/tenants/tenant-path-normalizer'
 import { createTenantsController } from '@/tenants/tenants.controller'
 import { type HostPolicies, resolveHostPolicies } from '@/host/host-policies'
 import { createTenantEventPublisher } from '@/host/tenant-events'
+import { invitesController } from '@/invites/invites.controller'
 import { usersRepository } from '@/users/users.repository'
 import { API_VERSION } from '@/version'
 import {
@@ -162,6 +170,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
     : createLoadedPluginRoutesController()
 
   const host = resolveHostPolicies(options.host)
+  if (options.host?.auth) configureAuthPolicies(options.host.auth)
   const tenantEvents = createTenantEventPublisher(host)
   const scopedTenantsController = createTenantsController({ host, events: tenantEvents })
 
@@ -200,8 +209,10 @@ export const createApp = (options: CreateAppOptions = {}) => {
           })
         )
         .use(betterAuthPlugin)
-        .all('/api/auth', ({ request }) => handleBetterAuth(request))
-        .all('/api/auth/*', ({ request }) => handleBetterAuth(request))
+        // Better Auth reads the raw body itself; parsing it here would consume
+        // the stream and break every POST to /api/auth on workerd.
+        .all('/api/auth', { parse: 'none' }, ({ request }) => handleBetterAuth(request))
+        .all('/api/auth/*', { parse: 'none' }, ({ request }) => handleBetterAuth(request))
         .get('/api/csrf', async ({ request, set }) => {
           const token = await createSignedCsrfToken((env as Env).BETTER_AUTH_SECRET!)
           ;(set.headers as MutableHeaders)['Set-Cookie'] = formatCsrfCookieHeader(token, {
@@ -229,6 +240,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
           let trl: string | undefined
           let rv = 0
           let pv = 0
+          let tenantRequiresMfa = false
           if (tenantSlug) {
             const db = createDb(typedEnv.DB)
             const tenantResult = await tenantsService.findByIdOrSlug(db, tenantSlug)
@@ -238,6 +250,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
             }
             tid = tenantResult.data.id
             tsl = tenantResult.data.slug
+            tenantRequiresMfa = tenantResult.data.requireMfa === true
             trl = await resolveTenantRoleForActor(typedEnv.DB, actor.actorId, tsl)
             if (!trl) {
               set.status = 403
@@ -245,6 +258,25 @@ export const createApp = (options: CreateAppOptions = {}) => {
             }
             rv = (await getAuthRevision(typedEnv.CACHE, actor.actorId, tid)) ?? 0
             pv = (await getPermissionRevision(typedEnv.CACHE, tid)) ?? 0
+          }
+
+          // HS-11: never mint a token that would let a caller skip a required
+          // second factor. Changing a tenant's requirement bumps its permission
+          // revision, so older tokens go stale.
+          const mfaVerified = actor.mfaVerified === true
+          const superAdminMissingMfa = isSuperAdminMissingMfa(
+            {
+              email: actor.actorEmail,
+              emailVerified: actor.actorEmailVerified === true,
+              userRole: actor.actorUserRoleRaw,
+              sessionRole: actor.actorSessionRoleRaw,
+              mfaVerified,
+            },
+            typedEnv
+          )
+          if (superAdminMissingMfa || (tenantRequiresMfa && !mfaVerified)) {
+            set.status = 403
+            return createErrorEnvelope(MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE)
           }
 
           const issuedAt = Math.floor(Date.now() / 1000)
@@ -258,9 +290,11 @@ export const createApp = (options: CreateAppOptions = {}) => {
               rv,
               pv,
               email: actor.actorEmail,
+              emailVerified: actor.actorEmailVerified === true,
               sa:
                 hasSuperAdminRole(actor.actorSessionRoleRaw) ||
                 hasSuperAdminRole(actor.actorUserRoleRaw),
+              mfa: actor.mfaVerified === true,
             },
             typedEnv.JWT_HS256_SECRET,
             {
@@ -283,6 +317,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
 
         // Global admin routes — tenant management (super-admin)
         .use(scopedTenantsController)
+        .use(invitesController)
 
         // HS-13 personal data requests (global only)
         .use(privacyController)
@@ -326,17 +361,24 @@ export const createApp = (options: CreateAppOptions = {}) => {
             {
               host,
               events: tenantEvents,
-              isSuperAdmin: isSuperAdminUser(user as { email: string; role?: unknown }, env as Env),
+              isSuperAdmin: isSuperAdminUser(
+                user as { email: string; emailVerified?: boolean; role?: unknown },
+                env as Env
+              ),
             }
           )
           return toServiceResponse(set, result, { successStatus: 201 })
         })
-        .get('/api/me', { auth: true }, ({ user }) => {
+        .get('/api/me', { auth: true }, ({ user, session }) => {
           const typedEnv = env as Env
           const rawRole = (user as { role?: unknown }).role
           const role =
             hasSuperAdminRole(rawRole) ||
-            isSuperAdminEmail(user.email, parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS))
+            isSuperAdminEmail(
+              user.email,
+              parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS),
+              (user as { emailVerified?: unknown }).emailVerified === true
+            )
               ? 'superadmin'
               : typeof rawRole === 'string'
                 ? rawRole
@@ -347,6 +389,8 @@ export const createApp = (options: CreateAppOptions = {}) => {
             name: user.name,
             email: user.email,
             role,
+            twoFactorEnabled: (user as { twoFactorEnabled?: unknown }).twoFactorEnabled === true,
+            mfaVerified: isMfaVerifiedSession({ session }),
           }
         })
         .onError(({ code, error, set, request }) => {
@@ -485,3 +529,12 @@ export {
   type MetricsRegistry,
 } from '@/observability/metrics'
 export type { Env } from '@/env'
+export {
+  configureAuthPolicies,
+  createConsoleEmailSender,
+  type AuthEmailMessage,
+  type AuthEmailSender,
+  type AuthPolicies,
+  type AuthPolicyOverrides,
+  type SignupPolicy,
+} from '@/auth/auth-policies'

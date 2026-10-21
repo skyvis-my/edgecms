@@ -18,6 +18,7 @@ export const user = sqliteTable(
     email: text('email').notNull().unique(),
     role: text('role').notNull().default('viewer'),
     emailVerified: integer('emailVerified', { mode: 'boolean' }).notNull().default(false),
+    twoFactorEnabled: integer('twoFactorEnabled', { mode: 'boolean' }).default(false),
     image: text('image'),
     createdAt: integer('createdAt', { mode: 'timestamp' }).notNull(),
     updatedAt: integer('updatedAt', { mode: 'timestamp' }).notNull(),
@@ -35,6 +36,8 @@ export const session = sqliteTable(
     updatedAt: integer('updatedAt', { mode: 'timestamp' }).notNull(),
     ipAddress: text('ipAddress'),
     userAgent: text('userAgent'),
+    /** True only for sessions created by completing a second-factor challenge. */
+    mfaVerified: integer('mfaVerified', { mode: 'boolean' }).notNull().default(false),
     userId: text('userId')
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
@@ -79,5 +82,25 @@ export const verification = sqliteTable(
   },
   (table) => [
     index('verification_identifier_value_idx').on(table.identifier, table.value),
+  ]
+)
+
+/** TOTP secrets and encrypted recovery codes for better-auth's two-factor plugin. */
+export const twoFactor = sqliteTable(
+  'twoFactor',
+  {
+    id: text('id').primaryKey(),
+    secret: text('secret').notNull(),
+    backupCodes: text('backupCodes').notNull(),
+    userId: text('userId')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    verified: integer('verified', { mode: 'boolean' }).default(true),
+    failedVerificationCount: integer('failedVerificationCount').default(0),
+    lockedUntil: integer('lockedUntil', { mode: 'timestamp' }),
+  },
+  (table) => [
+    index('two_factor_secret_idx').on(table.secret),
+    index('two_factor_user_id_idx').on(table.userId),
   ]
 )

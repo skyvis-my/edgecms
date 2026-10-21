@@ -1,3 +1,4 @@
+import type { AuthPolicyOverrides } from '@/auth/auth-policies'
 import { logger } from '@/observability/logger'
 
 /**
@@ -69,8 +70,16 @@ export interface HostPolicies {
    * logged and never fail the request.
    */
   onTenantEvent?: (event: TenantLifecycleEvent) => void | Promise<void>
+  /**
+   * HS-01 / HS-11: signup policy, email sender for verification and invite
+   * emails, and the super-admin MFA requirement. Values given here win over
+   * `SIGNUP_POLICY`, `AUTH_EMAIL_SENDER` and `SUPER_ADMIN_REQUIRE_MFA`.
+   * Unlike the other hooks these apply to the whole Worker isolate, because
+   * every auth entry point builds Better Auth from the Worker env.
+   */
+  auth?: AuthPolicyOverrides
   // Reserved for later seams (typed in their own PRs):
-  //   signupPolicy (HS-01), emailSender (HS-01), usageSink (HS-05), limits (HS-06)
+  //   usageSink (HS-05), limits (HS-06)
 }
 
 /** Host policies with defaults applied. */

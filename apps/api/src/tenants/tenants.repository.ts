@@ -49,7 +49,8 @@ function isMissingOptionalTenantColumnsError(error: unknown): boolean {
       message.includes('mediauploadmaxbytes') ||
       message.includes('mediauploadmaxdimension') ||
       message.includes('mediaallowedmimetypes') ||
-      message.includes('aienabled'))
+      message.includes('aienabled') ||
+      message.includes('requiremfa'))
   )
 }
 
@@ -63,6 +64,7 @@ function withDefaultTenantColumns<
     | 'mediaUploadMaxDimension'
     | 'mediaAllowedMimeTypes'
     | 'aiEnabled'
+    | 'requireMfa'
   >,
 >(row: T): TenantRow {
   return {
@@ -75,6 +77,7 @@ function withDefaultTenantColumns<
     mediaAllowedMimeTypes: DEFAULT_MEDIA_ALLOWED_MIME_TYPES,
     // Before migration 0033 every tenant had AI available (HS-14 keeps that).
     aiEnabled: true,
+    requireMfa: false,
   }
 }
 
@@ -131,6 +134,7 @@ export const tenantsRepository = {
         mediaUploadMaxDimension: tenants.mediaUploadMaxDimension,
         mediaAllowedMimeTypes: tenants.mediaAllowedMimeTypes,
         aiEnabled: tenants.aiEnabled,
+        requireMfa: tenants.requireMfa,
         createdAt: tenants.createdAt,
         updatedAt: tenants.updatedAt,
         userCount: sql<number>`coalesce(${userCountSubquery.userCount}, 0)`,

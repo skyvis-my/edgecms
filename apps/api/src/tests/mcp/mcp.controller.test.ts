@@ -21,8 +21,9 @@ mock.module('@/auth/auth.middleware', () => ({
     }),
 }))
 
+const mockGetSessionForRequest = vi.fn(async (): Promise<unknown> => null)
 mock.module('@/auth/session-cache', () => ({
-  getSessionForRequest: vi.fn(async () => null),
+  getSessionForRequest: mockGetSessionForRequest,
 }))
 
 const mockWorkerEnv: Partial<Env> = {
@@ -156,3 +157,44 @@ describe('MCP Controller Authentication & API Key Enforcement (C-21)', () => {
     expect(authRes.status).toBe(200)
   })
 })
+
+describe('MCP super-admin MFA requirement (HS-11)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockProcessMcpMessage.mockResolvedValue({ jsonrpc: '2.0', id: 1, result: { tools: [] } })
+    mockWorkerEnv.SUPER_ADMIN_EMAILS = 'root@example.com'
+    mockWorkerEnv.SUPER_ADMIN_REQUIRE_MFA = 'true'
+  })
+
+  function listTools() {
+    return mcpController.handle(
+      new Request('http://localhost/api/mcp', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+      })
+    )
+  }
+
+  function rootSession(mfaVerified: boolean) {
+    return {
+      user: { id: 'u-root', email: 'root@example.com', emailVerified: true, role: 'viewer' },
+      session: { id: 's-root', mfaVerified },
+    }
+  }
+
+  it('rejects a super-admin session without MFA', async () => {
+    mockGetSessionForRequest.mockResolvedValue(rootSession(false))
+    const response = await listTools()
+    expect(response.status).toBe(403)
+    expect(mockProcessMcpMessage).not.toHaveBeenCalled()
+  })
+
+  it('accepts a super-admin session that completed MFA', async () => {
+    mockGetSessionForRequest.mockResolvedValue(rootSession(true))
+    const response = await listTools()
+    expect(response.status).toBe(200)
+    expect(mockProcessMcpMessage).toHaveBeenCalled()
+  })
+})
+

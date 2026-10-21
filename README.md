@@ -115,6 +115,11 @@ Configure these for Phase 1 features (set via `wrangler secret put` / deploy env
 - `AI_GATEWAY_URL`
 - `AI_GATEWAY_ROUTE_ID` (optional)
 - `AI_GATEWAY_GUARDRAILS_PROFILE_ID` (optional)
+- `SIGNUP_POLICY` (optional): `open` (default), `invite-only` or `disabled`. Use `disabled` for new deployments; the first account of an empty database can always be created.
+- `AUTH_EMAIL_SENDER` (optional): `console` logs verification and invite emails (development only). When a sender is set, email/password accounts must verify their email before signing in. Inject a real sender with `configureAuthPolicies()`.
+- `SUPER_ADMIN_REQUIRE_MFA` (optional): `true` requires super-admins to sign in with two-factor authentication. Per-tenant MFA is set with `requireMfa` on `PUT /api/admin/tenants/:slug`.
+
+See [Sign-up, Email Verification and MFA](docs/deployment-runbook.md#sign-up-email-verification-and-mfa) for invites and details.
 
 ## Package Manager
 

@@ -106,7 +106,7 @@ wrangler secret put <SECRET_NAME> --env <env>
 | `JWT_HS256_SECRET` | HS256 key for public API JWT verification | Yes |
 | `CF_API_TOKEN` | Cloudflare API token for runtime D1/KV/R2 provisioning | Yes |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID (used by runtime provisioning) | Yes |
-| `SUPER_ADMIN_EMAILS` | Comma-separated list of super-admin email addresses | Yes |
+| `SUPER_ADMIN_EMAILS` | Comma-separated list of super-admin email addresses (each account must have a verified email) | Yes |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated allowed origins (e.g., `https://cms.example.com`) | Yes |
 | `BASE_URL` | Canonical base URL of the deployment (e.g., `https://cms.example.com`) | Yes |
 | `QWEN_API_KEY` | Qwen (DashScope) API key for AI features | Yes (if AI enabled) |
@@ -140,6 +140,43 @@ Each command will prompt you interactively for the secret value.
 
 ```bash
 wrangler secret list --env <env>
+```
+
+## Sign-up, Email Verification and MFA
+
+These are fixed when the Worker starts (Worker vars or secrets, or `configureAuthPolicies()` in a custom Worker entry). Request input never changes them.
+
+| Variable | Values | Default | Purpose |
+|---|---|---|---|
+| `SIGNUP_POLICY` | `open`, `invite-only`, `disabled` | `open` | Who may create an account. |
+| `AUTH_EMAIL_SENDER` | `console` | unset | Development only: writes verification and invite emails to the Worker log. |
+| `SUPER_ADMIN_REQUIRE_MFA` | `true` / `false` | `false` | Super-admins (by role or `SUPER_ADMIN_EMAILS`) need a two-factor sign-in on every admin route. |
+
+**Recommended for new deployments:** `SIGNUP_POLICY=disabled` and `SUPER_ADMIN_REQUIRE_MFA=true`. The runtime default stays `open` so existing self-hosted deployments keep working after an upgrade.
+
+- **Bootstrap.** Under `disabled` and `invite-only`, the first account of an empty database can still be created, so you can sign up the first operator on a fresh install. Create it right after deploying.
+- **`invite-only`.** A super-admin creates an invite with `POST /api/admin/invites` (`{ "email": "...", "tenantSlug": "acme", "tenantRole": "admin" }`). The response contains the token once and a `signUpPath` (`/sign-up?invite=...`). Invites are bound to one email, work once, expire (default 72 hours) and can grant membership of one tenant. List with `GET /api/admin/invites`, revoke with `DELETE /api/admin/invites/:id`. The policy also blocks new accounts from Microsoft and Google sign-in.
+- **Email verification.** When an email sender is configured, email/password accounts must verify their address before they can sign in. Existing unverified accounts get a new link on their next sign-in attempt. To send real email, pass your own sender in code: `configureAuthPolicies({ emailSender: { send: async ({ to, subject, text }) => { /* your provider */ } } })`. EdgeCMS ships no email provider.
+- **MFA.** Users turn on two-factor authentication (authenticator app + recovery codes) under **Settings → Profile**. A super-admin can require it per tenant with `PUT /api/admin/tenants/:slug` and `{ "requireMfa": true }`; tenant admin and MCP routes then return `403 MFA_REQUIRED` for sessions that did not complete a second factor. Microsoft and Google sign-ins do not get an EdgeCMS second-factor challenge, so with MFA required those users must sign in with their password and authenticator code.
+
+### Super-admins listed in `SUPER_ADMIN_EMAILS`
+
+A listed address grants super-admin only when the account's email is **verified**, and it can only be registered when verification is enforced (an email sender is configured) or through Microsoft/Google sign-in with a verified email. Accounts with the `superadmin` role are unaffected.
+
+**Upgrading an existing deployment:** an operator account created before this check is usually unverified and loses super-admin. Fix it in one of these ways:
+
+- Configure an email sender; signing in sends a verification link.
+- Or, after confirming the account is yours (you can sign in with its password), mark it verified:
+
+```bash
+wrangler d1 execute DB --remote --env production --command "UPDATE user SET emailVerified = 1 WHERE email = 'you@example.com'"
+```
+
+Set them per environment, for example:
+
+```bash
+wrangler secret put SIGNUP_POLICY --env production
+wrangler secret put SUPER_ADMIN_REQUIRE_MFA --env production
 ```
 
 ## GitHub Actions Deployment
@@ -185,6 +222,8 @@ Default remote smoke validates health and deployed admin UI regressions. The opt
 ## Database Migrations
 
 Migrations must be applied **before** (or immediately after) deploying a new version that depends on schema changes.
+
+Migration `0034_auth_seams.sql` adds two-factor tables and a `session.mfaVerified` column. Apply it **before** deploying the version that contains it, or sign-in fails until it is applied.
 
 ```bash
 cd apps/api

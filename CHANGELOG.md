@@ -7,7 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Security
+- Super-admin by `SUPER_ADMIN_EMAILS` now requires a verified email, and a listed address can only be self-registered when email verification is enforced (an email sender is configured) or the identity provider verified it. Previously anyone who registered a listed address became super-admin. **Upgrade step:** operators whose existing account is unverified lose email-based super-admin until they verify (see the deployment runbook).
+- The global `role` field can no longer be set from sign-up or `/api/auth/update-user` input; previously anyone could register or promote themselves as `superadmin`.
+
 ### Added
+- Signup policy (`SIGNUP_POLICY`: `open`, `invite-only`, `disabled`), single-use email-bound invites (`/api/admin/invites`) and email verification through an injected sender (PRD HS-01).
+- Two-factor authentication (TOTP + recovery codes) with per-tenant `requireMfa` and `SUPER_ADMIN_REQUIRE_MFA` (PRD HS-11).
 - Added `@edgecms/client` SDK featuring TipTap ProseMirror AST serializer, React rendering component, live draft preview bridge, and Section Builder.
 - Added dynamic zero-config GraphQL endpoint with D1 execution guardrails and GraphiQL playground (`/api/graphql`).
 - Added on-demand Cloudflare CDN edge cache purge service triggered on entry/collection mutations.
@@ -22,6 +28,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Consolidated admin dashboard vendor chunking into cohesive domain chunks, reducing asset requests by 26%.
 
 ### Fixed
+- POST requests to `/api/auth/*` returned 500 on Cloudflare Workers because Elysia consumed the body before Better Auth.
 - Configured Elysia 2 AOT precompilation explicitly for Cloudflare Workers isolates.
 - Hardened GraphQL identifier validation, revalidation dispatch, and route authorization.
 - Enforced strict test isolation across API and admin suites.

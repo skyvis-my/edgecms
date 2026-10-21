@@ -228,6 +228,7 @@ describe('tenantsRepository', () => {
         mediaUploadMaxDimension: 2048,
         mediaAllowedMimeTypes: DEFAULT_ASSET_ALLOWED_MIME_TYPES,
         aiEnabled: true,
+        requireMfa: false,
       },
     ])
   })

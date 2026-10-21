@@ -11,7 +11,7 @@ import { AuthLayout } from '../auth-layout'
 import { SignUpForm } from './components/sign-up-form'
 
 export function SignUp() {
-  const { onboarding } = useSearch({ from: '/(auth)/sign-up' })
+  const { onboarding, invite } = useSearch({ from: '/(auth)/sign-up' })
   const isOnboarding = Boolean(onboarding)
 
   return (
@@ -28,6 +28,14 @@ export function SignUp() {
                 <br />
                 No sign-in is required for this initial onboarding step.
               </>
+            ) : invite ? (
+              <>
+                You have been invited. Use the email address the invite was sent to. <br />
+                Already have an account?{' '}
+                <Link to='/sign-in' className='underline underline-offset-4 hover:text-primary'>
+                  Sign In
+                </Link>
+              </>
             ) : (
               <>
                 Enter your email and password to create an account. <br />
@@ -40,7 +48,7 @@ export function SignUp() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <SignUpForm onboarding={isOnboarding} />
+          <SignUpForm onboarding={isOnboarding} inviteToken={invite} />
         </CardContent>
         <CardFooter>
           <p className='px-8 text-center text-sm text-muted-foreground'>

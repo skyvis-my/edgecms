@@ -1,7 +1,87 @@
 import { betterAuth } from 'better-auth'
 import { drizzleAdapter } from 'better-auth/adapters/drizzle'
+import { createAuthMiddleware } from 'better-auth/api'
+import { twoFactor } from 'better-auth/plugins/two-factor'
 import { drizzle } from 'drizzle-orm/d1'
+import { createDb } from '@/database/db'
 import * as schema from '@/database/schema'
+import type { Env } from '@/env'
+import { invitesService } from '@/invites/invites.service'
+import {
+  type AuthEmailSender,
+  type AuthPolicies,
+  resolveAuthPolicies,
+} from './auth-policies'
+import {
+  enforceSignupPolicy,
+  enforceSuperAdminEmailSignup,
+  readInviteToken,
+} from './signup-policy'
+import { parseSuperAdminEmails } from './super-admin'
+
+export type CreateAuthOptions = {
+  secret?: string
+  baseURL?: string
+  entra?: {
+    clientId?: string
+    clientSecret?: string
+    tenantId?: string
+  }
+  google?: {
+    clientId?: string
+    clientSecret?: string
+  }
+  /** Signup, email verification and MFA policies. Defaults keep historical behavior. */
+  policies?: AuthPolicies
+  /** Normalized SUPER_ADMIN_EMAILS; listed addresses need verified sign-up. */
+  superAdminEmails?: string[]
+}
+
+const DEFAULT_POLICIES: AuthPolicies = { signupPolicy: 'open', requireMfaForSuperAdmins: false }
+
+/** Better Auth endpoints whose new session proves a second factor (HS-11). */
+const SECOND_FACTOR_PATHS = new Set([
+  '/two-factor/verify-totp',
+  '/two-factor/verify-backup-code',
+  '/two-factor/verify-otp',
+])
+
+export function isSecondFactorPath(path: string | undefined): boolean {
+  return path !== undefined && SECOND_FACTOR_PATHS.has(path)
+}
+
+type SessionHookContext = {
+  path?: string
+  context?: { session?: { session?: { userId?: string; mfaVerified?: unknown } } | null }
+} | null
+
+/**
+ * A new session is MFA-verified when it completes a second-factor challenge,
+ * or when it replaces the caller's own MFA-verified session (password change,
+ * re-enrolment). Disabling two-factor always clears it.
+ */
+export function resolveSessionMfa(
+  newSession: { userId: string },
+  ctx: SessionHookContext | undefined
+): boolean {
+  if (isSecondFactorPath(ctx?.path)) return true
+  if (ctx?.path === '/two-factor/disable') return false
+  const current = ctx?.context?.session?.session
+  return current?.userId === newSession.userId && current?.mfaVerified === true
+}
+
+const senderIds = new WeakMap<AuthEmailSender, number>()
+let nextSenderId = 1
+
+function senderKey(sender: AuthEmailSender | undefined): string {
+  if (!sender) return ''
+  let id = senderIds.get(sender)
+  if (id === undefined) {
+    id = nextSenderId++
+    senderIds.set(sender, id)
+  }
+  return String(id)
+}
 
 /**
  * Creates a better-auth instance configured for the CMS Worker.
@@ -33,19 +113,8 @@ import * as schema from '@/database/schema'
 const authCache = new WeakMap<object, Map<string, any>>()
 const activeAuthMaps = new Set<Map<string, any>>()
 
-function buildOptionsKey(options?: {
-  secret?: string
-  baseURL?: string
-  entra?: {
-    clientId?: string
-    clientSecret?: string
-    tenantId?: string
-  }
-  google?: {
-    clientId?: string
-    clientSecret?: string
-  }
-}): string {
+function buildOptionsKey(options?: CreateAuthOptions): string {
+  const policies = options?.policies ?? DEFAULT_POLICIES
   return [
     options?.secret ?? '',
     options?.baseURL ?? '',
@@ -54,6 +123,9 @@ function buildOptionsKey(options?: {
     options?.entra?.tenantId ?? '',
     options?.google?.clientId ?? '',
     options?.google?.clientSecret ?? '',
+    policies.signupPolicy,
+    senderKey(policies.emailSender),
+    (options?.superAdminEmails ?? []).join(','),
   ].join('::')
 }
 
@@ -66,19 +138,7 @@ export function __resetAuthCacheForTests(): void {
 
 export function createAuth(
   d1: D1Database,
-  options?: {
-    secret?: string
-    baseURL?: string
-    entra?: {
-      clientId?: string
-      clientSecret?: string
-      tenantId?: string
-    }
-    google?: {
-      clientId?: string
-      clientSecret?: string
-    }
-  }
+  options?: CreateAuthOptions
 ) {
   const secret = options?.secret?.trim()
   if (!secret || secret.length < 32) {
@@ -94,6 +154,10 @@ export function createAuth(
   }
 
   const db = drizzle(d1, { schema })
+  const gateDb = createDb(d1)
+  const policies = options?.policies ?? DEFAULT_POLICIES
+  const emailSender = policies.emailSender
+  const superAdminEmails = options?.superAdminEmails ?? []
   const trustedOrigins = Array.from(
     new Set(
       [
@@ -122,22 +186,105 @@ export function createAuth(
         session: schema.session,
         account: schema.account,
         verification: schema.verification,
+        twoFactor: schema.twoFactor,
       },
     }),
+    appName: 'EdgeCMS',
     emailAndPassword: {
       enabled: true,
       minPasswordLength: 8,
       maxPasswordLength: 128,
+      requireEmailVerification: Boolean(emailSender),
     },
+    ...(emailSender
+      ? {
+          emailVerification: {
+            sendOnSignUp: true,
+            sendOnSignIn: true,
+            // No session from the email link: it would skip the password and
+            // the two-factor challenge. Users sign in after verifying.
+            autoSignInAfterVerification: false,
+            async sendVerificationEmail({ user, url }: { user: { email: string }; url: string }) {
+              await emailSender.send({
+                to: user.email,
+                subject: 'Verify your email address',
+                text: `Open this link to verify your email address and sign in:\n\n${url}\n\nIf you did not create an account, ignore this email.`,
+              })
+            },
+          },
+        }
+      : {}),
     user: {
       additionalFields: {
         role: {
           type: 'string',
           defaultValue: 'viewer',
+          // Global role is assigned by admins only; never accept it from sign-up
+          // or update-user input.
+          input: false,
+        },
+      },
+    },
+    plugins: [twoFactor({ issuer: 'EdgeCMS' })],
+    hooks: {
+      before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== '/sign-up/email') return
+        const email = (ctx.body as { email?: unknown } | undefined)?.email
+        enforceSuperAdminEmailSignup({
+          email: typeof email === 'string' ? email : '',
+          superAdminEmails,
+          emailVerified: false,
+          verificationEnforced: Boolean(emailSender),
+        })
+        await enforceSignupPolicy(gateDb, {
+          policy: policies.signupPolicy,
+          email: typeof email === 'string' ? email : '',
+          inviteToken: readInviteToken(ctx),
+          mode: 'check',
+        })
+      }),
+    },
+    databaseHooks: {
+      user: {
+        create: {
+          async before(newUser, ctx) {
+            enforceSuperAdminEmailSignup({
+              email: newUser.email,
+              superAdminEmails,
+              emailVerified: newUser.emailVerified === true,
+              verificationEnforced: Boolean(emailSender),
+            })
+            await enforceSignupPolicy(gateDb, {
+              policy: policies.signupPolicy,
+              email: newUser.email,
+              inviteToken: readInviteToken(ctx),
+              mode: 'consume',
+            })
+          },
+          async after(createdUser, ctx) {
+            if (policies.signupPolicy !== 'invite-only') return
+            const token = readInviteToken(ctx)
+            if (token) await invitesService.complete(gateDb, { token, userId: createdUser.id })
+          },
+        },
+      },
+      session: {
+        create: {
+          async before(newSession, ctx) {
+            return { data: { ...newSession, mfaVerified: resolveSessionMfa(newSession, ctx) } }
+          },
         },
       },
     },
     session: {
+      additionalFields: {
+        mfaVerified: {
+          type: 'boolean',
+          defaultValue: false,
+          required: false,
+          input: false,
+        },
+      },
       expiresIn: 60 * 60 * 24 * 7, // 7 days
       updateAge: 60 * 60 * 24, // refresh session every 24 hours
       cookieCache: {
@@ -182,6 +329,40 @@ export function createAuth(
   }
 
   return instance
+}
+
+type AuthEnv = Pick<
+  Env,
+  | 'DB'
+  | 'BETTER_AUTH_SECRET'
+  | 'ENTRA_CLIENT_ID'
+  | 'ENTRA_CLIENT_SECRET'
+  | 'ENTRA_TENANT_ID'
+  | 'GOOGLE_CLIENT_ID'
+  | 'GOOGLE_CLIENT_SECRET'
+  | 'SIGNUP_POLICY'
+  | 'AUTH_EMAIL_SENDER'
+  | 'SUPER_ADMIN_REQUIRE_MFA'
+  | 'SUPER_ADMIN_EMAILS'
+>
+
+/** Builds the auth instance for a Worker env, including composition-time policies. */
+export function createAuthForEnv(env: AuthEnv, baseURL: string) {
+  return createAuth(env.DB, {
+    secret: env.BETTER_AUTH_SECRET,
+    baseURL,
+    entra: {
+      clientId: env.ENTRA_CLIENT_ID,
+      clientSecret: env.ENTRA_CLIENT_SECRET,
+      tenantId: env.ENTRA_TENANT_ID,
+    },
+    google: {
+      clientId: env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
+    },
+    policies: resolveAuthPolicies(env),
+    superAdminEmails: parseSuperAdminEmails(env.SUPER_ADMIN_EMAILS),
+  })
 }
 
 export { getSessionForRequest } from './session-cache'

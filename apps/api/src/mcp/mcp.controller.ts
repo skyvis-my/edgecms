@@ -1,6 +1,7 @@
 import { Elysia } from 'elysia'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
-import { createAuth } from '@/auth/auth'
+import { createAuthForEnv } from '@/auth/auth'
+import { isMfaVerifiedSession, isSuperAdminMissingMfa, MFA_REQUIRED_MESSAGE } from '@/auth/mfa'
 import { getSessionForRequest } from '@/auth/session-cache'
 import type { CommandContext } from '@/commands/engine'
 import type { Database } from '@/database/db'
@@ -16,7 +17,7 @@ async function resolveMcpAuth(
   headers: Record<string, string | undefined>,
   workerEnv: Env,
   user?: { id: string }
-): Promise<{ authenticated: boolean; actorId?: string }> {
+): Promise<{ authenticated: boolean; actorId?: string; mfaRequired?: boolean }> {
   // 1. Session auth from betterAuthPlugin
   if (user?.id) {
     return { authenticated: true, actorId: user.id }
@@ -43,21 +44,22 @@ async function resolveMcpAuth(
   // 3. Fallback check for session cookie if not pre-populated
   try {
     const baseURL = getRequestUrl(request).origin
-    const auth = createAuth(workerEnv.DB, {
-      secret: workerEnv.BETTER_AUTH_SECRET,
-      baseURL,
-      entra: {
-        clientId: workerEnv.ENTRA_CLIENT_ID,
-        clientSecret: workerEnv.ENTRA_CLIENT_SECRET,
-        tenantId: workerEnv.ENTRA_TENANT_ID,
-      },
-      google: {
-        clientId: workerEnv.GOOGLE_CLIENT_ID,
-        clientSecret: workerEnv.GOOGLE_CLIENT_SECRET,
-      },
-    })
+    const auth = createAuthForEnv(workerEnv, baseURL)
     const session = await getSessionForRequest(auth, request)
     if (session?.user?.id) {
+      // HS-11: /api/mcp is not behind the admin guard, so apply the
+      // super-admin MFA requirement here (tenant MFA runs in the tenant middleware).
+      const missingMfa = isSuperAdminMissingMfa(
+        {
+          email: session.user.email,
+          emailVerified: session.user.emailVerified === true,
+          userRole: (session.user as { role?: unknown }).role,
+          sessionRole: (session.session as { role?: unknown } | undefined)?.role,
+          mfaVerified: isMfaVerifiedSession(session),
+        },
+        workerEnv
+      )
+      if (missingMfa) return { authenticated: false, mfaRequired: true }
       return { authenticated: true, actorId: session.user.id }
     }
   } catch {
@@ -90,6 +92,16 @@ async function handleMcpRequest(ctx: McpRequestContext) {
     workerEnv,
     user
   )
+
+  if (auth.mfaRequired) {
+    set.status = 403
+    set.headers['content-type'] = 'application/json'
+    return {
+      jsonrpc: '2.0',
+      id: Array.isArray(body) ? (body[0]?.id ?? null) : ((body as McpJsonRpcRequest)?.id ?? null),
+      error: { code: -32001, message: MFA_REQUIRED_MESSAGE },
+    }
+  }
 
   if (!auth.authenticated || !auth.actorId) {
     set.status = 401

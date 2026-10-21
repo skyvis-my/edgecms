@@ -1,8 +1,9 @@
 import { env } from 'cloudflare:workers'
 import { Elysia, status } from 'elysia'
-import { createAuth } from '@/auth/auth'
+import { createAuthForEnv } from '@/auth/auth'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
 import { getSessionForRequest } from '@/auth/session-cache'
+import { isMfaVerifiedSession, MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE } from '@/auth/mfa'
 import { hasSuperAdminRole, isSuperAdminEmail, parseSuperAdminEmails } from '@/auth/super-admin'
 import { createDb } from '@/database/db'
 import type { Env } from '@/env'
@@ -17,6 +18,22 @@ import {
   setCachedMembership,
   getCachedFastActor,
 } from './tenant-cache'
+
+/** Tenant routes that act as an authenticated user (admin API and MCP). */
+const TENANT_MFA_SCOPED_PATH = /^\/api\/tenants\/[^/]+\/api\/(?:admin|mcp)(?:\/|$)/
+
+/**
+ * HS-11: when a tenant requires MFA, authenticated users (super-admins
+ * included) must hold an MFA-verified session or token on its admin routes.
+ */
+function assertTenantMfa(request: Request, tenantRequiresMfa: boolean, mfaVerified: boolean) {
+  if (!tenantRequiresMfa || mfaVerified) return
+  if (!TENANT_MFA_SCOPED_PATH.test(getRequestUrl(request).pathname)) return
+  throw status(403, {
+    success: false,
+    error: { code: MFA_REQUIRED_CODE, message: MFA_REQUIRED_MESSAGE },
+  })
+}
 
 /**
  * Request surface that keeps serving while a tenant is `suspended`: published
@@ -143,9 +160,14 @@ export const tenantMiddleware = new Elysia({ name: 'tenant-middleware' })
     cachedFast.actor.tenantId === tenant.id
   ) {
     const fast = cachedFast.actor
+    assertTenantMfa(request, tenant.requireMfa === true, fast.mfaVerified === true)
     if (
       fast.isSuperAdminByToken ||
-      isSuperAdminEmail(fast.actorEmail, parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS))
+      isSuperAdminEmail(
+        fast.actorEmail,
+        parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS),
+        fast.emailVerified
+      )
     ) {
       return {
         tenant: {
@@ -190,29 +212,22 @@ export const tenantMiddleware = new Elysia({ name: 'tenant-middleware' })
     }
   }
 
-  const auth = createAuth(typedEnv.DB, {
-    secret: typedEnv.BETTER_AUTH_SECRET,
-    baseURL: getRequestUrl(request).origin,
-    entra: {
-      clientId: typedEnv.ENTRA_CLIENT_ID,
-      clientSecret: typedEnv.ENTRA_CLIENT_SECRET,
-      tenantId: typedEnv.ENTRA_TENANT_ID,
-    },
-    google: {
-      clientId: typedEnv.GOOGLE_CLIENT_ID,
-      clientSecret: typedEnv.GOOGLE_CLIENT_SECRET,
-    },
-  })
+  const auth = createAuthForEnv(typedEnv, getRequestUrl(request).origin)
   const session = await getSessionForRequest(auth, request)
 
   if (session?.user) {
+    assertTenantMfa(request, tenant.requireMfa === true, isMfaVerifiedSession(session))
     const sessionUserRole = (session.user as { role?: unknown }).role
     const sessionPayloadRole = (session.session as { role?: unknown } | undefined)?.role
     const isSuperAdminByRole =
       hasSuperAdminRole(sessionUserRole) || hasSuperAdminRole(sessionPayloadRole)
     if (
       isSuperAdminByRole ||
-      isSuperAdminEmail(session.user.email, parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS))
+      isSuperAdminEmail(
+        session.user.email,
+        parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS),
+        session.user.emailVerified === true
+      )
     ) {
       return {
         tenant: {

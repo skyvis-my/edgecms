@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:workers'
 import type { Env } from '@/env'
+import { parseBooleanEnv } from '@/shared/utils/env-flags'
 import { createDb } from '@/database/db'
 import { tenantsService } from '@/tenants/tenants.service'
 import { getCachedCorsOrigin } from '@/tenants/cors-cache'
@@ -215,11 +216,7 @@ export function toResponseHeaders(headers: MutableHeaders): Record<string, strin
   return result
 }
 
-export function parseBooleanEnv(raw: string | undefined): boolean {
-  if (!raw) return false
-  const normalized = raw.trim().toLowerCase()
-  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on'
-}
+export { parseBooleanEnv }
 
 export function buildHstsHeader(config: Partial<Env>): string | undefined {
   const rawMaxAge = config.HSTS_MAX_AGE_SECONDS

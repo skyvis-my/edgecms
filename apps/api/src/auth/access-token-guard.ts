@@ -12,6 +12,10 @@ export type FastPathActor = {
   actorRole?: ActorRole
   actorEmail?: string
   isSuperAdminByToken?: boolean
+  /** Session behind the token completed a second factor. */
+  mfaVerified?: boolean
+  /** The token's email is verified (required for email-based super-admin). */
+  emailVerified?: boolean
   tenantId?: string
   tenantRole?: TenantActorRole
   customTenantRole?: string
@@ -75,6 +79,8 @@ export async function resolveFastPathActor(input: {
       actorRole,
       actorEmail: claims.email,
       isSuperAdminByToken: claims.sa === 1,
+      mfaVerified: claims.mfa === 1,
+      emailVerified: claims.ev === 1,
       tenantId: claims.tid,
     }
     const tenantRole = asFastPathTenantRole(claims.trl)
@@ -98,6 +104,8 @@ export async function resolveFastPathActor(input: {
       actorRole,
       actorEmail: claims.email,
       isSuperAdminByToken: claims.sa === 1,
+      mfaVerified: claims.mfa === 1,
+      emailVerified: claims.ev === 1,
     },
   }
 }

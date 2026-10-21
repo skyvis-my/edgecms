@@ -39,9 +39,19 @@ const mockCreateAuth = vi.fn((..._args: unknown[]) => ({
   handler: () => new Response('Not Found', { status: 404 }),
   api: { getSession: mockGetSession },
 }))
-mock.module('@/auth/auth', () => ({
-  createAuth: (...args: unknown[]) => mockCreateAuth(...args),
-}))
+mock.module('@/auth/auth', () => {
+  const authModule = {
+    createAuth: (...args: unknown[]) => mockCreateAuth(...args),
+  }
+  return {
+    ...authModule,
+    createAuthForEnv: (env: { DB: unknown; BETTER_AUTH_SECRET?: string }, baseURL: string) =>
+      (authModule.createAuth as (...args: unknown[]) => unknown)(env.DB, {
+        secret: env.BETTER_AUTH_SECRET,
+        baseURL,
+      }),
+  }
+})
 
 const mockTenantRow = {
   id: 'tenant-1',

@@ -28,13 +28,23 @@ mock.module('../../tenants/tenants.repository', () => ({
 
 const mockGetSession = vi.fn()
 
-mock.module('@/auth/auth', () => ({
-  createAuth: () => ({
-    api: {
-      getSession: mockGetSession,
-    },
-  }),
-}))
+mock.module('@/auth/auth', () => {
+  const authModule = {
+    createAuth: () => ({
+      api: {
+        getSession: mockGetSession,
+      },
+    }),
+  }
+  return {
+    ...authModule,
+    createAuthForEnv: (env: { DB: unknown; BETTER_AUTH_SECRET?: string }, baseURL: string) =>
+      (authModule.createAuth as (...args: unknown[]) => unknown)(env.DB, {
+        secret: env.BETTER_AUTH_SECRET,
+        baseURL,
+      }),
+  }
+})
 
 const { Elysia: MockElysia } = await import('elysia')
 
@@ -236,7 +246,7 @@ describe('Tenant Middleware', () => {
 
       mockFindBySlug.mockResolvedValue(mockTenant)
       mockGetSession.mockResolvedValue({
-        user: { id: 'user-1', email: 'user@example.com' },
+        user: { id: 'user-1', email: 'user@example.com', emailVerified: true },
         session: { id: 'session-1' },
       })
       mockFindTenantUser.mockResolvedValue({
@@ -274,7 +284,7 @@ describe('Tenant Middleware', () => {
 
       mockFindBySlug.mockResolvedValue(mockTenant)
       mockGetSession.mockResolvedValue({
-        user: { id: 'user-2', email: 'outsider@example.com' },
+        user: { id: 'user-2', email: 'outsider@example.com', emailVerified: true },
         session: { id: 'session-2' },
       })
       mockFindTenantUser.mockResolvedValue(undefined)
@@ -337,7 +347,7 @@ describe('Tenant Middleware', () => {
       mockEnv.SUPER_ADMIN_EMAILS = 'admin@example.com, super@example.com'
       mockFindBySlug.mockResolvedValue(mockTenant)
       mockGetSession.mockResolvedValue({
-        user: { id: 'super-1', email: 'super@example.com' },
+        user: { id: 'super-1', email: 'super@example.com', emailVerified: true },
         session: { id: 'session-super' },
       })
       mockFindTenantUser.mockResolvedValue(undefined)
@@ -371,7 +381,7 @@ describe('Tenant Middleware', () => {
       mockEnv.SUPER_ADMIN_EMAILS = undefined
       mockFindBySlug.mockResolvedValue(mockTenant)
       mockGetSession.mockResolvedValue({
-        user: { id: 'super-2', email: 'not-listed@example.com', role: 'superadmin' },
+        user: { id: 'super-2', email: 'not-listed@example.com', emailVerified: true, role: 'superadmin' },
         session: { id: 'session-super-role' },
       })
       mockFindTenantUser.mockResolvedValue(undefined)
@@ -405,7 +415,7 @@ describe('Tenant Middleware', () => {
       mockEnv.SUPER_ADMIN_EMAILS = undefined
       mockFindBySlug.mockResolvedValue(mockTenant)
       mockGetSession.mockResolvedValue({
-        user: { id: 'super-3', email: 'not-listed@example.com' },
+        user: { id: 'super-3', email: 'not-listed@example.com', emailVerified: true },
         session: { id: 'session-super-role-alt', role: 'super-admin' },
       })
       mockFindTenantUser.mockResolvedValue(undefined)
