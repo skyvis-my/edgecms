@@ -1,5 +1,6 @@
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
+import { parseBooleanEnv } from '@/shared/utils/env-flags'
 
 /**
  * Hosting seams for authentication (PRD HS-01, HS-11).
@@ -109,11 +110,6 @@ export function __resetAuthPoliciesForTests(): void {
   configuredOverrides = {}
 }
 
-function parseBooleanFlag(raw: string | undefined): boolean {
-  const normalized = raw?.trim().toLowerCase()
-  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on'
-}
-
 let consoleSender: AuthEmailSender | undefined
 
 export function resolveAuthPolicies(env: Partial<Env>): AuthPolicies {
@@ -126,6 +122,6 @@ export function resolveAuthPolicies(env: Partial<Env>): AuthPolicies {
     emailSender: configuredOverrides.emailSender ?? envSender,
     requireMfaForSuperAdmins:
       configuredOverrides.requireMfaForSuperAdmins ??
-      parseBooleanFlag(env.SUPER_ADMIN_REQUIRE_MFA),
+      parseBooleanEnv(env.SUPER_ADMIN_REQUIRE_MFA),
   }
 }

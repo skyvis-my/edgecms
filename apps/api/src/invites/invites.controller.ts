@@ -4,11 +4,10 @@ import { resolveAuthPolicies } from '@/auth/auth-policies'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
 import { superAdminRoute } from '@/tenants/tenants.controller'
 import type { Env } from '@/env'
-import { logger } from '@/observability/logger'
 import { getRequestUrl } from '@/shared/utils/request-url'
 import { toServiceResponse } from '@/shared/utils/service-response'
 import { withTenantBindings } from '@/tenants/with-tenant-bindings'
-import { MAX_INVITE_TTL_HOURS, invitesService } from './invites.service'
+import { MAX_INVITE_TTL_HOURS, inviteSignUpPath, invitesService } from './invites.service'
 
 /**
  * Super-admin endpoints for single-use sign-up invites (PRD HS-01).
@@ -45,31 +44,18 @@ export const invitesController = new Elysia({ prefix: '/api/admin/invites' })
       const result = await invitesService.create(db, { ...body, createdBy: user.id })
       if (!result.success) return toServiceResponse(set, result)
 
-      const signUpPath = `/sign-up?invite=${encodeURIComponent(result.data.token)}`
       const workerEnv = env as unknown as Env
-      const sender = resolveAuthPolicies(workerEnv).emailSender
-      let emailed = false
-      if (sender) {
-        const origin = workerEnv.BASE_URL?.replace(/\/$/, '') || getRequestUrl(request).origin
-        const url = `${origin}${signUpPath}`
-        try {
-          await sender.send({
-            to: result.data.invite.email,
-            subject: 'You have been invited to EdgeCMS',
-            text: `You have been invited to create an EdgeCMS account.\n\nOpen this link to sign up:\n\n${url}\n\nThe invite works once and expires at ${result.data.invite.expiresAt}.`,
-          })
-          emailed = true
-        } catch (err) {
-          logger.warn('invite_email_failed', {
-            error: err instanceof Error ? err.message : String(err),
-          })
-        }
-      }
+      const emailed = await invitesService.sendInviteEmail({
+        sender: resolveAuthPolicies(workerEnv).emailSender,
+        invite: result.data.invite,
+        token: result.data.token,
+        origin: workerEnv.BASE_URL?.replace(/\/$/, '') || getRequestUrl(request).origin,
+      })
 
       set.status = 201
       return {
         success: true as const,
-        data: { ...result.data, signUpPath, emailed },
+        data: { ...result.data, signUpPath: inviteSignUpPath(result.data.token), emailed },
       }
     }
   )

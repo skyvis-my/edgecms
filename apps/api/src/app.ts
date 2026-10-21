@@ -19,12 +19,12 @@ import {
 import { rbacController } from '@/auth/rbac.controller'
 import { auditTrailPlugin } from '@/audit/audit-trail.plugin'
 import { privacyController } from '@/privacy/privacy.controller'
-import { configureAuthPolicies, resolveAuthPolicies } from '@/auth/auth-policies'
+import { configureAuthPolicies } from '@/auth/auth-policies'
 import {
   isMfaVerifiedSession,
   MFA_REQUIRED_CODE,
   MFA_REQUIRED_MESSAGE,
-  resolveMfaRequirement,
+  isSuperAdminMissingMfa,
 } from '@/auth/mfa'
 import {
   hasSuperAdminRole,
@@ -263,16 +263,17 @@ export const createApp = (options: CreateAppOptions = {}) => {
           // HS-11: never mint a token that would let a caller skip a required
           // second factor. Changing a tenant's requirement bumps its permission
           // revision, so older tokens go stale.
-          const isSuperAdmin =
-            hasSuperAdminRole(actor.actorSessionRoleRaw) ||
-            hasSuperAdminRole(actor.actorUserRoleRaw) ||
-            isSuperAdminEmail(actor.actorEmail, parseSuperAdminEmails(typedEnv.SUPER_ADMIN_EMAILS))
-          const mfaRequirement = resolveMfaRequirement({
-            isSuperAdmin,
-            requireMfaForSuperAdmins: resolveAuthPolicies(typedEnv).requireMfaForSuperAdmins,
-            tenantRequiresMfa,
-          })
-          if (mfaRequirement && !actor.mfaVerified) {
+          const mfaVerified = actor.mfaVerified === true
+          const superAdminMissingMfa = isSuperAdminMissingMfa(
+            {
+              email: actor.actorEmail,
+              userRole: actor.actorUserRoleRaw,
+              sessionRole: actor.actorSessionRoleRaw,
+              mfaVerified,
+            },
+            typedEnv
+          )
+          if (superAdminMissingMfa || (tenantRequiresMfa && !mfaVerified)) {
             set.status = 403
             return createErrorEnvelope(MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE)
           }

@@ -8,7 +8,7 @@ import {
   validateAuthPolicyEnv,
 } from '@/auth/auth-policies'
 import { readInviteToken } from '@/auth/signup-policy'
-import { isMfaVerifiedSession, resolveMfaRequirement } from '@/auth/mfa'
+import { isMfaVerifiedSession, isSuperAdminMissingMfa } from '@/auth/mfa'
 
 afterEach(() => {
   __resetAuthPoliciesForTests()
@@ -106,13 +106,21 @@ describe('MFA helpers', () => {
     expect(isMfaVerifiedSession(null)).toBe(false)
   })
 
-  it('resolves who must present MFA', () => {
-    const base = { isSuperAdmin: false, requireMfaForSuperAdmins: false, tenantRequiresMfa: false }
-    expect(resolveMfaRequirement(base)).toBeUndefined()
-    expect(resolveMfaRequirement({ ...base, isSuperAdmin: true })).toBeUndefined()
+  it('decides when a super-admin is missing MFA', () => {
+    const required = { SUPER_ADMIN_REQUIRE_MFA: 'true', SUPER_ADMIN_EMAILS: 'root@example.com' }
+    const root = { email: 'root@example.com', mfaVerified: false }
+    expect(isSuperAdminMissingMfa(root, required)).toBe(true)
+    expect(isSuperAdminMissingMfa({ ...root, mfaVerified: true }, required)).toBe(false)
+    expect(isSuperAdminMissingMfa(root, { SUPER_ADMIN_EMAILS: 'root@example.com' })).toBe(false)
+    expect(isSuperAdminMissingMfa({ email: 'x@example.com', mfaVerified: false }, required)).toBe(false)
     expect(
-      resolveMfaRequirement({ ...base, isSuperAdmin: true, requireMfaForSuperAdmins: true })
-    ).toBe('super-admin')
-    expect(resolveMfaRequirement({ ...base, tenantRequiresMfa: true })).toBe('tenant')
+      isSuperAdminMissingMfa({ email: 'x@example.com', userRole: 'superadmin', mfaVerified: false }, required)
+    ).toBe(true)
+    expect(
+      isSuperAdminMissingMfa(
+        { email: 'x@example.com', mfaVerified: false },
+        { SUPER_ADMIN_REQUIRE_MFA: 'true', SUPER_ADMIN_DEV_MODE: 'true' }
+      )
+    ).toBe(true)
   })
 })

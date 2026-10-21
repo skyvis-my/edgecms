@@ -124,6 +124,19 @@ describe('super-admin MFA requirement (SUPER_ADMIN_REQUIRE_MFA)', () => {
     expect((await get('/api/admin/system/info')).status).toBe(200)
   })
 
+  it('covers SUPER_ADMIN_DEV_MODE super-admins', async () => {
+    mockEnv.SUPER_ADMIN_REQUIRE_MFA = 'true'
+    mockEnv.SUPER_ADMIN_EMAILS = undefined
+    mockEnv.SUPER_ADMIN_DEV_MODE = 'true'
+    try {
+      mockGetSession.mockResolvedValue(sessionFor('anyone@example.com', false, 'admin'))
+      expect((await get('/api/admin/system/info')).code).toBe('MFA_REQUIRED')
+    } finally {
+      mockEnv.SUPER_ADMIN_EMAILS = 'root@example.com'
+      mockEnv.SUPER_ADMIN_DEV_MODE = undefined
+    }
+  })
+
   it('does not require MFA when the setting is off (existing deployments)', async () => {
     mockGetSession.mockResolvedValue(sessionFor('root@example.com', false))
     expect((await get('/api/admin/system/info')).status).toBe(200)

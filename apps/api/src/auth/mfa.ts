@@ -1,3 +1,7 @@
+import type { Env } from '@/env'
+import { resolveAuthPolicies } from './auth-policies'
+import { hasSuperAdminRole, isSuperAdminUser } from './super-admin'
+
 /**
  * MFA enforcement helpers (PRD HS-11).
  *
@@ -18,15 +22,23 @@ export function isMfaVerifiedSession(session: unknown): boolean {
 }
 
 /**
- * Returns why the caller must present MFA, or undefined when it is not needed.
- * Super-admins are covered deployment-wide; everyone else per tenant.
+ * True when a super-admin session must present MFA (SUPER_ADMIN_REQUIRE_MFA)
+ * and has not. Covers super-admins by role, by SUPER_ADMIN_EMAILS and by
+ * SUPER_ADMIN_DEV_MODE, matching `isSuperAdminUser`.
  */
-export function resolveMfaRequirement(input: {
-  isSuperAdmin: boolean
-  requireMfaForSuperAdmins: boolean
-  tenantRequiresMfa: boolean
-}): 'super-admin' | 'tenant' | undefined {
-  if (input.isSuperAdmin && input.requireMfaForSuperAdmins) return 'super-admin'
-  if (input.tenantRequiresMfa) return 'tenant'
-  return undefined
+export function isSuperAdminMissingMfa(
+  input: {
+    email?: string | null
+    userRole?: unknown
+    sessionRole?: unknown
+    mfaVerified: boolean
+  },
+  env: Partial<Env>
+): boolean {
+  if (input.mfaVerified) return false
+  if (!resolveAuthPolicies(env).requireMfaForSuperAdmins) return false
+  return (
+    hasSuperAdminRole(input.sessionRole) ||
+    isSuperAdminUser({ email: input.email, role: input.userRole }, env)
+  )
 }

@@ -1,4 +1,6 @@
+import type { AuthEmailSender } from '@/auth/auth-policies'
 import type { Database } from '@/database/db'
+import { logger } from '@/observability/logger'
 import type { ServiceResult } from '@/shared/utils/service-response'
 import { tenantsRepository } from '@/tenants/tenants.repository'
 import { invitesRepository, type SignupInviteRow } from './invites.repository'
@@ -30,6 +32,11 @@ export type CreateInviteInput = {
   tenantRole?: InviteTenantRole
   expiresInHours?: number
   createdBy?: string
+}
+
+/** Admin sign-up path that accepts an invite token. */
+export function inviteSignUpPath(token: string): string {
+  return `/sign-up?invite=${encodeURIComponent(token)}`
 }
 
 function normalizeEmail(email: string): string {
@@ -134,6 +141,33 @@ export const invitesService = {
       createdAt: now,
     })
     return { success: true, data: { invite: toView(row, now), token } }
+  },
+
+  /**
+   * Emails the invite link when the host configured a sender. Returns whether
+   * it was sent; a failing sender never fails invite creation.
+   */
+  async sendInviteEmail(input: {
+    sender: AuthEmailSender | undefined
+    invite: SignupInviteView
+    token: string
+    origin: string
+  }): Promise<boolean> {
+    if (!input.sender) return false
+    const url = `${input.origin}${inviteSignUpPath(input.token)}`
+    try {
+      await input.sender.send({
+        to: input.invite.email,
+        subject: 'You have been invited to EdgeCMS',
+        text: `You have been invited to create an EdgeCMS account.\n\nOpen this link to sign up:\n\n${url}\n\nThe invite works once and expires at ${input.invite.expiresAt}.`,
+      })
+      return true
+    } catch (err) {
+      logger.warn('invite_email_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return false
+    }
   },
 
   async list(db: Database): Promise<ServiceResult<SignupInviteView[]>> {

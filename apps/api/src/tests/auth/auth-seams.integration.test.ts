@@ -244,8 +244,11 @@ describe('email verification through an injected sender', () => {
     const link = sent[0]!.text.match(/https?:\/\/\S+/)?.[0]
     if (!link) throw new Error('verification link missing')
     const verifyPath = new URL(link).pathname.replace('/api/auth', '') + new URL(link).search
-    const verified = await callAuth(h.auth, verifyPath)
+    const linkJar = new CookieJar()
+    const verified = await callAuth(h.auth, verifyPath, { jar: linkJar })
     expect([200, 302]).toContain(verified.status)
+    // The link verifies the address but never signs in by itself.
+    expect(await getSession(h, linkJar)).toBeNull()
 
     expect((await signIn(h, 'verify@example.com')).status).toBe(200)
   })
@@ -333,6 +336,27 @@ describe('two-factor authentication (TOTP + recovery codes)', () => {
     await signUp(h, 'sneaky@example.com', {}, jar)
     const res = await callAuth(h.auth, '/update-session', { body: { mfaVerified: true }, jar })
     expect(res.status).not.toBe(200)
+    expect((await getSession(h, jar))?.session.mfaVerified).toBe(false)
+  })
+
+  it('keeps MFA when the session rotates on a password change', async () => {
+    const { h, jar } = await enrolled()
+    const res = await callAuth(h.auth, '/change-password', {
+      body: { currentPassword: PASSWORD, newPassword: 'another-strong-pass', revokeOtherSessions: true },
+      jar,
+    })
+    expect(res.status).toBe(200)
+    expect((await getSession(h, jar))?.session.mfaVerified).toBe(true)
+  })
+
+  it('does not grant MFA when a password-only session rotates', async () => {
+    const h = setup()
+    const jar = new CookieJar()
+    await signUp(h, 'rotate@example.com', {}, jar)
+    await callAuth(h.auth, '/change-password', {
+      body: { currentPassword: PASSWORD, newPassword: 'another-strong-pass', revokeOtherSessions: true },
+      jar,
+    })
     expect((await getSession(h, jar))?.session.mfaVerified).toBe(false)
   })
 

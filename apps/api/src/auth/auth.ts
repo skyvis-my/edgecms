@@ -43,6 +43,26 @@ export function isSecondFactorPath(path: string | undefined): boolean {
   return path !== undefined && SECOND_FACTOR_PATHS.has(path)
 }
 
+type SessionHookContext = {
+  path?: string
+  context?: { session?: { session?: { userId?: string; mfaVerified?: unknown } } | null }
+} | null
+
+/**
+ * A new session is MFA-verified when it completes a second-factor challenge,
+ * or when it replaces the caller's own MFA-verified session (password change,
+ * re-enrolment). Disabling two-factor always clears it.
+ */
+export function resolveSessionMfa(
+  newSession: { userId: string },
+  ctx: SessionHookContext | undefined
+): boolean {
+  if (isSecondFactorPath(ctx?.path)) return true
+  if (ctx?.path === '/two-factor/disable') return false
+  const current = ctx?.context?.session?.session
+  return current?.userId === newSession.userId && current?.mfaVerified === true
+}
+
 const senderIds = new WeakMap<AuthEmailSender, number>()
 let nextSenderId = 1
 
@@ -172,7 +192,9 @@ export function createAuth(
           emailVerification: {
             sendOnSignUp: true,
             sendOnSignIn: true,
-            autoSignInAfterVerification: true,
+            // No session from the email link: it would skip the password and
+            // the two-factor challenge. Users sign in after verifying.
+            autoSignInAfterVerification: false,
             async sendVerificationEmail({ user, url }: { user: { email: string }; url: string }) {
               await emailSender.send({
                 to: user.email,
@@ -228,7 +250,7 @@ export function createAuth(
       session: {
         create: {
           async before(newSession, ctx) {
-            return { data: { ...newSession, mfaVerified: isSecondFactorPath(ctx?.path) } }
+            return { data: { ...newSession, mfaVerified: resolveSessionMfa(newSession, ctx) } }
           },
         },
       },

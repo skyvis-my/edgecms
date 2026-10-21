@@ -25,8 +25,7 @@ import {
 } from './rbac'
 import { rbacService } from './rbac.service'
 import { hasSuperAdminRole, isSuperAdminEmail, parseSuperAdminEmails } from './super-admin'
-import { resolveAuthPolicies } from './auth-policies'
-import { MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE, resolveMfaRequirement } from './mfa'
+import { isSuperAdminMissingMfa, MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE } from './mfa'
 import { createDb } from '@/database/db'
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
@@ -349,12 +348,16 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
         // HS-11: deployment-wide MFA requirement for super-admins on every
         // authorization-checked route. Per-tenant MFA is enforced in the
         // tenant middleware, which has the tenant row.
-        const mfaRequirement = resolveMfaRequirement({
-          isSuperAdmin: principal.isSuperAdmin || principal.isSuperAdminByEmail,
-          requireMfaForSuperAdmins: resolveAuthPolicies(typedEnv).requireMfaForSuperAdmins,
-          tenantRequiresMfa: false,
-        })
-        if (mfaRequirement && !actorMfaVerified) {
+        const superAdminMissingMfa = isSuperAdminMissingMfa(
+          {
+            email: actorEmail,
+            userRole: fastActor?.isSuperAdminByToken ? 'superadmin' : actorUserRoleRaw,
+            sessionRole: actorSessionRoleRaw,
+            mfaVerified: actorMfaVerified,
+          },
+          typedEnv
+        )
+        if (superAdminMissingMfa) {
           ctx.set.status = 403
           return createErrorEnvelope(MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE)
         }
