@@ -78,7 +78,7 @@ describe('privacyService.deleteUserData', () => {
     expect(count(`SELECT COUNT(*) n FROM session WHERE userId = 'alice'`)).toBe(0)
     expect(count(`SELECT COUNT(*) n FROM account WHERE userId = 'alice'`)).toBe(0)
     expect(count(`SELECT COUNT(*) n FROM tenant_users WHERE userId = 'alice'`)).toBe(0)
-    expect(count(`SELECT COUNT(*) n FROM verification`)).toBe(0)
+    expect(count(`SELECT COUNT(*) n FROM verification`)).toBe(1)
 
     // Other users and all tenant content stay.
     expect(count(`SELECT COUNT(*) n FROM user`)).toBe(2)
@@ -120,7 +120,7 @@ describe('privacyService.deleteUserData', () => {
       sessions: 1,
       accounts: 2,
       memberships: 2,
-      verifications: 1,
+      verifications: 2,
       user: 1,
     })
     expect(result.data.receipt).toMatchObject({ scope: 'global' })

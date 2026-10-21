@@ -20,8 +20,12 @@ function fail(code: PrivacyError['code'], message: string): ServiceResult<never,
   return { success: false, error: { code, message } }
 }
 
+/** Repositories are queried with limit + 1 so `truncated` is exact. */
 function capped<T>(rows: T[]) {
-  return { items: rows, truncated: rows.length >= PRIVACY_EXPORT_LIMIT }
+  return {
+    items: rows.slice(0, PRIVACY_EXPORT_LIMIT),
+    truncated: rows.length > PRIVACY_EXPORT_LIMIT,
+  }
 }
 
 export const privacyService = {
@@ -41,7 +45,7 @@ export const privacyService = {
       return fail('NOT_FOUND', 'User not found')
     }
 
-    const limit = PRIVACY_EXPORT_LIMIT
+    const limit = PRIVACY_EXPORT_LIMIT + 1
     const [accounts, sessions, memberships, entryVersions, assets, aiImportBatches, commands, auditEvents] =
       await Promise.all([
         privacyRepository.listAccounts(db, userId),
@@ -125,8 +129,13 @@ export const privacyService = {
 
     const memberships = await privacyRepository.listMemberships(db, userId)
     const pseudonym = newPseudonym()
-    const first = await privacyRepository.pseudonymizeReferences(db, userId, pseudonym)
-    const deleted = await privacyRepository.deleteAccountData(db, userId, found.email)
+    // One D1 batch (atomic): a failure leaves nothing half-deleted.
+    const { pseudonymized: first, deleted } = await privacyRepository.pseudonymizeAndDelete(
+      db,
+      userId,
+      pseudonym,
+      found.email
+    )
     // Second pass catches references written while the account was being deleted.
     const second = await privacyRepository.pseudonymizeReferences(db, userId, pseudonym)
     const pseudonymized = Object.fromEntries(

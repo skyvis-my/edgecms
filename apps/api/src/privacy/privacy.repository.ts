@@ -1,4 +1,4 @@
-import { and, asc, eq, ne, or, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, or, sql } from 'drizzle-orm'
 import type { Database } from '@/database/db'
 import {
   account,
@@ -15,6 +15,25 @@ import {
 } from '@/database/schema'
 
 const actorUserId = sql`json_extract(${processedCommands.actor}, '$.userId')`
+
+type BatchableDb = { batch: (queries: unknown[]) => Promise<unknown[]> }
+
+/** Run named statements, atomically through D1 `batch()` when the driver has it. */
+async function runStatements(
+  db: Database,
+  statements: Record<string, PromiseLike<unknown>>
+): Promise<Record<string, number>> {
+  const entries = Object.entries(statements)
+  const batch = (db as unknown as Partial<BatchableDb>).batch
+  const results =
+    typeof batch === 'function'
+      ? await batch.call(db, entries.map(([, statement]) => statement))
+      : await entries.reduce<Promise<unknown[]>>(
+          async (done, [, statement]) => [...(await done), await statement],
+          Promise.resolve([])
+        )
+  return Object.fromEntries(entries.map(([key], index) => [key, changesOf(results[index])]))
+}
 
 /** Rows-changed count across D1 (`meta.changes`) and bun:sqlite (`changes`) results. */
 function changesOf(result: unknown): number {
@@ -164,84 +183,87 @@ export const privacyRepository = {
 
   /** Tenants where this user is the only owner (deleting them would orphan the tenant). */
   async findSoleOwnedTenants(db: Database, userId: string): Promise<string[]> {
-    const owned = await db
+    const ownedByUser = db
       .select({ tenantId: tenantUsers.tenantId })
       .from(tenantUsers)
       .where(and(eq(tenantUsers.userId, userId), eq(tenantUsers.role, 'owner')))
-    const sole: string[] = []
-    for (const { tenantId } of owned) {
-      const others = await db
-        .select({ userId: tenantUsers.userId })
-        .from(tenantUsers)
-        .where(
-          and(
-            eq(tenantUsers.tenantId, tenantId),
-            eq(tenantUsers.role, 'owner'),
-            ne(tenantUsers.userId, userId)
-          )
-        )
-        .limit(1)
-      if (others.length === 0) sole.push(tenantId)
-    }
-    return sole
+    const rows = await db
+      .select({ tenantId: tenantUsers.tenantId })
+      .from(tenantUsers)
+      .where(and(eq(tenantUsers.role, 'owner'), inArray(tenantUsers.tenantId, ownedByUser)))
+      .groupBy(tenantUsers.tenantId)
+      .having(sql`count(*) = 1`)
+    return rows.map((row) => row.tenantId)
   },
 
   /**
    * Replace the user id with a pseudonym in authored-by references (content
    * metadata, command log, audit ledger). Content fields are never touched.
    */
+  pseudonymizeStatements(db: Database, userId: string, pseudonym: string) {
+    return {
+      entryVersions: db
+        .update(entryVersions)
+        .set({ createdBy: pseudonym })
+        .where(eq(entryVersions.createdBy, userId)),
+      assets: db.update(assets).set({ createdBy: pseudonym }).where(eq(assets.createdBy, userId)),
+      aiImportBatches: db
+        .update(aiImportBatches)
+        .set({ createdByUserId: pseudonym })
+        .where(eq(aiImportBatches.createdByUserId, userId)),
+      commands: db
+        .update(processedCommands)
+        .set({ actor: sql`json_set(${processedCommands.actor}, '$.userId', ${pseudonym})` })
+        .where(eq(actorUserId, userId)),
+      auditActor: db
+        .update(auditEvents)
+        .set({ actorId: pseudonym })
+        .where(eq(auditEvents.actorId, userId)),
+      auditTarget: db
+        .update(auditEvents)
+        .set({ targetId: pseudonym })
+        .where(eq(auditEvents.targetId, userId)),
+    }
+  },
+
+  /** Account rows to delete. The user row goes last. */
+  deleteStatements(db: Database, userId: string, email: string) {
+    return {
+      sessions: db.delete(session).where(eq(session.userId, userId)),
+      accounts: db.delete(account).where(eq(account.userId, userId)),
+      memberships: db.delete(tenantUsers).where(eq(tenantUsers.userId, userId)),
+      // Email verification rows are keyed by email; password-reset rows hold the user id.
+      verifications: db
+        .delete(verification)
+        .where(or(eq(verification.identifier, email), eq(verification.value, userId))),
+      user: db.delete(user).where(eq(user.id, userId)),
+    }
+  },
+
   async pseudonymizeReferences(
     db: Database,
     userId: string,
     pseudonym: string
   ): Promise<PseudonymizationCounts> {
-    const entryVersionsResult = await db
-      .update(entryVersions)
-      .set({ createdBy: pseudonym })
-      .where(eq(entryVersions.createdBy, userId))
-    const assetsResult = await db
-      .update(assets)
-      .set({ createdBy: pseudonym })
-      .where(eq(assets.createdBy, userId))
-    const batchesResult = await db
-      .update(aiImportBatches)
-      .set({ createdByUserId: pseudonym })
-      .where(eq(aiImportBatches.createdByUserId, userId))
-    const commandsResult = await db
-      .update(processedCommands)
-      .set({ actor: sql`json_set(${processedCommands.actor}, '$.userId', ${pseudonym})` })
-      .where(eq(actorUserId, userId))
-    const auditActorResult = await db
-      .update(auditEvents)
-      .set({ actorId: pseudonym })
-      .where(eq(auditEvents.actorId, userId))
-    const auditTargetResult = await db
-      .update(auditEvents)
-      .set({ targetId: pseudonym })
-      .where(eq(auditEvents.targetId, userId))
-    return {
-      entryVersions: changesOf(entryVersionsResult),
-      assets: changesOf(assetsResult),
-      aiImportBatches: changesOf(batchesResult),
-      commands: changesOf(commandsResult),
-      auditActor: changesOf(auditActorResult),
-      auditTarget: changesOf(auditTargetResult),
-    }
+    const statements = this.pseudonymizeStatements(db, userId, pseudonym)
+    return (await runStatements(db, statements)) as PseudonymizationCounts
   },
 
-  /** Delete account data. The user row goes last so a partial failure can be retried. */
-  async deleteAccountData(db: Database, userId: string, email: string): Promise<DeletionCounts> {
-    const sessions = await db.delete(session).where(eq(session.userId, userId))
-    const accounts = await db.delete(account).where(eq(account.userId, userId))
-    const memberships = await db.delete(tenantUsers).where(eq(tenantUsers.userId, userId))
-    const verifications = await db.delete(verification).where(eq(verification.identifier, email))
-    const users = await db.delete(user).where(eq(user.id, userId))
+  /** Pseudonymize and delete in one D1 batch (atomic); sequential on drivers without batch. */
+  async pseudonymizeAndDelete(
+    db: Database,
+    userId: string,
+    pseudonym: string,
+    email: string
+  ): Promise<{ pseudonymized: PseudonymizationCounts; deleted: DeletionCounts }> {
+    const pseudonymize = this.pseudonymizeStatements(db, userId, pseudonym)
+    const remove = this.deleteStatements(db, userId, email)
+    const counts = await runStatements(db, { ...pseudonymize, ...remove })
+    const pick = <K extends string>(keys: K[]) =>
+      Object.fromEntries(keys.map((key) => [key, counts[key] ?? 0])) as Record<K, number>
     return {
-      sessions: changesOf(sessions),
-      accounts: changesOf(accounts),
-      memberships: changesOf(memberships),
-      verifications: changesOf(verifications),
-      user: changesOf(users),
+      pseudonymized: pick(Object.keys(pseudonymize) as (keyof PseudonymizationCounts)[]),
+      deleted: pick(Object.keys(remove) as (keyof DeletionCounts)[]),
     }
   },
 }

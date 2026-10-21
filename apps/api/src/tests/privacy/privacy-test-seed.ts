@@ -34,7 +34,9 @@ export async function createPrivacyFixture(): Promise<{
       ('acc1', 'alice', 'credential', 'alice', NULL, NULL, 'hashed-password', ${EPOCH}, ${EPOCH}),
       ('acc2', 'g-123', 'google', 'alice', 'oauth-access-token', 'oauth-refresh-token', NULL, ${EPOCH}, ${EPOCH});
     INSERT INTO verification (id, identifier, value, expiresAt) VALUES
-      ('v1', 'alice@example.com', 'verify-token', ${EPOCH + 3600});
+      ('v1', 'alice@example.com', 'verify-token', ${EPOCH + 3600}),
+      ('v2', 'reset-password:reset-token', 'alice', ${EPOCH + 3600}),
+      ('v3', 'reset-password:bob-token', 'bob', ${EPOCH + 3600});
     INSERT INTO collections (id, name, slug, fields, supportedLocales, createdAt, updatedAt, tenantId) VALUES
       ('c1', 'Posts', 'posts', '[]', '["en"]', '${NOW}', '${NOW}', 't1');
     INSERT INTO entries (id, collectionId, slug, data, createdAt, updatedAt) VALUES

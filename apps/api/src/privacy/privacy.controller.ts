@@ -22,6 +22,12 @@ const SESSION_COOKIES = [
   '__Secure-better-auth.session_data',
 ]
 
+/** `__Secure-` cookies are only replaced when the clearing cookie is Secure too. */
+function clearCookieHeader(name: string): string {
+  const secure = name.startsWith('__Secure-') ? '; Secure' : ''
+  return `${name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${secure}`
+}
+
 function workerEnv(): Env {
   return env as unknown as Env
 }
@@ -69,7 +75,7 @@ export const privacyController = new Elysia()
     )
     if (result.success) {
       ;(set.headers as MutableHeaders)['set-cookie'] = SESSION_COOKIES.map(
-        (name) => `${name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`
+        clearCookieHeader
       )
     }
     set.headers['cache-control'] = 'no-store'

@@ -3,7 +3,6 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 const edenGet = vi.fn()
 const edenPost = vi.fn()
-const signOut = vi.fn()
 
 vi.mock('@/lib/eden-client', () => ({
   edenGet,
@@ -13,7 +12,6 @@ vi.mock('@/lib/eden-client', () => ({
   edenPostForTenant: vi.fn(),
   edenPostMultipart: vi.fn(),
 }))
-vi.mock('@/lib/auth-client', () => ({ signOut }))
 
 const { PersonalDataSection } = await import('./personal-data-section?real')
 
@@ -34,7 +32,6 @@ describe('PersonalDataSection', () => {
 
   it('only deletes after the user types DELETE', async () => {
     edenPost.mockResolvedValueOnce({ pseudonym: 'deleted-user:x' })
-    signOut.mockResolvedValueOnce(undefined)
     const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => undefined)
 
     render(<PersonalDataSection />)

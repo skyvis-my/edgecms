@@ -4,7 +4,6 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { signOut } from '@/lib/auth-client'
 import { edenGet, edenPost } from '@/lib/eden-client'
 
 const CONFIRM_WORD = 'DELETE'
@@ -16,7 +15,8 @@ function downloadJson(data: unknown, filename: string) {
   link.href = url
   link.download = filename
   link.click()
-  URL.revokeObjectURL(url)
+  // Revoking synchronously can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 /**
@@ -45,8 +45,9 @@ export function PersonalDataSection() {
   async function handleDelete() {
     setDeleting(true)
     try {
+      // The server deletes every session and clears the session cookies, so no
+      // sign-out call is needed (it would reuse the cached session cookie).
       await edenPost('/me/data-deletion', { confirm: CONFIRM_WORD })
-      await signOut().catch(() => undefined)
       window.location.assign('/sign-in')
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Deletion failed')
