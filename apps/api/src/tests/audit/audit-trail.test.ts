@@ -74,6 +74,7 @@ describe('classifyAdminAuditRequest', () => {
     expect(classifyAdminAuditRequest('/api/public/x', 'POST')).toBeNull()
     // Personal data requests write their own pseudonymized receipt.
     expect(classifyAdminAuditRequest('/api/admin/users/u1/data-deletion', 'POST')).toBeNull()
+    expect(classifyAdminAuditRequest('/api/tenants/acme/api/admin/settings/ai', 'PUT')).toBeNull()
   })
 
   it('extracts params from a route template', () => {

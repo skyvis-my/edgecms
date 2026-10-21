@@ -48,7 +48,8 @@ function isMissingOptionalTenantColumnsError(error: unknown): boolean {
       message.includes('corsorigin') ||
       message.includes('mediauploadmaxbytes') ||
       message.includes('mediauploadmaxdimension') ||
-      message.includes('mediaallowedmimetypes'))
+      message.includes('mediaallowedmimetypes') ||
+      message.includes('aienabled'))
   )
 }
 
@@ -61,6 +62,7 @@ function withDefaultTenantColumns<
     | 'mediaUploadMaxBytes'
     | 'mediaUploadMaxDimension'
     | 'mediaAllowedMimeTypes'
+    | 'aiEnabled'
   >,
 >(row: T): TenantRow {
   return {
@@ -71,6 +73,8 @@ function withDefaultTenantColumns<
     mediaUploadMaxBytes: DEFAULT_MEDIA_UPLOAD_MAX_BYTES,
     mediaUploadMaxDimension: DEFAULT_MEDIA_UPLOAD_MAX_DIMENSION,
     mediaAllowedMimeTypes: DEFAULT_MEDIA_ALLOWED_MIME_TYPES,
+    // Before migration 0033 every tenant had AI available (HS-14 keeps that).
+    aiEnabled: true,
   }
 }
 
@@ -126,6 +130,7 @@ export const tenantsRepository = {
         mediaUploadMaxBytes: tenants.mediaUploadMaxBytes,
         mediaUploadMaxDimension: tenants.mediaUploadMaxDimension,
         mediaAllowedMimeTypes: tenants.mediaAllowedMimeTypes,
+        aiEnabled: tenants.aiEnabled,
         createdAt: tenants.createdAt,
         updatedAt: tenants.updatedAt,
         userCount: sql<number>`coalesce(${userCountSubquery.userCount}, 0)`,

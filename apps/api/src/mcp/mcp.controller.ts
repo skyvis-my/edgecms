@@ -9,6 +9,7 @@ import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import type { TenantContext } from '@/tenants/tenant-context'
 import { getRequestPathname, getRequestUrl } from '@/shared/utils/request-url'
 import { processMcpMessage, type McpJsonRpcRequest } from './mcp-server'
+import { AI_DISABLED_CODE, AI_DISABLED_MESSAGE, isTenantAiEnabled } from '@/ai/ai-access'
 
 async function resolveMcpAuth(
   request: Request,
@@ -100,6 +101,17 @@ async function handleMcpRequest(ctx: McpRequestContext) {
         code: -32001,
         message: 'Unauthorized: MCP endpoint requires an active session or a valid X-EdgeCMS-API-Key header',
       },
+    }
+  }
+
+  // HS-14: MCP clients are AI agents; a tenant with AI turned off is not served.
+  if (!(await isTenantAiEnabled({ db, workerEnv, tenantId: tenantCtx?.tenant.id }))) {
+    set.status = 403
+    set.headers['content-type'] = 'application/json'
+    return {
+      jsonrpc: '2.0',
+      id: Array.isArray(body) ? (body[0]?.id ?? null) : ((body as McpJsonRpcRequest)?.id ?? null),
+      error: { code: -32003, message: AI_DISABLED_MESSAGE, data: { code: AI_DISABLED_CODE } },
     }
   }
 

@@ -1,3 +1,4 @@
+import { isTenantAiEnabled } from '@/ai/ai-access'
 import type { Env } from '@/env'
 import type { AssetRow } from './assets.repository'
 
@@ -112,6 +113,10 @@ export async function indexAssetVector(
   if (!workerEnv.ASSET_VECTORS) {
     return
   }
+  // HS-14: no embeddings for tenants with AI turned off.
+  if (!(await isTenantAiEnabled({ workerEnv, tenantId }))) {
+    return
+  }
 
   const text = buildSearchText(asset)
   const embedding = await createEmbedding(workerEnv, text)
@@ -163,6 +168,10 @@ export async function searchAssetVectorIds(
   tenantId?: string
 ): Promise<VectorMatch[]> {
   if (!workerEnv.ASSET_VECTORS) {
+    return []
+  }
+  // HS-14: callers fall back to lexical search when AI is off.
+  if (!(await isTenantAiEnabled({ workerEnv, tenantId }))) {
     return []
   }
 
