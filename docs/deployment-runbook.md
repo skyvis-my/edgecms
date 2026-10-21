@@ -147,8 +147,8 @@ Deployment workflows live in `.github/workflows/`:
 
 | Workflow | Trigger | Target | Gates |
 |---|---|---|---|
-| `deploy-staging.yml` | Push to `main` (when `STAGING_URL` is set) or manual dispatch | `vars.STAGING_URL` | CI, release readiness, build, D1 migrations, deploy, health smoke, PRD smoke |
-| `deploy-production.yml` | Manual dispatch or `v*` tag | `vars.PRODUCTION_URL` | CI, production environment approval, release readiness, build, D1 migrations, deploy, health smoke, PRD smoke |
+| `deploy-staging.yml` | Push to `main` (when `STAGING_URL` is set) or manual dispatch | `vars.STAGING_URL` | CI, release readiness, build, D1 migrations, deploy, health smoke |
+| `deploy-production.yml` | Manual dispatch or `v*` tag | `vars.PRODUCTION_URL` | CI, production environment approval, release readiness, build, D1 migrations, deploy, health smoke |
 
 Configure these GitHub environment or repository secrets before using the workflows:
 
@@ -163,7 +163,7 @@ Runtime Worker secrets such as `BETTER_AUTH_SECRET`, `JWT_HS256_SECRET`, `SUPER_
 
 ## E2E Smoke Checks
 
-Use the root smoke runner instead of remembering individual Playwright commands:
+Playwright smoke runs locally or by hand only; CI and the deploy workflows do not run it, to keep them fast. Run it before merging UI changes. Use the root smoke runner instead of remembering individual Playwright commands:
 
 | Scope | Command |
 |---|---|

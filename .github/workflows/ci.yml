@@ -6,11 +6,6 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      e2e_smoke_base_url:
-        description: "Optional deployed admin URL for remote Playwright smoke"
-        required: false
-        type: string
   workflow_call:
 
 concurrency:
@@ -117,54 +112,3 @@ jobs:
           name: admin-dist
           path: apps/admin/dist/
           retention-days: 1
-
-  e2e-smoke:
-    name: E2E Smoke (Playwright)
-    runs-on: ubuntu-24.04
-    needs: [lint, typecheck, test]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.2"
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Install Playwright browsers
-        run: bun run --filter edgecms-admin playwright install --with-deps chromium
-
-      - name: Run local E2E smoke
-        run: bun run smoke:e2e:local
-
-      - name: Upload Playwright test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-test-results
-          path: apps/admin/.playwright/test-results/
-          retention-days: 7
-
-  remote-e2e-smoke:
-    name: Remote E2E Smoke
-    runs-on: ubuntu-24.04
-    needs: [lint, typecheck, test]
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.e2e_smoke_base_url != '' }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "1.4.2"
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Install Playwright browsers
-        run: bun run --filter edgecms-admin playwright install --with-deps chromium
-
-      - name: Run remote PRD smoke
-        env:
-          BASE_URL: ${{ inputs.e2e_smoke_base_url }}
-        run: bun run smoke:e2e:remote
