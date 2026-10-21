@@ -228,7 +228,7 @@ describe('HS-05 D1 daily rollup sink', () => {
   function sqliteDb() {
     const sqlite = new BunSqlite(':memory:')
     sqlite.exec(
-      readFileSync(join(import.meta.dir, '../../../drizzle/migrations/0034_usage_daily.sql'), 'utf8')
+      readFileSync(join(import.meta.dir, '../../../drizzle/migrations/0035_usage_daily.sql'), 'utf8')
     )
     const db = drizzleBunSqlite(sqlite)
     // bun:sqlite has no D1 batch; run the statements in order instead.

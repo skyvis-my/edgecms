@@ -96,7 +96,7 @@ function isDrizzle(value: unknown): value is Database {
 
 /**
  * Opt-in sink that sums events into `usage_daily` (migration
- * `0034_usage_daily.sql`), one row per tenant, UTC day, metric and detail.
+ * `0035_usage_daily.sql`), one row per tenant, UTC day, metric and detail.
  *
  * Events are buffered in the isolate and written in one D1 batch at most every
  * `flushIntervalMs`, so a busy tenant costs one D1 write per interval rather

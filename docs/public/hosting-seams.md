@@ -113,7 +113,7 @@ Recording never fails or slows a request. The framework hands each batch to `wai
 
 ### D1 daily rollups
 
-`createD1UsageRollupSink({ db: env.DB })` sums events into `usage_daily` (tenant, UTC day, metric, detail). Migration `0034_usage_daily.sql` creates the table; apply it with the other migrations. The sink buffers in the isolate. When an event arrives at least 10 s (`flushIntervalMs`) after the last write, or once 50 rows are pending (`maxBufferedRows`), it writes the buffer in one D1 batch. There is no timer, so rows wait in the buffer until the next event arrives; call `flush()` yourself if you need them written sooner. A failed flush keeps its rows for the next one. Counts still in the buffer when an isolate is evicted are lost, so treat these rollups as approximate. For billing-grade counts, send events to a Queue and aggregate them there.
+`createD1UsageRollupSink({ db: env.DB })` sums events into `usage_daily` (tenant, UTC day, metric, detail). Migration `0035_usage_daily.sql` creates the table; apply it with the other migrations. The sink buffers in the isolate. When an event arrives at least 10 s (`flushIntervalMs`) after the last write, or once 50 rows are pending (`maxBufferedRows`), it writes the buffer in one D1 batch. There is no timer, so rows wait in the buffer until the next event arrives; call `flush()` yourself if you need them written sooner. A failed flush keeps its rows for the next one. Counts still in the buffer when an isolate is evicted are lost, so treat these rollups as approximate. For billing-grade counts, send events to a Queue and aggregate them there.
 
 ## Limit policy (HS-06)
 
