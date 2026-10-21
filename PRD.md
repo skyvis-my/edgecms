@@ -1,6 +1,6 @@
 # EdgeCMS Product Requirements
 
-Version: 3.2 (2026-10-21)
+Version: 3.3 (2026-10-22)
 Owner: EdgeCMS maintainers
 Status: Living document. Every feature PR cites a requirement ID from this file (see [Change control](#12-change-control)).
 
@@ -173,13 +173,13 @@ Generic hooks that let anyone run EdgeCMS as a multi-customer service, including
 | ID | Requirement | Status |
 | --- | --- | --- |
 | **HS-01** | Signup policy: `open`, `invite-only` or `disabled` (default `disabled` for new deployments), with email verification through an injected email sender. Today email/password signup is always open and unverified. | Planned |
-| **HS-02** | Tenant creation policy: an injected `canCreateTenant(actor)` decides who may create a tenant (default: super-admins only, as today). The creator becomes the tenant owner. | Planned |
+| **HS-02** | Tenant creation policy: an injected `canCreateTenant(actor)` decides who may create a tenant on the admin API and onboarding (default: super-admins only on the admin API; onboarding keeps a user's first workspace). A creator who is not a super-admin becomes the tenant owner in the same write. See [hosting seams](docs/public/hosting-seams.md). | Shipped |
 | **HS-03** | Provisioning modes: `shared` (rows in the main D1) or `dedicated` (own D1, KV and R2 through the existing Cloudflare API provisioning), with an idempotent, resumable job and a status the admin can show. | Partial |
-| **HS-04** | Tenant states: `pending`, `active`, `suspended` (admin locked, public reads continue) and `disabled` (everything blocked). Today any non-`active` status returns 403 everywhere. | Planned |
+| **HS-04** | Tenant states: `pending`, `active`, `suspended` (admin locked, public reads continue) and `disabled` (everything blocked). Super-admins keep access in every state; legacy `inactive` behaves like `disabled`. | Shipped |
 | **HS-05** | Usage metering: per-tenant counters for public reads, admin mutations, AI tokens by model tier, stored media bytes and entry count, written to an injected sink with daily rollups. Metering never blocks or slows the request path. | Planned |
 | **HS-06** | Limit policy: an injected `TenantLimits` provider is checked before commands, uploads, AI calls and tenant creation. Over-limit returns a typed error (`402` quota, `429` rate) that the admin shows with the host's upgrade link. Default limits come from the tenant row. | Planned |
 | **HS-07** | Per-tenant rate-limit policies, replacing the current fixed global policies. | Planned |
-| **HS-08** | Tenant lifecycle events (`tenant.created`, `tenant.activated`, `tenant.suspended`, `tenant.deleted`, `tenant.limit_reached`) on the event bus and webhooks. | Planned |
+| **HS-08** | Tenant lifecycle events (`tenant.created`, `tenant.activated`, `tenant.suspended`, `tenant.deleted`, `tenant.limit_reached`) on the event bus, global webhooks and the host's `onTenantEvent`. `tenant.limit_reached` is reserved until HS-06 emits it. | Partial |
 | **HS-09** | Tenant offboarding: full export (content, media references, settings) and verified deletion of tenant data and dedicated resources, with an audit receipt. | Planned |
 | **HS-10** | Host admin contributions: a trusted host plugin (EX-02) can add admin navigation, a plan/usage panel and banners without editing core. | Planned |
 | **HS-11** | Multi-factor authentication (TOTP and recovery codes through Better Auth), with a per-tenant "require MFA" setting and a deployment-wide requirement for super-admins. The admin has an OTP screen but the API does not verify a second factor yet. | Planned |
@@ -192,7 +192,7 @@ Generic hooks that let anyone run EdgeCMS as a multi-customer service, including
 | ID | Requirement | Status |
 | --- | --- | --- |
 | **OP-01** | Documented local path: install, run API and admin, migrate, seed, publish, read publicly ([quickstart](docs/public/quickstart.md)). | Shipped |
-| **OP-02** | `createApp()` composition: an application instance owns its config, modules and registries; independent instances can run side by side in tests. | Partial |
+| **OP-02** | `createApp()` composition: an application instance owns its config, modules and registries; independent instances can run side by side in tests. Host policies (`createApp({ host })`, §10.1) are per instance. | Partial |
 | **OP-03** | `create-edgecms-app` starter that scaffolds a working consumer app. Not published to npm yet. | Partial |
 | **OP-04** | Deploy to the adopter's own Cloudflare account via the Deploy button or the [deployment runbook](docs/deployment-runbook.md), with dev, staging and production environments. | Shipped |
 | **OP-05** | Migrations use expand/contract sequencing; destructive changes need a backup and a tested restore. | Partial |
@@ -231,6 +231,7 @@ Every PR that adds or changes product behavior must fit this PRD.
 
 | Date | Version | Change |
 | --- | --- | --- |
+| 2026-10-22 | 3.3 | Shipped `HS-02` and `HS-04`; `HS-08` partial (`tenant.limit_reached` reserved). Added the `createApp({ host })` policy surface under OP-02. |
 | 2026-10-21 | 3.2 | Added compliance seams `HS-11`–`HS-14` (MFA, audit log hardening, personal data requests, per-tenant AI switch). |
 | 2026-10-21 | 3.1 | Added §10.1 hosting seams (`HS-01`–`HS-10`) for multi-customer hosts; downstream `*PRD.md` files extend this one. Corrected MD-05 defaults and PL-02 providers. |
 | 2026-10-21 | 3.0 | Rewritten from the internal v2.1 spec to match the open-source framework: TypeBox replaces ArkType, Better Auth replaces direct Entra auth, multi-tenancy, MCP, GraphQL, webhooks, versioning and x402 added, SaaS scope split out, requirement IDs and change control introduced. |

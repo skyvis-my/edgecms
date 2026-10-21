@@ -232,6 +232,11 @@ export function initWebhookProducer(
     'collection.created',
     'collection.updated',
     'collection.deleted',
+    'tenant.created',
+    'tenant.activated',
+    'tenant.suspended',
+    'tenant.deleted',
+    'tenant.limit_reached',
   ]
 
   for (const eventType of eventTypes) {

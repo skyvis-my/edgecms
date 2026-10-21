@@ -1,4 +1,5 @@
 import { Elysia, t } from 'elysia'
+import { isSuperAdminUser } from '@/auth/super-admin'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
 import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import { parseAllowedWebhookHosts } from './webhook-destination-policy'
@@ -62,12 +63,13 @@ export const webhooksController = new Elysia({ prefix: '/api/admin/webhooks' })
       retryBackoff: t.Optional(t.Union([t.Literal('exponential'), t.Literal('linear')])),
       retryTimeout: t.Optional(t.Integer({ minimum: 5, maximum: 120 })),
     }),
-  }, async ({ db, body, set, workerEnv, tenantCtx }) => {
+  }, async ({ db, body, set, workerEnv, tenantCtx, user }) => {
     const result = await webhooksService.create(
       db,
       body,
       tenantCtx?.tenant.id,
-      resolveWebhookDestinationPolicy(workerEnv)
+      resolveWebhookDestinationPolicy(workerEnv),
+      { allowTenantLifecycleEvents: isSuperAdminUser(user, workerEnv) }
     )
     return toServiceResponse(set, result, { successStatus: 201, defaultErrorStatus: 400 })
   })
@@ -112,13 +114,14 @@ export const webhooksController = new Elysia({ prefix: '/api/admin/webhooks' })
       retryBackoff: t.Optional(t.Union([t.Literal('exponential'), t.Literal('linear')])),
       retryTimeout: t.Optional(t.Integer({ minimum: 5, maximum: 120 })),
     }),
-  }, async ({ db, params, body, set, workerEnv, tenantCtx }) => {
+  }, async ({ db, params, body, set, workerEnv, tenantCtx, user }) => {
     const result = await webhooksService.update(
       db,
       params.webhookId,
       body,
       tenantCtx?.tenant.id,
-      resolveWebhookDestinationPolicy(workerEnv)
+      resolveWebhookDestinationPolicy(workerEnv),
+      { allowTenantLifecycleEvents: isSuperAdminUser(user, workerEnv) }
     )
     if (!result.success) {
       return toServiceResponse(set, result)

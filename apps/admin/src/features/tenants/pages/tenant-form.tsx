@@ -52,7 +52,9 @@ import { slugify } from '@/lib/slugify'
 import { cn } from '@/lib/utils'
 import {
   TENANT_USER_ROLES,
+  TENANT_STATUSES,
   type TenantDetail,
+  type TenantStatus,
   type TenantUserRole,
   useAddTenantUser,
   useCreateTenant,
@@ -73,7 +75,7 @@ const tenantFormSchema = z.object({
     .string()
     .min(1, 'Slug is required')
     .regex(/^[a-z0-9-]+$/, 'Slug must contain only lowercase letters, numbers, and hyphens'),
-  status: z.enum(['active', 'suspended']),
+  status: z.enum(TENANT_STATUSES),
   localeCatalog: z.array(z.string().min(1, 'Locale code cannot be empty')).min(1),
   targetUrl: z.string().url('Target URL must be a valid URL').optional().or(z.literal('')),
   corsOrigin: z.string().url('CORS origin must be a valid URL').optional().or(z.literal('')),
@@ -131,7 +133,8 @@ export function TenantForm({ tenant, mode }: TenantFormProps) {
       ? {
           name: tenant.name,
           slug: tenant.slug,
-          status: tenant.status,
+          // Legacy `inactive` behaves like `disabled` (HS-04); show it as such.
+          status: (tenant.status as string) === 'inactive' ? 'disabled' : tenant.status,
           localeCatalog: tenant.localeCatalog?.length ? tenant.localeCatalog : ['en'],
           targetUrl: tenant.targetUrl ?? '',
           corsOrigin: tenant.corsOrigin ?? '',
@@ -337,15 +340,17 @@ export function TenantForm({ tenant, mode }: TenantFormProps) {
               <Label htmlFor='status'>Status</Label>
               <Select
                 value={watch('status')}
-                onValueChange={(value) => setValue('status', value as 'active' | 'suspended')}
+                onValueChange={(value) => setValue('status', value as TenantStatus)}
                 disabled={isSubmitting}
               >
                 <SelectTrigger id='status'>
                   <SelectValue placeholder='Select status' />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value='pending'>Pending</SelectItem>
                   <SelectItem value='active'>Active</SelectItem>
-                  <SelectItem value='suspended'>Suspended</SelectItem>
+                  <SelectItem value='suspended'>Suspended (public reads only)</SelectItem>
+                  <SelectItem value='disabled'>Disabled</SelectItem>
                 </SelectContent>
               </Select>
               {errors.status && <p className='text-sm text-red-600' role='alert' aria-live='polite'>{errors.status.message}</p>}
