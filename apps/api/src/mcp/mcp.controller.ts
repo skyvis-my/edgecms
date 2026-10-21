@@ -8,6 +8,8 @@ import type { Database } from '@/database/db'
 import type { Env } from '@/env'
 import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import type { TenantContext } from '@/tenants/tenant-context'
+import { createCommandHostHooks } from '@/host/command-hooks'
+import { getHostRuntime } from '@/host/host-context'
 import { getRequestPathname, getRequestUrl } from '@/shared/utils/request-url'
 import { processMcpMessage, type McpJsonRpcRequest } from './mcp-server'
 import { AI_DISABLED_CODE, AI_DISABLED_MESSAGE, isTenantAiEnabled } from '@/ai/ai-access'
@@ -136,6 +138,11 @@ async function handleMcpRequest(ctx: McpRequestContext) {
       source: 'ai',
     },
     tenantScope: tenantCtx?.tenant.id,
+    hostHooks: createCommandHostHooks(getHostRuntime(request), {
+      source: ctx,
+      tenant: tenantCtx?.tenant,
+      actorId: auth.actorId,
+    }),
     requestMeta: {
       requestId: ctx.requestId ?? crypto.randomUUID(),
       pathname: requestPathname,

@@ -10,7 +10,11 @@ import {
   normalizeAllowedAssetMimeTypes,
   type UploadAssetInput,
 } from './assets.service'
+import { estimateUploadBytes, storedAssetBytes } from './storage-bytes'
 import { createErrorEnvelope } from '@/shared/utils/service-response'
+import { getHostRuntime } from '@/host/host-context'
+import { respondLimitExceeded, toLimitTenant } from '@/host/limits'
+import type { TenantContext } from '@/tenants/tenant-context'
 
 function buildUploadTooLargeMessage(maxUploadBytes: number) {
   return `Asset upload exceeds maximum size of ${maxUploadBytes} bytes`
@@ -188,6 +192,21 @@ function getDeferredWorkScheduler(ctx: unknown) {
     : undefined
 }
 
+/** HS-05: deleted assets stop counting toward stored media bytes. */
+function recordDeletedBytes(
+  ctx: { request: Request },
+  tenantCtx: TenantContext | undefined,
+  deletedBytes: number
+): void {
+  if (!tenantCtx?.tenant || deletedBytes <= 0) return
+  getHostRuntime(ctx.request).usage.record(ctx, {
+    tenantId: tenantCtx.tenant.id,
+    tenantSlug: tenantCtx.tenant.slug,
+    metric: 'media_bytes',
+    quantity: -deletedBytes,
+  })
+}
+
 export const assetsController = new Elysia({ prefix: '/api/admin/assets' })
   .use(betterAuthPlugin)
   .use(withTenantBindings)
@@ -221,11 +240,22 @@ export const assetsController = new Elysia({ prefix: '/api/admin/assets' })
       )
     }
       
+        const actorId =
+          typeof (ctx as { user?: { id?: unknown } }).user?.id === 'string'
+            ? ((ctx as { user?: { id?: string } }).user?.id ?? undefined)
+            : undefined
+        const hostRuntime = getHostRuntime(ctx.request)
+        if (tenantCtx?.tenant) {
+          const exceeded = await hostRuntime.limits.check(ctx, {
+            dimension: 'media_bytes',
+            amount: estimateUploadBytes(uploadInput),
+            tenant: toLimitTenant(tenantCtx.tenant),
+            ...(actorId && { actor: { userId: actorId } }),
+          })
+          if (exceeded) return respondLimitExceeded(ctx.set, exceeded)
+        }
+
         try {
-          const actorId =
-            typeof (ctx as { user?: { id?: unknown } }).user?.id === 'string'
-              ? ((ctx as { user?: { id?: string } }).user?.id ?? undefined)
-              : undefined
           const asset = await assetsService.upload(
             db,
             r2,
@@ -238,6 +268,15 @@ export const assetsController = new Elysia({ prefix: '/api/admin/assets' })
             maxUploadDimension,
             allowedMimeTypes
           )
+          // Meter what was stored, the same measure deletes subtract.
+          if (tenantCtx?.tenant && asset) {
+            hostRuntime.usage.record(ctx, {
+              tenantId: tenantCtx.tenant.id,
+              tenantSlug: tenantCtx.tenant.slug,
+              metric: 'media_bytes',
+              quantity: storedAssetBytes(asset),
+            })
+          }
           ctx.set.status = 201
           return { success: true as const, data: asset }
         } catch (error) {
@@ -357,6 +396,7 @@ export const assetsController = new Elysia({ prefix: '/api/admin/assets' })
           set.status = 404
           return createErrorEnvelope('NOT_FOUND', 'Asset not found')
         }
+        recordDeletedBytes(ctx, tenantCtx, result.deletedBytes)
 
         return { success: true as const, data: result }
       })
@@ -379,6 +419,7 @@ export const assetsController = new Elysia({ prefix: '/api/admin/assets' })
           workerEnv,
           getDeferredWorkScheduler(ctx)
         )
+        recordDeletedBytes(ctx, tenantCtx, result.deletedBytes)
         return { success: true as const, data: result }
       })
       .post('/search', {
@@ -443,6 +484,7 @@ export const assetsController = new Elysia({ prefix: '/api/admin/assets' })
           set.status = 404
           return createErrorEnvelope('NOT_FOUND', 'Asset not found')
         }
+        recordDeletedBytes(ctx, tenantCtx, result.deletedBytes)
 
         return { success: true as const, data: result }
       })

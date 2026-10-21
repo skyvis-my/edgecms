@@ -6,6 +6,10 @@ import { executeGeneratedCommands, runAiWorkflow } from './ai.service'
 import { aiImportsController, isAiImportReviewEnabled, aiImportReviewDisabled } from './ai-imports.controller'
 import { getRequestPathname } from '@/shared/utils/request-url'
 import { createErrorEnvelope } from '@/shared/utils/service-response'
+import { createAiHostHooks } from '@/host/ai-hooks'
+import { createCommandHostHooks, getCommandLimitError } from '@/host/command-hooks'
+import { getHostRuntime } from '@/host/host-context'
+import { respondLimitExceeded } from '@/host/limits'
 
 export { isAiImportReviewEnabled, aiImportReviewDisabled }
 
@@ -66,6 +70,15 @@ export const aiController = new Elysia({ prefix: '/api/admin/ai' })
       return createErrorEnvelope('INVALID_INPUT', 'Either prompt or previewReceipt is required')
     }
 
+    const runtime = getHostRuntime(elysiaCtx.request)
+    const hostScope = { source: elysiaCtx, tenant: tenantCtx?.tenant, actorId: user.id }
+    const aiHooks = createAiHostHooks(runtime, hostScope)
+    // A preview receipt replays reviewed commands without calling the model.
+    if (!previewReceipt && aiHooks) {
+      const exceeded = await aiHooks.checkQuota()
+      if (exceeded) return respondLimitExceeded(set, exceeded)
+    }
+
     try {
       const result = await executeGeneratedCommands({
         prompt: body.prompt,
@@ -76,11 +89,13 @@ export const aiController = new Elysia({ prefix: '/api/admin/ai' })
         kv,
         env: workerEnv,
         context: body.context,
+        commandHooks: createCommandHostHooks(runtime, hostScope),
         metadata: {
           tenantId: tenantCtx?.tenant.id,
           tenantSlug: tenantCtx?.tenant.slug,
           requestIntent: 'command_generation',
           routeClass: 'admin_ai',
+          onUsage: aiHooks?.onUsage,
         },
         hookContext: {
           requestId:
@@ -102,6 +117,25 @@ export const aiController = new Elysia({ prefix: '/api/admin/ai' })
       }
 
       if (result.status === 'failed') {
+        const limitFailure = (result.results ?? []).find((r) => getCommandLimitError(r))
+        const limitError = limitFailure && getCommandLimitError(limitFailure)
+        if (limitFailure?.error && limitError) {
+          // Commands before the rejected one already ran; keep their results.
+          set.status = limitError.status
+          return {
+            ...createErrorEnvelope(
+              limitFailure.error.code,
+              limitFailure.error.message,
+              limitError.details
+            ),
+            data: {
+              commands: result.commands,
+              explanation: result.explanation,
+              results: result.results ?? [],
+              previewReceipt: result.previewReceipt,
+            },
+          }
+        }
         set.status = 500
         return {
           success: false as const,
@@ -157,6 +191,15 @@ export const aiController = new Elysia({ prefix: '/api/admin/ai' })
   }, async (elysiaCtx) => {
     const { body, set, workerEnv, tenantCtx, db } = elysiaCtx
     const requestPathname = getRequestPathname(elysiaCtx.request)
+    const aiHooks = createAiHostHooks(getHostRuntime(elysiaCtx.request), {
+      source: elysiaCtx,
+      tenant: tenantCtx?.tenant,
+      actorId: (elysiaCtx as { user?: { id?: string } }).user?.id,
+    })
+    if (aiHooks) {
+      const exceeded = await aiHooks.checkQuota()
+      if (exceeded) return respondLimitExceeded(set, exceeded)
+    }
 
     try {
       const result = await runAiWorkflow({
@@ -170,6 +213,7 @@ export const aiController = new Elysia({ prefix: '/api/admin/ai' })
           tenantSlug: tenantCtx?.tenant.slug,
           requestIntent: `workflow:${body.workflow}`,
           routeClass: 'admin_ai_workflow',
+          onUsage: aiHooks?.onUsage,
         },
         hookContext: {
           requestId:

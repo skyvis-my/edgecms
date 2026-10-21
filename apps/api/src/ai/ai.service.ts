@@ -1,5 +1,5 @@
 import { generateText, jsonSchema, tool } from 'ai'
-import { type CommandContext, executeCommand } from '@/commands/engine'
+import { type CommandContext, type CommandHostHooks, executeCommand } from '@/commands/engine'
 import type { Database } from '@/database/db'
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
@@ -40,6 +40,10 @@ import {
  * 7. Return commands with natural language explanation
  */
 
+/** Token usage of one model call, by router tier (AI-04). */
+export type AiTokenUsage = { tier: string; inputTokens: number; outputTokens: number }
+export type AiUsageListener = (usage: AiTokenUsage) => void
+
 export interface GenerateCommandsOptions {
   prompt: string
   context?: {
@@ -51,6 +55,8 @@ export interface GenerateCommandsOptions {
     tenantSlug?: string
     requestIntent?: string
     routeClass?: string
+    /** HS-05: called with token usage after each model call. Must not throw. */
+    onUsage?: AiUsageListener
   }
   hookContext?: {
     requestId?: string
@@ -82,12 +88,7 @@ export interface RunWorkflowOptions {
     collectionSlug?: string
     entryId?: string
   }
-  metadata?: {
-    tenantId?: string
-    tenantSlug?: string
-    requestIntent?: string
-    routeClass?: string
-  }
+  metadata?: GenerateCommandsOptions['metadata']
   hookContext?: {
     requestId?: string
     pathname?: string
@@ -225,6 +226,19 @@ export async function generateCommands(
     tools,
   })
 
+  if (metadata?.onUsage) {
+    const usage = result.totalUsage ?? result.usage
+    try {
+      metadata.onUsage({
+        tier,
+        inputTokens: usage?.inputTokens ?? 0,
+        outputTokens: usage?.outputTokens ?? 0,
+      })
+    } catch {
+      // Metering never fails the AI call.
+    }
+  }
+
   logAIRequest({
     promptHash: hashPrompt(prompt),
     modelName: 'tier-selected',
@@ -321,6 +335,8 @@ export async function executeGeneratedCommands(options: {
   kv: KVNamespace
   metadata?: GenerateCommandsOptions['metadata']
   hookContext?: GenerateCommandsOptions['hookContext']
+  /** HS-05/HS-06 hooks applied to each executed command. */
+  commandHooks?: CommandHostHooks
 }): Promise<ExecuteGeneratedCommandsResult> {
   const { prompt, previewReceipt, context, dryRun, userId, env, db, kv, metadata, hookContext } = options
 
@@ -354,6 +370,7 @@ export async function executeGeneratedCommands(options: {
       actor: { userId, source: 'ai' },
       kv,
       tenantScope: metadata?.tenantId,
+      hostHooks: options.commandHooks,
       requestMeta: {
         requestId: hookContext?.requestId,
         pathname: hookContext?.pathname,
@@ -444,6 +461,7 @@ export async function executeGeneratedCommands(options: {
     actor: { userId, source: 'ai' },
     kv,
     tenantScope: metadata?.tenantId,
+    hostHooks: options.commandHooks,
     requestMeta: {
       requestId: hookContext?.requestId,
       pathname: hookContext?.pathname,

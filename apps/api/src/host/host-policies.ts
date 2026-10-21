@@ -1,5 +1,8 @@
 import type { AuthPolicyOverrides } from '@/auth/auth-policies'
+import type { RateLimitCategory, RateLimitPolicy } from '@/auth/rate-limit.middleware'
 import { logger } from '@/observability/logger'
+import type { LimitDimension, TenantLimits } from './limits'
+import type { UsageSink } from './usage'
 
 /**
  * Host policies (PRD §10.1 hosting seams).
@@ -41,8 +44,18 @@ export type TenantEventType =
   | 'tenant.activated'
   | 'tenant.suspended'
   | 'tenant.deleted'
-  /** Reserved for HS-06 limit policy; not emitted yet. */
+  /** HS-06: a limit denied a request; once per tenant, dimension and period. */
   | 'tenant.limit_reached'
+
+/** Details of a `tenant.limit_reached` event. */
+export interface TenantLimitReached {
+  dimension: LimitDimension
+  kind: 'quota' | 'rate'
+  limit?: number
+  used?: number
+  upgradeUrl?: string
+  period: string
+}
 
 /** Payload delivered to `onTenantEvent`. */
 export interface TenantLifecycleEvent {
@@ -54,6 +67,28 @@ export interface TenantLifecycleEvent {
   previousStatus?: string
   /** User who caused the event, when known. */
   actorId?: string
+  /** Set on `tenant.limit_reached`. */
+  limit?: TenantLimitReached
+}
+
+/** Input to the per-tenant rate-limit policy (HS-07). */
+export interface TenantRateLimitRequest {
+  /** Tenant slug from the request path (`/api/tenants/:tenantSlug/...`), not yet verified. */
+  tenantSlug: string
+  category: RateLimitCategory
+  /** The framework policy that applies when the host returns nothing. */
+  defaultPolicy: RateLimitPolicy
+}
+
+/** Per-tenant rate-limit policy. */
+export interface TenantRateLimitPolicy extends RateLimitPolicy {
+  /**
+   * Optional budget shared by every caller of this tenant in this category
+   * per `windowMs`, on top of the per-caller `limit`.
+   */
+  tenantLimit?: number
+  /** Upgrade link included in the `429 RATE_LIMITED` details. */
+  upgradeUrl?: string
 }
 
 export interface HostPolicies {
@@ -78,14 +113,35 @@ export interface HostPolicies {
    * every auth entry point builds Better Auth from the Worker env.
    */
   auth?: AuthPolicyOverrides
-  // Reserved for later seams (typed in their own PRs):
-  //   usageSink (HS-05), limits (HS-06)
+  /**
+   * HS-05: receives per-tenant usage events after the response, through
+   * `waitUntil`. Errors are logged and dropped. Default: no-op.
+   * `createD1UsageRollupSink` writes daily rollups to D1.
+   */
+  usageSink?: UsageSink
+  /**
+   * HS-06: checked before commands, entry creation, uploads, AI calls and
+   * tenant creation. A throwing provider allows the request (fail open).
+   * Default: allow everything.
+   */
+  limits?: TenantLimits
+  /**
+   * HS-07: per-tenant rate-limit policy for tenant routes. Return nothing to
+   * keep the framework policy. Results are cached per instance for 30 s; a
+   * throwing resolver keeps the framework policy.
+   */
+  rateLimits?: (
+    request: TenantRateLimitRequest
+  ) => TenantRateLimitPolicy | undefined | Promise<TenantRateLimitPolicy | undefined>
 }
 
 /** Host policies with defaults applied. */
 export interface ResolvedHostPolicies {
   canCreateTenant: (actor: TenantCreationActor) => Promise<NormalizedTenantCreationDecision>
   onTenantEvent?: HostPolicies['onTenantEvent']
+  usageSink?: UsageSink
+  limits?: TenantLimits
+  rateLimits?: HostPolicies['rateLimits']
 }
 
 export type NormalizedTenantCreationDecision =
@@ -124,5 +180,8 @@ export function resolveHostPolicies(host: HostPolicies = {}): ResolvedHostPolici
       }
     },
     onTenantEvent: host.onTenantEvent,
+    usageSink: host.usageSink,
+    limits: host.limits,
+    rateLimits: host.rateLimits,
   }
 }

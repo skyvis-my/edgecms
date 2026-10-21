@@ -25,6 +25,8 @@ export interface WorkflowExecutionContext {
     tenantSlug?: string
     requestIntent?: string
     routeClass?: string
+    /** HS-05 token metering, forwarded to `generateCommands`. */
+    onUsage?: (usage: { tier: string; inputTokens: number; outputTokens: number }) => void
   }
 }
 

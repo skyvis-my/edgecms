@@ -109,3 +109,54 @@ describe('handleServerError', () => {
     expect(toastError).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('handleServerError limit errors (HS-06/07)', () => {
+  beforeEach(() => {
+    toastError.mockClear()
+  })
+
+  const limitError = (code: string, details: Record<string, unknown>) =>
+    new ApiClientError({
+      status: code === 'RATE_LIMITED' ? 429 : 402,
+      code,
+      message: 'Quota exceeded for media_bytes',
+      body: { success: false, error: { code, message: 'Quota exceeded for media_bytes', details } },
+    })
+
+  it('shows a quota error with an Upgrade action that opens the host link', () => {
+    const open = vi.fn()
+    const originalOpen = window.open
+    window.open = open as unknown as typeof window.open
+    handleServerError(
+      limitError('QUOTA_EXCEEDED', {
+        dimension: 'media_bytes',
+        kind: 'quota',
+        upgradeUrl: 'https://host.example/upgrade',
+      })
+    )
+    const [title, options] = toastError.mock.calls[0] as [
+      string,
+      { description: string; action: { label: string; onClick: () => void } },
+    ]
+    expect(title).toBe('Plan limit reached for media storage')
+    expect(options.action.label).toBe('Upgrade')
+    options.action.onClick()
+    expect(open).toHaveBeenCalledWith('https://host.example/upgrade', '_blank', 'noopener,noreferrer')
+    window.open = originalOpen
+  })
+
+  it('drops unsafe upgrade links and shows the retry delay for rate limits', () => {
+    handleServerError(
+      limitError('RATE_LIMITED', {
+        dimension: 'public_read',
+        kind: 'rate',
+        retryAfterSeconds: 12,
+        upgradeUrl: 'javascript:alert(1)',
+      })
+    )
+    const [title, options] = toastError.mock.calls[0] as [string, Record<string, unknown>]
+    expect(title).toBe('Too many requests (public read)')
+    expect(options.description).toBe('Try again in 12s.')
+    expect(options.action).toBeUndefined()
+  })
+})

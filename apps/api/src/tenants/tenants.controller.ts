@@ -9,6 +9,7 @@ import { withTenantBindings } from './with-tenant-bindings'
 import { tenantsService } from './tenants.service'
 import { toServiceResponse } from '@/shared/utils/service-response'
 import { resolveHostPolicies, type ResolvedHostPolicies } from '@/host/host-policies'
+import type { LimitEnforcer } from '@/host/limits'
 import { createTenantEventPublisher, type TenantEventPublisher } from '@/host/tenant-events'
 
 async function resolveTenantId(
@@ -113,6 +114,8 @@ export type TenantsControllerOptions = {
   host?: ResolvedHostPolicies
   /** Lifecycle event publisher for this app instance (HS-08). */
   events?: TenantEventPublisher
+  /** Limit checks for this app instance (HS-06). Default: allow. */
+  limits?: LimitEnforcer
 }
 
 /**
@@ -181,7 +184,10 @@ export function createTenantsController(options: TenantsControllerOptions = {}) 
         isSuperAdmin: superAdminDenial === null,
         source: 'admin-api' as const,
       }
-      const result = await tenantsService.createForActor(db, body, actor, host, { events })
+      const result = await tenantsService.createForActor(db, body, actor, host, {
+        events,
+        limits: options.limits,
+      })
       return toServiceResponse(set, result, { successStatus: 201 })
     })
 
