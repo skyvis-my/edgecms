@@ -16,7 +16,7 @@
     "./observability/metrics": "./src/observability/metrics.ts"
   },
   "scripts": {
-    "dev": "cf dev",
+    "dev": "bun ../../scripts/prepare-local-dev.ts && cf dev",
     "build:worker": "bun scripts/build-worker.ts",
     "build": "tsc --noEmit && bun run build:worker",
     "test": "bun test --isolate",
@@ -31,7 +31,7 @@
     "format": "oxlint --fix .",
     "format:check": "oxlint .",
     "db:generate": "drizzle-kit generate",
-    "db:migrate:local": "node scripts/cf.mjs d1 migrations apply LOCAL_DATABASE_ID --local --dir drizzle/migrations",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "db:migrate:remote": "node scripts/cf.mjs d1 migrations apply \"$D1_DATABASE_ID\" --dir drizzle/migrations",
     "db:seed:smoke": "bun ../../scripts/seed-smoke-db.ts",
     "db:studio": "drizzle-kit studio",

@@ -24,7 +24,7 @@ This deploys EdgeCMS to Cloudflare Workers with required D1 database, KV cache, 
 
 ## Prerequisites
 
-- Bun `1.3.x`
+- Bun `1.4.x`
 - Cloudflare Wrangler access for local Worker and D1 commands
 - Repo checkout at the project root
 
@@ -49,41 +49,15 @@ bun run check:merge-markers
 
 Expected: command exits `0`.
 
-## Start Local Services
-
-Use two terminals:
-
-```bash
-bun run dev:api
-```
-
-```bash
-bun run dev:admin
-```
-
-Local URLs:
-
-- API: `http://localhost:8787`
-- Admin: `http://localhost:5173`
-
-Automated live health check:
-
-```bash
-bun run smoke:e2e:local-live
-```
-
-Expected: wrapper starts local API/admin processes and runs live API smoke checks.
-
-Run this from a clean terminal when `localhost:8787` is free. Keep the manual dev terminals for browsing the app.
-
 ## Apply Migrations and Seed Smoke Data
 
 Apply local D1 migrations before seeding:
 
 ```bash
 bun run db:migrate:local
-# or: bun run --filter edgecms-api db:migrate:local
 ```
+
+This runs `wrangler d1 migrations apply DB --local` from `apps/api`, so the tables land in `apps/api/.wrangler/state`, the same store `bun run dev:api` reads.
 
 Seed local D1 with the smoke admin, tenant, and collection:
 
@@ -106,7 +80,48 @@ bun run db:seed:smoke -- --tenant-slug demo --collection-slug posts
 
 Expected: output includes `Smoke seed applied.` and prints the tenant and collection slugs.
 
-The smoke seed is intended to be idempotent for local proof. Re-running it should keep the same tenant, owner membership, smoke collection, and credential identity instead of creating duplicate adoption fixtures.
+The smoke seed is intended to be idempotent for local proof. Re-running it should keep the same tenant, owner membership, smoke collection, and credential identity instead of creating duplicate adoption fixtures. It also applies pending local migrations first unless you pass `--skip-migrations`.
+
+## Start Local Services
+
+Use two terminals:
+
+```bash
+bun run dev:api
+```
+
+```bash
+bun run dev:admin
+```
+
+On first run, `dev:api` prepares the checkout through `scripts/prepare-local-dev.ts`:
+
+- It writes `apps/api/.dev.vars` with generated `BETTER_AUTH_SECRET` and `JWT_HS256_SECRET` values and `SUPER_ADMIN_EMAILS=smoke.admin@example.com`. Existing keys are kept. The file is gitignored.
+- It creates a placeholder `apps/admin/dist/index.html` when no admin build exists, because the Worker's static assets binding needs the directory. Run `bun run build:admin` to serve the real admin from the Worker instead.
+
+Local URLs:
+
+- API: `http://localhost:8787`
+- Admin: `http://localhost:5173` (Vite proxies `/api` to the API; set `EDGECMS_API_PROXY_TARGET` if the API runs on another port)
+
+Sign in to the admin at `http://localhost:5173` with the smoke admin, then open `http://localhost:5173/tenants/smoke/collections/smoke-posts/entries` to see the seeded collection's entry list.
+
+Automated proof of that path against the running services:
+
+```bash
+cd apps/admin
+BASE_URL=http://localhost:5173 E2E_LIVE_PERSISTED=1 bunx playwright test e2e/live-quickstart.spec.ts
+```
+
+Automated live health check:
+
+```bash
+bun run smoke:e2e:local-live
+```
+
+Expected: wrapper starts local API/admin processes and runs live API smoke checks.
+
+Run this from a clean terminal when `localhost:8787` is free. Keep the manual dev terminals for browsing the app.
 
 ## Migration Status
 

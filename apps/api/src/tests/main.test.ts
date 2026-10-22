@@ -389,6 +389,29 @@ describe('Main API app (Elysia integration)', () => {
     expect(forwardedRequest.url).toBe('http://localhost/api/auth/sign-in?next=/admin')
   })
 
+  it('forwards the unread JSON body of auth POST requests to better-auth', async () => {
+    const app = await importApp()
+    const received: unknown[] = []
+    mockCreateAuth.mockImplementation(() => ({
+      handler: vi.fn(async (request: Request) => {
+        received.push(await request.json())
+        return Response.json({ ok: true })
+      }),
+      api: { getSession: vi.fn(async () => null) },
+    }))
+
+    const response = await app.handle(
+      new Request('http://localhost/api/auth/sign-in/email', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://localhost' },
+        body: JSON.stringify({ email: 'smoke.admin@example.com', password: 'secret-password' }),
+      })
+    )
+
+    expect(response.status).toBe(200)
+    expect(received).toEqual([{ email: 'smoke.admin@example.com', password: 'secret-password' }])
+  })
+
   it('registers assets upload route exactly once', async () => {
     const app = await importApp()
     const routeSignatures = (

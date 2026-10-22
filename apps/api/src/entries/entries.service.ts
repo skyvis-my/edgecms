@@ -324,29 +324,26 @@ export const entriesService = {
     filters: EntryFilters = {},
     tenantId?: string
   ): Promise<ServiceResult<{ entries: EntryRow[]; total: number; page: number; perPage: number }>> {
-    let effectiveCollectionId = filters.collectionId
-    let validatedCollectionId: string | undefined
-    if (!effectiveCollectionId && filters.collectionSlug) {
-      const collectionBySlug = await collectionsRepository.findBySlug(db, filters.collectionSlug, tenantId)
-      if (!collectionBySlug) {
-        return {
-          success: false,
-          error: { code: 'NOT_FOUND', message: `Collection '${filters.collectionSlug}' not found` },
-        }
-      }
-      effectiveCollectionId = collectionBySlug.id
-      validatedCollectionId = collectionBySlug.id
-    }
-
-    // If collectionId is specified, validate it exists
-    if (effectiveCollectionId && validatedCollectionId !== effectiveCollectionId) {
-      const collection = await collectionsRepository.findById(db, effectiveCollectionId, tenantId)
+    // Admin routes pass an id-or-slug identifier, so an unknown id falls back to a slug lookup.
+    let effectiveCollectionId: string | undefined
+    const collectionIdentifier = filters.collectionId ?? filters.collectionSlug
+    if (collectionIdentifier) {
+      const collection =
+        (filters.collectionId
+          ? await collectionsRepository.findById(db, filters.collectionId, tenantId)
+          : undefined) ??
+        (await collectionsRepository.findBySlug(
+          db,
+          filters.collectionSlug ?? collectionIdentifier,
+          tenantId
+        ))
       if (!collection) {
         return {
           success: false,
-          error: { code: 'NOT_FOUND', message: `Collection '${effectiveCollectionId}' not found` },
+          error: { code: 'NOT_FOUND', message: `Collection '${collectionIdentifier}' not found` },
         }
       }
+      effectiveCollectionId = collection.id
     }
 
     // Validate status filter if provided

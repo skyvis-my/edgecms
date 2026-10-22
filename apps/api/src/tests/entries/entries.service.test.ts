@@ -118,6 +118,39 @@ describe('entriesService', () => {
         expect.objectContaining({ collectionId: 'c1', tenantId: 'tenant-1' })
       )
     })
+    it('resolves an admin route slug passed as collectionId and collectionSlug', async () => {
+      const collection = makeCollectionRow({ id: 'smoke-collection-posts', slug: 'smoke-posts' })
+      mockCollectionsRepo.findById.mockResolvedValue(undefined)
+      mockCollectionsRepo.findBySlug.mockResolvedValue(collection)
+      mockEntriesRepo.findAll.mockResolvedValue({ rows: [], total: 0 })
+
+      const result = await entriesService.findAll(
+        db,
+        { collectionId: 'smoke-posts', collectionSlug: 'smoke-posts' },
+        'tenant-1'
+      )
+
+      expect(result.success).toBe(true)
+      expect(mockCollectionsRepo.findBySlug).toHaveBeenCalledWith(db, 'smoke-posts', 'tenant-1')
+      expect(mockEntriesRepo.findAll).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({ collectionId: 'smoke-collection-posts', tenantId: 'tenant-1' })
+      )
+    })
+
+    it('falls back to a slug lookup when collectionId alone is a slug', async () => {
+      mockCollectionsRepo.findById.mockResolvedValue(undefined)
+      mockCollectionsRepo.findBySlug.mockResolvedValue(makeCollectionRow({ id: 'c1', slug: 'posts' }))
+      mockEntriesRepo.findAll.mockResolvedValue({ rows: [], total: 0 })
+
+      const result = await entriesService.findAll(db, { collectionId: 'posts' })
+
+      expect(result.success).toBe(true)
+      expect(mockEntriesRepo.findAll).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({ collectionId: 'c1' })
+      )
+    })
   })
 
   describe('findById', () => {
@@ -234,6 +267,7 @@ describe('entriesService', () => {
   describe('findAllWithLocale', () => {
     it('returns upstream error when base findAll fails', async () => {
       mockCollectionsRepo.findById.mockResolvedValue(undefined)
+      mockCollectionsRepo.findBySlug.mockResolvedValue(undefined)
 
       const result = await entriesService.findAllWithLocale(db, {
         locale: 'fr',
