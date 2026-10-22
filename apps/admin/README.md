@@ -1,101 +1,42 @@
-# EdgeCMS Dashboard
+# EdgeCMS admin
 
-Admin Dashboard UI crafted with Shadcn and Vite. Built with responsiveness and accessibility in mind.
+The React admin for EdgeCMS: content modelling, editing, publishing, media, users and tenant settings. The API Worker serves the built admin as static assets, so production has one origin; in development Vite proxies `/api` to the local API.
 
-![alt text](public/images/shadcn-admin.png)
+## Run it
 
-[![Sponsored by Clerk](https://img.shields.io/badge/Sponsored%20by-Clerk-5b6ee1?logo=clerk)](https://go.clerk.com/GttUAaK)
-
-I've been creating dashboard UIs at work and for my personal projects. I always wanted to make a reusable collection of dashboard UI for future projects; and here it is now. While I've created a few custom components, some of the code is directly adapted from ShadcnUI examples.
-
-> This is not a starter project (template) though. I'll probably make one in the future.
-
-## Features
-
-- Light/dark mode
-- Responsive
-- Accessible
-- With built-in Sidebar component
-- Global search command
-- 10+ pages
-- Extra custom components
-- RTL support
-
-<details>
-<summary>Customized Components (click to expand)</summary>
-
-This project uses Shadcn UI components, but some have been slightly modified for better RTL (Right-to-Left) support and other improvements. These customized components differ from the original Shadcn UI versions.
-
-If you want to update components using the Shadcn CLI (e.g., `npx shadcn@latest add <component>`), it's generally safe for non-customized components. For the listed customized ones, you may need to manually merge changes to preserve the project's modifications and avoid overwriting RTL support or other updates.
-
-> If you don't require RTL support, you can safely update the 'RTL Updated Components' via the Shadcn CLI, as these changes are primarily for RTL compatibility. The 'Modified Components' may have other customizations to consider.
-
-### Modified Components
-
-- scroll-area
-- sonner
-- separator
-
-### RTL Updated Components
-
-- alert-dialog
-- calendar
-- command
-- dialog
-- dropdown-menu
-- select
-- table
-- sheet
-- sidebar
-- switch
-
-**Notes:**
-
-- **Modified Components**: These have general updates, potentially including RTL adjustments.
-- **RTL Updated Components**: These have specific changes for RTL language support (e.g., layout, positioning).
-- For implementation details, check the source files in `src/components/ui/`.
-- All other Shadcn UI components in the project are standard and can be safely updated via the CLI.
-
-</details>
-
-## Tech Stack
-
-**UI:** [ShadcnUI](https://ui.shadcn.com) (TailwindCSS + RadixUI)
-
-**Build Tool:** [Vite](https://vitejs.dev/)
-
-**Routing:** [TanStack Router](https://tanstack.com/router/latest)
-
-**Type Checking:** [TypeScript](https://www.typescriptlang.org/)
-
-**Linting/Formatting:** [ESLint](https://eslint.org/) & [Prettier](https://prettier.io/)
-
-**Icons:** [Lucide Icons](https://lucide.dev/icons/), [Tabler Icons](https://tabler.io/icons) (Brand icons only)
-
-**Auth (partial):** [Clerk](https://go.clerk.com/GttUAaK)
-
-## Run Locally
-
-Clone the project
+From the repository root:
 
 ```bash
-  git clone https://github.com/satnaing/shadcn-admin.git
+bun install
+bun run dev:api     # API on http://localhost:8787
+bun run dev:admin   # admin on http://localhost:5173
 ```
 
-Go to the project directory
+See the [quickstart](../../docs/public/quickstart.md) for migrations, seed data and the first sign-in.
 
-```bash
-  cd shadcn-admin
-```
+## Scripts
 
-Install dependencies
+| Command | What it does |
+| --- | --- |
+| `bun run dev` | Vite dev server with the `/api` proxy |
+| `bun run build` | Typecheck and build to `dist/` (served by the API Worker) |
+| `bun run typecheck` | `tsc -b` |
+| `bun run lint` | oxlint |
+| `bun run test` | Unit and component tests (`bun test`) |
+| `bun run test:e2e` | Playwright suites in `e2e/` (run by hand; CI does not run Playwright) |
 
-```bash
-  pnpm install
-```
+## Layout
 
-Start the server
+| Path | Contents |
+| --- | --- |
+| `src/routes/` | TanStack Router file routes; `_authenticated/` needs a session |
+| `src/features/` | Feature modules: auth, collections, entries, media, sync, tenants, … |
+| `src/components/ui/` | shadcn/ui primitives (generated; excluded from lint) |
+| `src/lib/` | Typed API client (Eden), auth client, utilities |
+| `e2e/` | Playwright smoke and live suites |
 
-```bash
-  pnpm run dev
-```
+Use the typed client in `@/lib/api-client`; direct `axios` calls are not allowed.
+
+## Credits
+
+The admin shell started from [shadcn-admin](https://github.com/satnaing/shadcn-admin) by Sat Naing (MIT). See [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, mock } from 'bun:test'
 import { clearCachedSession, getSessionWithLocalCache, writeCachedSession } from './session-fetch'
 
 describe('getSessionWithLocalCache', () => {
@@ -13,7 +13,7 @@ describe('getSessionWithLocalCache', () => {
       session: { id: 's1', expiresAt },
     })
 
-    const fetchSession = vi.fn(async () => ({ data: null, error: null }))
+    const fetchSession = mock(async () => ({ data: null, error: null }))
 
     const result = await getSessionWithLocalCache(fetchSession)
 
@@ -28,7 +28,7 @@ describe('getSessionWithLocalCache', () => {
       session: { id: 's1', expiresAt },
     })
 
-    const fetchSession = vi.fn(async () => ({
+    const fetchSession = mock(async () => ({
       data: {
         user: { id: 'u2', email: 'next@example.com' },
         session: { id: 's2', expiresAt: new Date(Date.now() + 60_000).toISOString() },
@@ -49,7 +49,7 @@ describe('getSessionWithLocalCache', () => {
       session: { id: 's1', expiresAt },
     })
 
-    const fetchSession = vi.fn(async () => ({
+    const fetchSession = mock(async () => ({
       data: {
         user: { id: 'u1', email: 'user@example.com' },
         session: { id: 's1', expiresAt },
@@ -79,7 +79,7 @@ describe('getSessionWithLocalCache', () => {
         session: { id: 's1', expiresAt },
       })
 
-      const fetchSession = vi.fn(async () => ({
+      const fetchSession = mock(async () => ({
         data: {
           user: { id: 'u2', email: 'next@example.com' },
           session: { id: 's2', expiresAt: new Date(Date.now() + 60_000).toISOString() },

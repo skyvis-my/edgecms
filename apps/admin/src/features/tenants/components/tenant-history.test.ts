@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'bun:test'
 
 // Use cache-busted dynamic import to avoid cross-file mock contamination
 // (tenant-switcher.test.tsx uses mock.module('./tenant-history') which persists globally)
