@@ -1,145 +1,77 @@
-# Public API Guide
+# Public API
 
-EdgeCMS public delivery exposes published content by tenant and locale without requiring admin implementation knowledge.
+This guide describes the routes that serve published content and public assets: URLs, query parameters, response and error shapes, and cache headers. It is for frontend developers reading EdgeCMS content without admin credentials.
 
-## Contract Goals
+Public routes return published content only, scoped to one tenant. They are read-only and need no authentication.
 
-- Tenant isolation is mandatory.
-- Public reads return published content only. No anonymous preview/draft public route is shipped yet.
-- Locale selection must be deterministic.
-- Cache behavior must be visible to integrators.
-- Error shapes should be stable enough for frontend apps.
+## Routes
 
-## Request Shape
-
-Current global public API routes:
+Use the tenant-scoped routes:
 
 ```text
-/api/public/:collectionSlug
-/api/public/:collectionSlug/:entryIdOrSlug
-/api/public/singleton/:collectionSlug
-/api/public/assets/:assetId/:variant
-/api/public/assets/:assetId/:variant/:format
+GET /api/tenants/:tenantSlug/public/:collectionSlug
+GET /api/tenants/:tenantSlug/public/:collectionSlug/:entryIdOrSlug
+GET /api/tenants/:tenantSlug/public/singleton/:collectionSlug
+GET /api/tenants/:tenantSlug/public/assets/:assetId
+GET /api/tenants/:tenantSlug/public/assets/:assetId/:variant
+GET /api/tenants/:tenantSlug/public/assets/:assetId/:variant/:format
 ```
 
-Canonical tenant-scoped public API routes:
+The Worker rewrites `/api/tenants/:tenantSlug/public/*` to `/api/tenants/:tenantSlug/api/public/*` before routing, so both forms work. The examples and smoke tests use the `/api/public` form.
+
+Global routes without a tenant also exist for single-tenant deployments:
 
 ```text
-/api/tenants/:tenantSlug/public/:collectionSlug
-/api/tenants/:tenantSlug/public/:collectionSlug/:entryIdOrSlug
-/api/tenants/:tenantSlug/public/singleton/:collectionSlug
-/api/tenants/:tenantSlug/public/assets/:assetId/:variant
-/api/tenants/:tenantSlug/public/assets/:assetId/:variant/:format
+GET /api/public/:collectionSlug
+GET /api/public/:collectionSlug/:entryIdOrSlug
+GET /api/public/singleton/:collectionSlug
+GET /api/public/assets/:assetId
+GET /api/public/assets/:assetId/:variant
+GET /api/public/assets/:assetId/:variant/:format
 ```
 
-The Worker normalizes canonical tenant routes to the internal grouped route:
+If a list route finds no collection with that slug, it tries a singleton with the same slug before returning `404`.
 
-```text
-/api/tenants/:tenantSlug/api/public/*
-```
+## Query parameters
 
-Use tenant-scoped routes for frontend adoption docs and smoke checks.
-
-## API Docs Boundary
-
-The API worker mounts the Elysia OpenAPI plugin at `/api/docs` and tracks that route as an admin-CORS special-class route in the local API route manifest. This is scoped route documentation proof only. It is not a claim that every public/admin response has a complete generated OpenAPI contract.
-
-Before expanding the OpenAPI claim, add focused API or manifest tests for the specific generated paths and response shapes being claimed. Keep frontend integration docs on the tenant-scoped REST routes above until a generated client or GraphQL-equivalent contract is designed, tested, and documented.
-
-## Query Parameters
-
-Recommended public parameters:
-
-- `locale`: requested locale.
-- `page`: pagination page for collection lists.
-- `perPage`: pagination size for collection lists.
-- `sort`: sort expression for collection lists.
-- `filter[status]`: optional status filter. Public routes only accept `published`; draft and other status values are rejected.
-- `filter[data.fieldName]`: custom-field filter for collection lists.
-- `populate`: relation population for entry reads.
-- `depth`: relation population depth for entry reads.
-
-Pagination parameters apply to collection list routes:
-
-- `page`: 1-based page number.
-- `perPage`: page size selected by the caller.
-
-Keep frontend code tolerant of pagination metadata changes until a stable response envelope is introduced.
-
-## Field Type Matrix
-
-Current collection export and public API docs cover these field types:
-
-| Field type | Current support boundary | Public API note |
+| Parameter | Routes | Behavior |
 | --- | --- | --- |
-| `text` | Supported as scalar text | Filter with `filter[data.fieldName]` only when backend marks the field filterable. |
-| `richtext` | Supported as stored rich text payload | Render only after frontend sanitization appropriate to your app. |
-| `number` | Supported as scalar number | Avoid string comparisons in frontend filters. |
-| `boolean` | Supported as scalar boolean | Treat missing values separately from `false`. |
-| `date` | Supported as serialized date/string value | Keep timezone handling in frontend code explicit. |
-| `media` | Supported as asset reference/metadata | Fetch public asset routes, not admin media routes. |
-| `relation` | Supported as relation reference when populated | Use `populate`/`depth` only where tested for the collection. |
-| `json` | Supported as arbitrary JSON | Frontend apps own runtime validation. |
-| `array` | Supported for repeatable values/block-like structures | Keep item shape documented with the collection. |
+| `locale` | All content routes | Locale to read. Defaults to `en`. |
+| `page` | List | 1-based page number. Defaults to `1`. |
+| `perPage` | List | Page size. Defaults to `20`, maximum `100`. |
+| `sort` | List | Comma-separated fields; prefix with `-` for descending, for example `sort=-createdAt,slug`. |
+| `filter[field]` or `filter[field][operator]` | List | Filters. See [Filters](#filters). |
+| `populate` | Entry | Relation fields to populate. |
+| `depth` | Entry | Relation population depth, `1` to `3`. Defaults to `1`. |
 
-Unsupported workflow fields, marketplace plugin fields, and untrusted runtime field types are not shipped. Do not claim Strapi-level field ecosystem parity from this matrix.
+## Filters
 
-## Dynamic Field Options
+Top-level fields you can filter on: `slug`, `createdAt`, `updatedAt`, `status`. Custom fields use the path `data.<field>`, for example `filter[data.category]=news`. Any other field returns a validation error, so you cannot probe arbitrary columns.
 
-Field `options` are field-type-specific metadata copied by Developer Export and interpreted by admin/API code. Current examples:
+Operators: `eq` (default), `neq`, `gt`, `gte`, `lt`, `lte`, `contains`, `in`, `not_in`, `exists`.
 
-```json
-{
-  "name": "author",
-  "type": "relation",
-  "required": false,
-  "localizable": false,
-  "options": {
-    "targetCollectionId": "authors",
-    "relationType": "one-to-many"
-  }
-}
+```text
+/api/tenants/smoke/api/public/posts?filter[data.category]=news&filter[createdAt][gte]=2026-01-01&sort=-createdAt
 ```
 
-For repeatable/block-like arrays:
+Limits:
+
+- At most 10 filter conditions per request.
+- `in` and `not_in` take a comma-separated list of at most 50 values.
+- `contains` values are at most 100 characters. A collection can restrict which `data.*` fields accept `contains`.
+- `status` only accepts `published`. `filter[status]=draft` (or `review`, `scheduled`, `archived`) returns `Public status filters only support published content.`
+
+Sortable fields: `createdAt`, `updatedAt`, `slug`, and `data.<field>`. Prefer the top-level fields; sorting on `data.*` cannot use an index.
+
+## Responses
+
+A successful content read returns the payload directly, with no envelope. Errors are simple objects:
 
 ```json
-{
-  "name": "blocks",
-  "type": "array",
-  "required": false,
-  "localizable": false,
-  "options": {
-    "itemFields": [
-      { "name": "label", "type": "text", "required": true, "localizable": false }
-    ],
-    "minItems": 0,
-    "maxItems": 12
-  }
-}
+{ "error": "Entry not found" }
 ```
 
-Options are not an extension sandbox. Validate option shape in code before relying on new field behavior.
-
-## Response Shape
-
-Public content routes return the public payload directly on success. Error responses currently use simple objects:
-
-```json
-{
-  "error": "Entry not found"
-}
-```
-
-Keep frontend code tolerant of direct payloads plus simple error objects until a stable public response envelope is introduced.
-
-## Relations And Repeatable Blocks
-
-Relation population is opt-in with `populate` and bounded by `depth`. Only request relation fields that exist in the collection schema, and keep frontend code tolerant of missing, unpublished, or cross-tenant related entries. Do not assume recursive Strapi-style population for every relation shape.
-
-Repeatable block-like content uses `array` fields with documented `itemFields`, optional `minItems`, and optional `maxItems`. This is a structured field contract for public payloads, not full Strapi component or dynamic-zone parity.
-
-Validation errors can include `details`:
+Validation errors add `details`:
 
 ```json
 {
@@ -148,24 +80,21 @@ Validation errors can include `details`:
 }
 ```
 
-## Error Catalog
+The response shape is not versioned yet. Parse pagination metadata defensively and treat the smoke response for your collection as the reference for the current list shape.
 
-Current public clients should handle these response categories:
+## Errors
 
-| Category | HTTP shape | Cache behavior | Frontend handling |
+| Case | Response | Cache | What to do |
 | --- | --- | --- | --- |
-| Not found | `{ "error": "Entry not found" }` | `no-store` | Render 404 or fallback content. |
-| Invalid filters | `{ "error": "Invalid filter parameters", "details": [...] }` | `no-store` | Remove unsupported filters; do not retry blindly. |
-| Draft/unsupported status | Validation error for non-`published` status filters | `no-store` | Use admin/preview flow, not public routes. |
-| Tenant mismatch | Not found or authorization-shaped error depending on route | `no-store` | Check tenant slug and do not probe other tenants. |
+| Not found | `{ "error": "Entry not found" }` | `no-store` | Render a 404 or fallback content. |
+| Invalid filters | `400`, `{ "error": "Invalid filter parameters", "details": [...] }` | `no-store` | Remove the unsupported filter. Do not retry unchanged. |
+| Non-`published` status filter | Validation error | `no-store` | Use a server-side preview flow instead. |
+| Wrong tenant | Not found or an authorization error, depending on the route | `no-store` | Check the tenant slug. |
+| Tenant `pending` or `disabled` | `403 TENANT_UNAVAILABLE` | | See [Hosting seams](hosting-seams.md#tenant-states). |
 
-Do not treat this catalog as a stable envelope guarantee. It documents current tested public behavior until a versioned response envelope ships.
+## Cache headers
 
-## Cache And Revalidation
-
-Public reads should declare cache behavior through headers or response metadata. Publish actions should invalidate or refresh public caches without blocking the authoring request path.
-
-Successful public content reads set:
+Successful reads set:
 
 ```text
 Cache-Control: public, max-age=<browser ttl>, stale-while-revalidate=300, stale-if-error=86400
@@ -174,16 +103,22 @@ Cache-Tag: collection:<slug>,locale:<locale>[,entry:<entry id or slug>]
 Vary: Accept-Encoding
 ```
 
-Public misses and validation failures set:
+Misses and validation failures set:
 
 ```text
 Cache-Control: no-store
 CDN-Cache-Control: no-store
 ```
 
-Use signed webhooks or queue-backed revalidation for external frontend apps. Webhook deliveries include both `x-edgecms-signature` and `x-webhook-signature` using `sha256=<hex digest>` HMAC-SHA256 over the JSON request body. Delivery URLs must pass the destination policy: HTTPS, no embedded credentials, standard port 443, no local/private hosts, and optional `WEBHOOK_ALLOWED_HOSTS` allow-list matching.
+Public read cache entries are kept per tenant, collection, requested locale and filter hash, and hold published content only.
 
-Revalidation events should carry frontend-facing paths or cache tags in event metadata:
+## Revalidating your frontend
+
+Use signed webhooks to refresh frontend caches after a publish. Each delivery carries `x-edgecms-signature` and `x-webhook-signature`, both `sha256=<hex digest>`: an HMAC-SHA256 of the raw JSON body.
+
+Destinations must use HTTPS on port 443, contain no credentials, and not point at a local or private host. If `WEBHOOK_ALLOWED_HOSTS` is set, the host must match it.
+
+Publish events carry frontend paths and cache tags in their metadata:
 
 ```json
 {
@@ -201,141 +136,183 @@ Revalidation events should carry frontend-facing paths or cache tags in event me
 }
 ```
 
-Dry-run webhook delivery validates tenant scope, destination policy, and HMAC signing, then records a delivery without outbound fetch.
+A webhook dry run checks tenant scope, the destination policy and signing, then records a delivery without sending it. See [Webhooks](webhooks.md) and [Frontend integration](frontend-integration.md).
 
-Shared schema proof can build collection, locale, and entry cache tags for revalidation payloads. Locale-scoped public read cache keys must include tenant slug, collection slug, requested locale, published status, and a filter hash. This is local contract proof only; it does not prove deployed purge behavior.
+## Locales
 
-## Preview
+Request a specific `locale` and handle missing localized content yourself. The public API does not fall back to another locale.
 
-Preview must stay server-side. Use an authenticated admin/API flow or signed server-only token to resolve draft content. Do not expose preview secrets to browser bundles, and do not treat public routes as anonymous draft preview routes.
+The shared schema package defines a fallback policy shape (`requestedLocale`, `fallbackLocale`, `fallbackEnabled`), a resolver for it, and a locale completeness matrix: required fields plus missing fields per locale, where any missing required field marks the locale incomplete. No public route or admin screen uses these yet. If fallback behavior is added, the public route tests and this guide change together.
 
-## Content API Token Boundary
+## Relations and repeatable blocks
 
-EdgeCMS does not expose a browser-safe content API token model in this tranche. Current frontend integrations should use public routes for anonymous published reads and server-side admin/auth flows for protected reads.
+Relation population is opt-in: pass `populate` with relation field names and keep `depth` low. Related entries can be missing because they are unpublished, belong to another tenant, or were left out by the public route. Treat a missing relation as absent content, not as a reason to retry. Population is not recursive for every relation shape.
 
-Token boundary rules:
+Repeatable, block-like content uses `array` fields with `itemFields`, optional `minItems` and optional `maxItems`. This is a structured field, not a full component or dynamic-zone system.
 
-- `unsupported`: no public token contract exists.
-- `server-only`: token metadata can be used by backend/admin flows, but secrets must not be bundled into browser code.
-- Browser apps must not use admin cookies, preview secrets, or server-only tokens as public content API keys.
+## Field types
 
-## Roles And Permissions Matrix
+| Field type | Stored as | Notes for frontends |
+| --- | --- | --- |
+| `text` | Text | Filter with `filter[data.fieldName]`. |
+| `richtext` | Rich text payload | Sanitize before rendering. |
+| `number` | Number | Avoid string comparisons in filters. |
+| `boolean` | Boolean | Treat a missing value differently from `false`. |
+| `date` | Serialized date string | Handle time zones explicitly. |
+| `media` | Asset reference and metadata | Load files from public asset routes, not admin media routes. |
+| `relation` | Relation reference, populated on request | Use `populate` and `depth`. |
+| `json` | Arbitrary JSON | Validate it at runtime in your app. |
+| `array` | Repeatable values or blocks | Item shape comes from `itemFields`. |
 
-Current permission proof is helper/schema-level and does not claim a full Strapi-style generated RBAC admin. Use this matrix as the documented policy boundary for docs and regression tests.
+There are no workflow fields and no field types loaded from untrusted code. Plugins can add field types only through the trusted [Plugin SDK](plugin-sdk.md). See [Content model](content-model.md) for how fields are defined.
 
-| Role | Public content/assets | Admin collections | Admin entries | Admin assets | Trusted plugin panels | Manage settings |
+### Field options
+
+Each field has type-specific `options`. Developer Export copies them, and the admin and API interpret them. Relation field:
+
+```json
+{
+  "name": "author",
+  "type": "relation",
+  "required": false,
+  "localizable": false,
+  "options": {
+    "targetCollectionId": "authors",
+    "relationType": "one-to-many"
+  }
+}
+```
+
+Repeatable array field:
+
+```json
+{
+  "name": "blocks",
+  "type": "array",
+  "required": false,
+  "localizable": false,
+  "options": {
+    "itemFields": [
+      { "name": "label", "type": "text", "required": true, "localizable": false }
+    ],
+    "minItems": 0,
+    "maxItems": 12
+  }
+}
+```
+
+`options` is metadata, not an extension mechanism. Validate new option shapes in code before relying on them.
+
+## Public assets
+
+Asset routes serve files from R2 for published assets. They accept optional image transform parameters:
+
+| Parameter | Values |
+| --- | --- |
+| `w` or `width` | 1 to 4096 |
+| `h` or `height` | 1 to 4096 |
+| `fit` | `scale-down`, `contain`, `cover`, `crop`, `pad` |
+| `format` or `f` | `auto`, `webp`, `avif`, `jpeg`, `png`, `json` |
+
+With transform parameters, the Worker asks Cloudflare image resizing for the result. If that is unavailable (for example in local development), it serves the stored file instead. The `x-image-transform` response header is `cf-edge`, `fallback` or `none`. Transform cost, cache keys and tenant isolation for resized images have no dedicated tests yet. See [Media](media.md).
+
+The shared schema package also defines media contracts that no public route uses yet:
+
+- Alt text, optional caption and optional credit per tenant asset.
+- Focal point as normalized `x` and `y` values from `0` to `1`.
+- Tenant upload policy with maximum bytes and allowed MIME types.
+- Public asset cache headers with browser and CDN `max-age` and immutable caching.
+- A signed private asset access policy with tenant, asset, expiry and a signing secret reference. There is no public route for private assets.
+
+## Preview and drafts
+
+Draft preview routes are not public. Resolve drafts in server code through an authenticated admin or API flow, and never put preview secrets in a browser bundle.
+
+`POST .../public/preview-token` signs short-lived preview token metadata (tenant, entry, collection, preview URL; TTL 60 seconds to 7 days, default 1 hour) with `PREVIEW_SECRET`, and `POST .../public/preview-token/verify` checks one. No route returns draft content for these tokens yet. A suspended tenant cannot issue them.
+
+## API tokens for browsers
+
+There is no browser-safe content API token. Use public routes for anonymous published reads and server-side admin or auth flows for anything protected.
+
+- Token metadata can be used by backend and admin flows, but its secrets must stay out of browser code.
+- Never use admin cookies, preview secrets or server-only tokens as public content keys in browser apps.
+
+See [Auth and access](auth-and-access.md).
+
+## Roles
+
+Admin access is role-based. Tenant context is required for admin mutations, and a role on one tenant cannot change another tenant. Public content and asset routes stay read-only for every role.
+
+| Role | Public content and assets | Collections | Entries | Assets | Trusted plugin panels | Settings |
 | --- | --- | --- | --- | --- | --- | --- |
-| `viewer` | read published public content | read | read | read | read installed state | no |
-| `editor` | read published public content | read | mutate | mutate | read installed state | no |
-| `admin` | read published public content | mutate | mutate | mutate | manage trusted plugin state | limited tenant admin |
-| `owner` | read published public content | mutate | mutate | mutate | manage trusted plugin state | tenant owner |
+| `viewer` | Read published | Read | Read | Read | Read installed state | No |
+| `editor` | Read published | Read | Change | Change | Read installed state | No |
+| `admin` | Read published | Change | Change | Change | Manage trusted plugin state | Limited tenant admin |
+| `owner` | Read published | Change | Change | Change | Manage trusted plugin state | Tenant owner |
 
-Tenant context is required before admin mutations. Public content and public asset surfaces remain read-only even if a local helper is given a mutating role.
-Local schema proof also blocks cross-tenant admin mutations by comparing the actor tenant and target tenant before allowing a mutable admin surface.
+This matrix is enforced by shared helpers and tests. There is no generated role editor in the admin.
 
-## Media Metadata And Policy
+## Editorial workflow
 
-Media parity work is contract-first before migration/UI changes. Current schema proof covers:
+Only `published` entries are publicly readable. `draft`, `review`, `scheduled` and `archived` entries are not.
 
-- Alt text, optional caption, and optional credit metadata per tenant asset.
-- Focal point metadata as normalized `x`/`y` values from `0` to `1`.
-- Tenant upload policy with max bytes and allowed MIME types.
-- Public asset cache proof requiring browser and CDN `max-age` headers plus immutable asset behavior.
-- Signed private asset access policy shape with tenant, asset, expiry, and signing-secret reference. This is a boundary contract only; EdgeCMS does not claim a public private-asset route in this tranche.
+The shared schema package defines tenant-scoped request shapes for:
 
-The media metadata helper can combine alt text, caption, credit, and focal point into a tenant-scoped asset summary for admin review. The public asset cache helper can derive `Cache-Control` and `CDN-Cache-Control` headers from the local policy shape. Both helpers are contract proof only.
-
-Image transform parity remains a decision boundary. EdgeCMS serves generated/public variants where available and documents Cloudflare Images-style transforms as future work until transform behavior, cost, cache keys, and tenant isolation are tested.
-
-## Editorial Workflow Boundary
-
-Current workflow proof is schema-level and route-policy proof, not a full migrated editorial workflow UI. The shared schema package defines tenant-scoped requests for:
-
-- Duplicate entry requests.
-- Autosave draft requests with optimistic version numbers.
+- Duplicating an entry.
+- Saving a draft with an optimistic version number.
 - Server-only preview token metadata.
-- Review assignment metadata.
-- Scheduled publish/unpublish windows.
-- Version restore requests.
-- Version diff requests.
+- Review assignments.
+- Scheduled publish and unpublish windows. An unpublish time must be after the publish time.
+- Restoring a version, and diffing two versions. Both name explicit versions.
 
-Public delivery remains stricter than editorial workflow state. Only `published` content is public-readable; `draft`, `review`, `scheduled`, and `archived` are not public-readable through anonymous public routes.
+Workflow rules in the helpers: publishing is valid from `review` or `scheduled`, and a published entry can only move to `archived`.
 
-Schedule windows must not unpublish at or before publish time. Version restore and diff operations must stay tenant-scoped and version-explicit.
+Draft saves use optimistic versioning: the client sends its base version, and the server rejects the save when the server draft is newer. The autosave helper records tenant slug, entry id, client version, server version and an `accepted` or `conflict` result. The admin entry form saves dirty drafts in the background every 30 seconds and warns when the server draft is newer.
 
-Release batch planning is documented as a scoped editorial boundary only. A release can be described as reviewed entries plus schedule windows and version-explicit restore/diff plans, but this tranche does not ship Strapi Releases parity, a release calendar, or bulk publish/unpublish orchestration.
+There is no release calendar and no bulk publish or unpublish of a release. A release can be planned as a set of reviewed entries with schedule windows and explicit restore or diff steps.
 
-Autosave conflict handling is contract-level proof in `@edgecms/schemas`: clients send optimistic version numbers, and server-side handlers should reject saves when the client base version is older than the server draft version. Review transitions are also explicit: publishing is valid from reviewed or scheduled states, while published content can only move to archived through this helper boundary.
-The autosave decision helper records tenant slug, entry id, client draft version, server draft version, and `accepted` or `conflict` result. This keeps the conflict boundary testable without claiming a shipped timed autosave UI.
+## Content model handoff
 
-## Content Model Handoff
+Developer Export in the admin produces deterministic TypeScript from a collection. Use it for code review, starter or plugin examples, and schema discussions. It is not an import API, a migration runner or a deploy step.
 
-Admin Developer Export can produce deterministic TypeScript from a visual collection model. Use that output for code review, starter examples, plugin examples, or schema discussions. It is not an import API, migration runner, or deploy mechanism.
+- Review exported configs before changing the backend schema.
+- Check field types, relation options, localization and singleton settings against what the API supports.
+- Add tests for the public response shape before your frontend depends on new fields.
+- An export does not mean production content was migrated.
+- Import preview is read-only. It reports additions, changes and removals but never applies migrations or deletes content.
 
-Safe handoff rules:
+## REST, GraphQL and OpenAPI
 
-- Keep exported configs in source review before backend schema changes.
-- Confirm field types, relation options, localization, and singleton settings against current API support.
-- Add or update tests for the public response shape before frontend apps rely on new fields.
-- Do not treat exported config as proof that production content has been migrated.
-- Keep import preview non-destructive: preview can report additions, changes, and removals, but cannot apply migrations or delete content without a separate approved migration path.
+REST is the primary public interface, and these docs and examples use it.
 
-## API Format Decision
+A read-only GraphQL endpoint is also available:
 
-EdgeCMS is REST-first for current public delivery. Strapi's REST/GraphQL ecosystem is a useful comparison point, but EdgeCMS does not ship GraphQL public delivery in this tranche.
+```text
+GET  /api/graphql
+POST /api/graphql
+GET  /api/tenants/:tenantSlug/graphql
+POST /api/tenants/:tenantSlug/graphql
+```
 
-Current decision:
+The schema is generated per tenant from its collections: each collection gets a list field (`locale`, `page`, `perPage` up to 100, `sort`) and a single-entry field (`id` or `slug`, `locale`). Resolvers return published entries only. Queries are limited to depth 3 and complexity 50. A `GET` with no `query` (or with `Accept: text/html`) returns the GraphiQL playground; open it to see the exact field names. Its feature set does not match other CMS GraphQL APIs.
 
-- Keep public docs and examples on REST routes.
-- Add GraphQL only after a separate schema, auth, cache, and tenant-isolation design exists.
-- Do not claim Strapi-level API ecosystem parity without generated schema proof and client examples.
+The Worker serves Elysia's OpenAPI document at `/api/docs`. It covers the routes that declare schemas, not every public and admin response. A generated client for all routes needs route schema coverage, a tenant and auth review, and a decision on error envelopes first.
 
-## OpenAPI Boundary
+## Testing your integration
 
-The current public API docs are a hand-maintained contract guide backed by focused tests. EdgeCMS does not claim complete generated OpenAPI in this tranche. Generated OpenAPI should wait for route schema coverage, tenant/auth review, error envelope decisions, and docs claim-scan coverage.
+Before you rely on a public route in production:
 
-## Locale Fallback Boundary
+1. Create a draft through the admin or API, publish it, then fetch it through the public API.
+2. Check that tenant A cannot read tenant B content or tenant B cache snapshots.
+3. Check that drafts are hidden from public reads.
+4. Check locale behavior and that cache keys differ per locale.
+5. Check the `Cache-Control`, `CDN-Cache-Control` and `Cache-Tag` headers.
+6. Check the error shape and the `no-store` headers on misses and validation failures.
 
-Locale reads should be deterministic. If fallback behavior changes, update public route tests and this guide together. Until fallback is proven by tests, frontend examples should request a specific `locale` and handle missing localized content explicitly.
-
-Current contract proof covers a policy shape with:
-
-- `requestedLocale`: caller-selected locale.
-- `fallbackLocale`: tenant fallback locale.
-- `fallbackEnabled`: whether fallback is allowed.
-
-Locale completeness can be represented as required fields plus missing fields per locale. Treat rows with any missing required field as incomplete. This is a contract/test boundary for future admin matrix UI; it is not yet a shipped locale completeness screen.
-
-Local schema proof also resolves requested locale versus fallback locale, builds a locale completeness matrix from localized entry data, and defines cache-key parts for tenant, collection, requested locale, published status, and filter hash. This proves the required dimensions for future admin/public route tests; it is not deployed cache proof.
-
-## Public Filter Allowlist
-
-Public filters intentionally avoid unrestricted entry-field probing. Current top-level public filter fields are:
-
-- `slug`
-- `createdAt`
-- `updatedAt`
-- `status`
-
-Custom content fields must use the `data.<field>` path shape. Public status filters only support `published`; draft/review/scheduled/archived reads stay out of anonymous public routes.
-
-## Public Read Performance Fixtures
-
-Local performance proof needs a known tenant, collection, and entry path. Use:
+To time public reads locally:
 
 ```bash
 bun run perf:public-read:local -- --path /api/tenants/smoke/api/public/smoke-posts/<entry-slug> --expected-kind detail
 ```
 
-The local threshold report records p50/p95 and pass/fail for local behavior only. Remote proof requires `EDGE_CMS_URL` and an operator-provided deployed Worker URL.
-
-## Verification
-
-Before treating a public route as stable:
-
-- Create draft content through admin/API, publish it, then fetch it through the public API.
-- Test tenant A cannot read tenant B content or tenant B cache snapshots.
-- Test drafts are hidden from public reads.
-- Test locale behavior and locale-scoped cache keys.
-- Test `Cache-Control`, `CDN-Cache-Control`, and `Cache-Tag` headers.
-- Test public error shape and `no-store` headers on public misses/validation failures.
+This reports p50, p95 and pass or fail for your local machine only. To measure a deployed Worker, run `perf:public-read:remote` with `EDGE_CMS_URL` set to its URL.

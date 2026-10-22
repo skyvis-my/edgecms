@@ -1,17 +1,21 @@
-# Frontend Integration
+# Frontend integration
 
-Frontend apps should consume EdgeCMS through public delivery routes, not admin routes.
+This guide shows how a frontend app reads published EdgeCMS content and refreshes its cache when an editor publishes. It is for developers building sites with plain `fetch`, Next.js or Astro.
 
-Set these values in server-side env:
+Read content through the public routes described in [Public API](public-api.md). Never call admin routes from a frontend. For a typed client, see [Client SDK](client-sdk.md).
+
+## Configure the app
+
+Set these in server-side environment variables:
 
 ```bash
 EDGE_CMS_URL=http://localhost:8787
 EDGE_CMS_TENANT=smoke
 ```
 
-## Plain Fetch
+## Fetch content with plain fetch
 
-Repo sample: `examples/public-fetch/plain-fetch.ts` contains a tested URL builder for tenant-scoped collection and entry reads.
+`examples/public-fetch/plain-fetch.ts` contains a tested URL builder (`buildPublicReadUrl`) and fetch helper (`fetchPublishedEntry`) for tenant-scoped list and entry reads.
 
 ```ts
 const tenantSlug = 'smoke'
@@ -28,15 +32,11 @@ if (!res.ok) {
 const body = await res.json()
 ```
 
-For locale-aware frontends, keep the requested locale explicit and treat fallback as a visible caller decision:
+### Locales
 
-```ts
-const res = await fetch(
-  `${EDGE_CMS_URL}/api/tenants/${tenantSlug}/api/public/${collectionSlug}?locale=ms&fallbackLocale=en`,
-)
-```
+Always pass `locale` explicitly. The API returns content for that locale only and does not fall back to another one. If you want a fallback, request the fallback locale yourself when the first read is missing content.
 
-The repo sample keeps `locale` and `fallbackLocale` separate so cache tags, analytics, and missing-content handling can still identify the requested locale. It also exposes `buildPublicReadCacheTags({ collectionSlug, locale })` for frontend caches that need tags derived from the requested locale.
+The example helper accepts a `fallbackLocale` option and adds it to the URL when it differs from `locale`. The API currently ignores that parameter; the helper keeps it so your caching, analytics and missing-content handling can still see which locale was requested. `buildPublicReadCacheTags({ collectionSlug, locale })` returns frontend cache tags for a requested locale, such as `edgecms:collection:posts` and `edgecms:locale:en`.
 
 ### Pagination
 
@@ -54,7 +54,7 @@ if (!res.ok) {
 const pageBody = await res.json()
 ```
 
-Keep pagination parsing tolerant until the public response envelope is versioned. Use the collection docs or smoke response as the source of truth for the current list shape.
+`perPage` defaults to 20 and is capped at 100. The list response shape is not versioned yet, so parse pagination metadata defensively.
 
 ### Relations
 
@@ -70,9 +70,7 @@ if (!res.ok) {
 const entryWithAuthor = await res.json()
 ```
 
-Only request relation population for collections that have relation fields and test coverage. Frontend apps should tolerate missing related entries.
-
-Keep `depth` shallow and collection-specific. Treat missing relation targets as absent content, not as a retry loop, because related entries can be unpublished, tenant-filtered, or intentionally omitted by the public route.
+Only populate fields that are relation fields in the collection. Keep `depth` low (it is capped at 3). A related entry can be missing because it is unpublished, belongs to another tenant, or was left out by the public route; render it as absent content and do not retry.
 
 ## Next.js
 
@@ -102,29 +100,27 @@ const res = await fetch(
 const posts = await res.json()
 ```
 
-## Preview Mode
+## Preview drafts
 
-Preview mode should use a signed token or equivalent server-only secret. Do not expose admin credentials or preview secrets in browser bundles.
+Draft preview routes are not public. Fetch drafts only in server code that can hold a secret, and keep browser code on the anonymous public routes.
 
-Preview fetching should terminate in server code that can hold the secret. Browser bundles should keep using anonymous public routes for published content only.
+1. An editor requests a preview through an authenticated server route in your app.
+2. Your server checks the tenant, entry id, draft status and a signed preview token.
+3. Your server loads the draft through an authenticated EdgeCMS flow and renders or proxies it, without sending the secret to the browser.
+4. Browser code keeps calling the public routes for published content.
 
-Recommended preview flow:
+Never put admin credentials or preview secrets in a browser bundle.
 
-1. Admin/editor requests preview through an authenticated server route.
-2. Server validates tenant, entry id, draft status, and signed token metadata.
-3. Server resolves draft content and renders or proxies it without exposing the preview secret to browser bundles.
-4. Public frontend code continues to call anonymous public routes for published content only.
+## Revalidate after publish
 
-## Revalidation
+1. An editor publishes an entry.
+2. EdgeCMS sends a signed webhook (or a plugin hook runs).
+3. Your app checks the signature.
+4. Your app revalidates the paths or cache tags in the event.
 
-Use webhook-driven revalidation after publish:
+Webhooks sign the raw body with HMAC-SHA256 and send `x-edgecms-signature: sha256=<hex digest>`. Publish events list paths in `data.metadata.revalidate.paths` and tags in `data.metadata.revalidate.tags`. Run a webhook dry run before enabling a destination; it checks the destination policy and signing without sending a request. See [Webhooks](webhooks.md).
 
-1. Author publishes entry.
-2. EdgeCMS emits webhook or plugin hook.
-3. Frontend app validates signature.
-4. Frontend app revalidates route or cache tag.
-
-### Next.js Revalidation Route
+### Next.js route handler
 
 ```ts
 import { createHmac, timingSafeEqual } from 'node:crypto'
@@ -156,7 +152,7 @@ export async function POST(request: Request) {
 }
 ```
 
-### Astro Revalidation Endpoint
+### Astro endpoint
 
 ```ts
 import type { APIRoute } from 'astro'
@@ -179,7 +175,7 @@ export const POST: APIRoute = async ({ request, locals }) => {
 }
 ```
 
-### Plain Fetch Revalidation Handler
+### Plain handler
 
 ```ts
 import { createHmac, timingSafeEqual } from 'node:crypto'
@@ -208,13 +204,11 @@ export async function handleEdgeCmsWebhook(request: Request, secret: string) {
 }
 ```
 
-Run webhook dry-run before enabling a destination. Dry-run records signature and policy validation without sending an outbound request.
+## Checklist
 
-## Verification
-
-- Confirm frontend app reads only public routes.
-- Confirm tenant slug is explicit.
-- Confirm list pagination uses explicit `page` and `perPage`.
-- Confirm relation examples are used only for collections with relation fields.
-- Confirm preview secrets stay server-side.
-- Confirm publish triggers frontend refresh.
+- The app reads only public routes.
+- Every request names the tenant slug.
+- List requests pass `page` and `perPage`.
+- Relation population is used only on collections with relation fields.
+- Preview secrets stay on the server.
+- Publishing an entry refreshes the frontend.
