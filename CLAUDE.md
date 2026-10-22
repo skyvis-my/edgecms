@@ -81,7 +81,7 @@ Routes requiring auth use the `{ auth: true }` macro which resolves `user` and `
 
 **Shared schemas** (`packages/schemas/` and `src/shared/schemas/`) use TypeBox for API validation contracts. Path alias: `@edgecms/schemas`.
 
-**Database:** Schema files in `src/database/schema/`, migrations in `drizzle/migrations/`. Tables: user, session, account, verification (auth), collections, entries, entry_versions (CMS).
+**Database:** Schema files in `src/database/schema/` (one file per area: auth, tenants, collections, entries, audit, usage, …), hand-numbered SQL migrations in `drizzle/migrations/`. Migration numbers are global: rebase and renumber if another branch merged the same number first.
 
 ### Admin (apps/admin/)
 
@@ -119,13 +119,11 @@ Every feature must fit `PRD.md`. Run `/prd-check <feature>` before building and 
 
 ## Testing
 
-- **Framework:** Vitest for all unit and integration tests
-- **File pattern:** Colocated test files using `*.test.ts` (backend) and `*.test.tsx` (frontend components)
-- **Backend tests:** Place `{feature}.service.test.ts` and `{feature}.repository.test.ts` alongside source files in the feature directory
-- **Frontend tests:** Place `{component}.test.tsx` alongside source files in the feature/component directory
-- **Coverage:** All new code must have tests. Backfill tests for existing Phase 1-7 code
-- **Test naming:** Use descriptive `describe`/`it` blocks: `describe('CollectionService')` → `it('creates a collection with valid fields')`
-- **Mocking:** Use Vitest's built-in mocking for D1, KV, and R2 bindings. Use `miniflare` for integration tests requiring Workers runtime
+- **Runner:** `bun test` (`describe`/`it`/`expect`/`mock` from `bun:test`).
+- **Where:** API tests live in `apps/api/src/tests/<feature>/`, plus a few next to their source. Admin tests sit next to the component (`*.test.tsx`). Script tests are `scripts/*.test.ts`.
+- **Coverage:** new behavior gets a test that exercises it through its public surface (route, service or component).
+- **Mocking:** mock D1, KV and R2 bindings in-process; prefer real SQLite (`bun:sqlite`) with the real migration SQL for repository and ledger tests.
+- **Playwright:** `apps/admin/e2e/` suites run by hand (`bun run smoke:e2e:local`); CI does not run Playwright.
 
 ## AI Prompt Organization
 
@@ -150,10 +148,10 @@ Every feature must fit `PRD.md`. Run `/prd-check <feature>` before building and 
 - Schema events: `collection.created`, `collection.updated`, `collection.deleted`
 - Bulk events: `entry.bulk_updated`
 
-## Cloudflare Bindings (Phase 2 additions)
+## Other bindings and secrets
 
 - `WEBHOOK_QUEUE` — Cloudflare Queue for webhook delivery
-- `CF_API_TOKEN` — Secret for Cloudflare API (runtime D1/KV/R2 provisioning)
+- `CF_API_TOKEN` — Cloudflare API token, only for provisioning dedicated per-tenant D1/KV/R2
 - `AI_GATEWAY_URL` — Cloudflare AI Gateway endpoint
 - `QWEN_API_KEY` — Qwen (DashScope) API key
 - `GEMINI_API_KEY` — Google Gemini API key (fallback)

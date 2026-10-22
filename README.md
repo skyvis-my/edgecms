@@ -6,15 +6,23 @@ EdgeCMS is an edge-native CMS with a React admin dashboard and Elysia API, desig
 
 Use EdgeCMS when you want a production CMS that runs close to users on Cloudflare instead of a Node-only starter. The local adoption path is intentionally small: install dependencies, start the API and admin, seed smoke data, publish one entry, and read it through tenant-scoped public delivery.
 
-## Structure
+## Repository layout
 
-```
-.
-├── apps/
-│   ├── admin/     # React + Vite + shadcn/ui admin dashboard
-│   └── api/       # Elysia + Drizzle ORM backend API
-├── package.json   # Root workspace configuration
-└── README.md
+```text
+apps/
+  admin/        React admin (Vite, TanStack Router, shadcn/ui)
+  api/          Elysia API on Cloudflare Workers (Drizzle + D1, KV, R2, Queues, Durable Objects)
+packages/
+  client/       @edgecms/client: typed fetch and rich-text rendering for frontends
+  runtime/      @edgecms/runtime: createApp() for consumer applications
+  schemas/      @edgecms/schemas: shared TypeBox schemas
+  plugin-sdk/   @edgecms/plugin-sdk: types for trusted plugins
+  create-app/   create-edgecms-app starter CLI (workspace only)
+templates/      starter template used by create-app
+examples/       plugin and public-fetch examples
+docs/           guides (docs/public), runbook, ADRs
+scripts/        smoke, seed, release and docs checks
+PRD.md          product requirements; every PR cites an ID
 ```
 
 ## Public vs SaaS boundary
@@ -83,48 +91,29 @@ bun run test:admin
 bun run lint
 ```
 
-## Public Docs
+## Docs
 
-- Quickstart: `docs/public/quickstart.md`
-- Public docs index: `docs/public/README.md`
-- Public API: `docs/public/public-api.md`
-- Frontend integration: `docs/public/frontend-integration.md`
-- Plugin SDK: `docs/public/plugin-sdk.md`
-- Sample plugins: `docs/public/sample-plugins.md`
-- Starter template checklist: `templates/starter/README.md`
+Start with the [quickstart](docs/public/quickstart.md), then the [guide index](docs/public/README.md): content model, public API, client SDK, commands, auth, media, webhooks, MCP, plugins and deployment.
 
-## Starter Status
+`create-edgecms-app` (`packages/create-app`) works inside this workspace but is not published to npm yet.
 
-`packages/create-app` contains a private workspace `create-edgecms-app` CLI for local starter proof. It is not published to npm, and `templates/starter/README.md` remains the acceptance checklist before any external install path is claimed.
+## Configuration
 
-## Tech Stack
+Set Worker secrets per environment with `wrangler secret put <NAME> --env <env>`.
 
-- **Admin**: React 19, Vite, Tailwind CSS, shadcn/ui, TanStack Router
-- **API**: Elysia, Drizzle ORM, Cloudflare D1/KV/R2, Durable Objects, Queues
+| Secret | Needed for |
+| --- | --- |
+| `BETTER_AUTH_SECRET`, `JWT_HS256_SECRET` | Sessions and API tokens (required) |
+| `BASE_URL`, `CORS_ALLOWED_ORIGINS` | The deployment's own URL and allowed origins (required) |
+| `SUPER_ADMIN_EMAILS` | Operators; each account needs a verified email (required) |
+| `SIGNUP_POLICY` | `open` (default), `invite-only` or `disabled` |
+| `SUPER_ADMIN_REQUIRE_MFA`, `AUTH_EMAIL_SENDER` | MFA for super-admins; email verification and invites |
+| `QWEN_API_KEY`, `GEMINI_API_KEY`, `AI_GATEWAY_URL` | AI features (off per tenant until enabled) |
+| `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET`, `ENTRA_TENANT_ID` | Optional Microsoft sign-in |
+| `CF_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` | Optional dedicated per-tenant databases |
 
-## API Environment
-
-Configure these for Phase 1 features (set via `wrangler secret put` / deploy env vars):
-
-- `BETTER_AUTH_SECRET`
-- `ENTRA_CLIENT_ID`
-- `ENTRA_CLIENT_SECRET`
-- `ENTRA_TENANT_ID`
-- `QWEN_API_KEY`
-- `GEMINI_API_KEY`
-- `AI_GATEWAY_URL`
-- `AI_GATEWAY_ROUTE_ID` (optional)
-- `AI_GATEWAY_GUARDRAILS_PROFILE_ID` (optional)
-- `SIGNUP_POLICY` (optional): `open` (default), `invite-only` or `disabled`. Use `disabled` for new deployments; the first account of an empty database can always be created.
-- `AUTH_EMAIL_SENDER` (optional): `console` logs verification and invite emails (development only). When a sender is set, email/password accounts must verify their email before signing in. Inject a real sender with `configureAuthPolicies()`.
-- `SUPER_ADMIN_REQUIRE_MFA` (optional): `true` requires super-admins to sign in with two-factor authentication. Per-tenant MFA is set with `requireMfa` on `PUT /api/admin/tenants/:slug`.
-
-See [Sign-up, Email Verification and MFA](docs/deployment-runbook.md#sign-up-email-verification-and-mfa) for invites and details.
-
-## Package Manager
-
-This project uses [Bun](https://bun.sh) workspaces.
+The [deployment runbook](docs/deployment-runbook.md) has the full list, bindings and rollback steps.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Third-party code is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
