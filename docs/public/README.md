@@ -1,34 +1,62 @@
-# EdgeCMS Public Docs
+# EdgeCMS developer guides
 
-Use these docs when evaluating or adopting EdgeCMS outside the internal release process. They describe real repo commands and current public delivery routes only.
+Guides for developers who run EdgeCMS, model content in it, or read its content from a frontend. EdgeCMS is an open-source headless CMS: an Elysia API on Cloudflare Workers with a React admin, storing data in D1, KV and R2.
 
-## Start Here
+## Start
 
-- `docs/public/quickstart.md`: checkout-to-first-public-read path.
-- `docs/public/public-api.md`: public content delivery contract.
-- `docs/public/frontend-integration.md`: fetch examples for frontend apps.
-- `docs/public/ai-command-safety.md`: AI command envelope, audit, and rejection boundaries.
-- `docs/public/operations-security.md`: smoke fixtures, admin readiness, audit, rate-limit, security-header, and backup boundaries.
-- `docs/public/agent-repo-map.md`: code surfaces and proof commands for agents.
-- `examples/public-fetch/plain-fetch.ts`: minimal tenant-scoped public fetch helper.
-- `docs/public/plugin-sdk.md`: trusted plugin authoring contract.
-- `docs/public/sample-plugins.md`: sample plugin acceptance specs.
-- `docs/public/mcp-server.md`: Model Context Protocol (MCP) server tools, endpoints, and client setup.
-- `docs/public/hosting-seams.md`: `createApp({ host })` policies for multi-customer hosts (tenant creation, tenant states, lifecycle events).
-- `templates/starter/README.md`: acceptance checklist for a future starter template.
+- [Quickstart](quickstart.md): run the API and admin locally, seed sample data and read your first published entry.
 
-## Proof Index
+## Build
 
-- Starter proof: `packages/create-app` tests and `npm pack --dry-run --json`.
-- Developer Export proof: focused admin collection export tests.
-- Public delivery proof: `bun run smoke:e2e:local-live -- --live-persisted`.
-- Performance proof: `bun run perf:public-read:local` for local behavior, `bun run perf:public-read:remote` only with an operator-provided deployed URL.
-- Release proof: `bun run check:package` checks create-app and plugin SDK package gates; `bun run check:docs` runs docs claim/link checks.
-- Claim hygiene proof: `bun test scripts/docs-quality.test.ts` and `bun run check:docs` reject unsupported publish, deploy, marketplace, OpenAPI, GraphQL, migration, backup, cache, and remote-performance claims.
-- Plugin proof: trusted plugin SDK docs and package checks; public plugin routes remain deferred.
-- Ops/admin proof: `bun test scripts/seed-smoke-db.test.ts packages/schemas/src/__tests__/ops-readiness.test.ts apps/admin/src/features/collections/collections.test.tsx apps/admin/src/features/entries/entry-edit.test.tsx apps/admin/src/features/entries/components/entry-form.layout.test.tsx apps/admin/src/features/entries/components/entry-form-schema.test.ts`.
-- Data portability proof: current docs describe export and non-destructive import-preview boundaries only; no destructive import apply or parity claim.
+- [Content model](content-model.md): collections, singletons, field types and locales.
+- [Public API](public-api.md): routes, query parameters, response shapes, errors and cache headers for published content.
+- [Frontend integration](frontend-integration.md): fetch examples for plain `fetch`, Next.js and Astro, plus revalidation handlers.
+- [Client SDK](client-sdk.md): the typed `@edgecms/client` package.
+- [Commands](commands.md): the command envelope used for every content change.
+- [Webhooks](webhooks.md): signed event delivery, destination rules and dry runs.
+- [Media](media.md): uploads, asset variants and public asset routes.
 
-`packages/create-app` is a private workspace `create-edgecms-app` proof package. It is not published or installable outside this repo yet. Starter docs remain checklist material until the repo quickstart passes on a clean checkout.
+## Secure
 
-Missing external proof must stay explicit in release notes: deployed URL, remote migration receipt, production backup/export receipt, marketplace listing, npm publication, remote performance receipt, and public plugin route rollout are not proven by local docs checks.
+- [Auth and access](auth-and-access.md): sign-in, roles, API keys and tenant isolation.
+- [Operations and security](operations-security.md): audit ledger, personal data requests, rate limits, security headers and backups.
+
+## AI and agents
+
+- [AI command safety](ai-command-safety.md): dry runs, preview receipts and the per-tenant AI switch.
+- [MCP server](mcp-server.md): connect AI clients to EdgeCMS over the Model Context Protocol.
+
+## Extend
+
+- [Plugin SDK](plugin-sdk.md): write a trusted plugin with hooks, AI tools, fields and admin routes.
+- [Sample plugins](sample-plugins.md): the example plugins in `examples/plugins`.
+- [Hosting seams](hosting-seams.md): `createApp({ host })` policies for running EdgeCMS as a multi-customer service.
+
+## Deploy
+
+- [Deployment runbook](../deployment-runbook.md): provision Cloudflare resources, set secrets, migrate, deploy and roll back.
+- [Operations guide](../operations-guide.md): health checks and day-to-day operations.
+
+## Contributing
+
+- [Agent repo map](agent-repo-map.md): where code lives and which focused tests to run. Written for coding agents.
+- Starter template checklist: `templates/starter/README.md`. `packages/create-app` is a private workspace package (`create-edgecms-app`); it is not published or installable outside this repo yet.
+- Public fetch helper: `examples/public-fetch/plain-fetch.ts`.
+
+Release checks run from the repo root:
+
+```bash
+bun run check:docs                      # docs claim scan and link check
+bun test scripts/docs-quality.test.ts   # tests for the docs scripts
+bun run check:package                   # create-app, plugin SDK, runtime and client package checks
+bun run smoke:e2e:local-live -- --live-persisted   # publish, public read and media upload against local services
+bun run perf:public-read:local          # local public read timing
+```
+
+Focused tests for the seed script, ops readiness schema and admin content screens:
+
+```bash
+bun test scripts/seed-smoke-db.test.ts packages/schemas/src/__tests__/ops-readiness.test.ts apps/admin/src/features/collections/collections.test.tsx apps/admin/src/features/entries/entry-edit.test.tsx apps/admin/src/features/entries/components/entry-form.layout.test.tsx apps/admin/src/features/entries/components/entry-form-schema.test.ts
+```
+
+`bun run check:docs` rejects docs that state unsupported capabilities, such as npm publication, a marketplace, GraphQL parity, generated OpenAPI for every route, production migrations or backups, and remote performance results. Results from a deployed Worker (URL, remote migrations, backups, remote performance, npm publication) come from the operator who ran them, not from these local checks.

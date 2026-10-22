@@ -1,34 +1,14 @@
-# EdgeCMS Quickstart
+# Quickstart
 
-This guide takes a new developer from checkout to first published content read through the public API.
+This guide takes you from a fresh checkout to reading a published entry through the public API on your machine. It is for developers trying EdgeCMS locally before they model their own content or deploy it.
 
-## Admin First-Run Checklist
+## What you need
 
-Use this local checklist before claiming a working editorial path:
+- Bun `1.4.x` (the repo pins `bun@1.4.2`).
+- Wrangler, run through `bunx`, for local Worker and D1 commands.
+- A checkout of the repo. Run every command from the repo root unless a step says otherwise.
 
-1. Confirm active tenant and local D1 bindings.
-2. Create first collection or singleton model.
-3. Create entry content for that model.
-4. Publish entry content after checking SEO, locale, media, and schedule readiness.
-5. Read published content through the tenant public route.
-
-This checklist is local onboarding proof. It is not deployed smoke proof unless an operator records the deployed URL, tenant, command, date, and result.
-
-## 1-Click Cloudflare Deployment
-
-Deploy EdgeCMS directly to your Cloudflare account with the Workers Deploy button:
-
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/skyvis-my/edgecms)
-
-This deploys EdgeCMS to Cloudflare Workers with required D1 database, KV cache, and R2 media bucket bindings.
-
-## Prerequisites
-
-- Bun `1.4.x`
-- Cloudflare Wrangler access for local Worker and D1 commands
-- Repo checkout at the project root
-
-Check tool availability:
+Check your tools:
 
 ```bash
 bun --version
@@ -37,135 +17,113 @@ bunx wrangler --version
 
 ## Install
 
-```bash
-bun install
-```
+1. Install dependencies:
 
-Self-check:
+   ```bash
+   bun install
+   ```
 
-```bash
-bun run check:merge-markers
-```
+2. Check that the checkout is clean of merge markers. The command exits `0` on success.
 
-Expected: command exits `0`.
+   ```bash
+   bun run check:merge-markers
+   ```
 
-## Apply Migrations and Seed Smoke Data
+## Create the local database and sample data
 
-Apply local D1 migrations before seeding:
+1. Apply the local D1 migrations:
 
-```bash
-bun run db:migrate:local
-```
+   ```bash
+   bun run db:migrate:local
+   ```
 
-This runs `wrangler d1 migrations apply DB --local` from `apps/api`, so the tables land in `apps/api/.wrangler/state`, the same store `bun run dev:api` reads.
+   This runs `wrangler d1 migrations apply DB --local` from `apps/api`. The tables land in `apps/api/.wrangler/state`, the same store `bun run dev:api` reads.
 
-Seed local D1 with the smoke admin, tenant, and collection:
+2. Seed a sample admin, tenant and collection:
 
-```bash
-bun run db:seed:smoke
-```
+   ```bash
+   bun run db:seed:smoke
+   ```
 
-Default seed values:
+   The output includes `Smoke seed applied.` and the tenant and collection slugs. The defaults are:
 
-- Admin email: `smoke.admin@example.com`
-- Admin password: `SmokePassw0rd!`
-- Tenant slug: `smoke`
-- Collection slug: `smoke-posts`
+   | Value | Default |
+   | --- | --- |
+   | Admin email | `smoke.admin@example.com` |
+   | Admin password | `SmokePassw0rd!` |
+   | Tenant slug | `smoke` |
+   | Collection slug | `smoke-posts` |
 
-Override values when needed:
+   To use other slugs:
 
-```bash
-bun run db:seed:smoke -- --tenant-slug demo --collection-slug posts
-```
+   ```bash
+   bun run db:seed:smoke -- --tenant-slug demo --collection-slug posts
+   ```
 
-Expected: output includes `Smoke seed applied.` and prints the tenant and collection slugs.
+The seed is idempotent. Running it again keeps the same tenant, owner membership, collection and admin credentials instead of creating duplicates. It applies pending local migrations first unless you pass `--skip-migrations`. It does not create assets or plugin state.
 
-The smoke seed is intended to be idempotent for local proof. Re-running it should keep the same tenant, owner membership, smoke collection, and credential identity instead of creating duplicate adoption fixtures. It also applies pending local migrations first unless you pass `--skip-migrations`.
+## Start the API and admin
 
-## Start Local Services
+1. In one terminal, start the API:
 
-Use two terminals:
+   ```bash
+   bun run dev:api
+   ```
 
-```bash
-bun run dev:api
-```
+2. In a second terminal, start the admin:
 
-```bash
-bun run dev:admin
-```
+   ```bash
+   bun run dev:admin
+   ```
+
+3. Open `http://localhost:5173`, sign in as the seeded admin, then go to `http://localhost:5173/tenants/smoke/collections/smoke-posts/entries` to see the seeded collection.
+
+| Service | URL |
+| --- | --- |
+| API | `http://localhost:8787` |
+| Admin | `http://localhost:5173` |
+
+Vite proxies `/api` from the admin to the API. If the API runs on another port, set `EDGECMS_API_PROXY_TARGET`.
 
 On first run, `dev:api` prepares the checkout through `scripts/prepare-local-dev.ts`:
 
 - It writes `apps/api/.dev.vars` with generated `BETTER_AUTH_SECRET` and `JWT_HS256_SECRET` values and `SUPER_ADMIN_EMAILS=smoke.admin@example.com`. Existing keys are kept. The file is gitignored.
-- It creates a placeholder `apps/admin/dist/index.html` when no admin build exists, because the Worker's static assets binding needs the directory. Run `bun run build:admin` to serve the real admin from the Worker instead.
+- It creates a placeholder `apps/admin/dist/index.html` if no admin build exists, because the Worker's static assets binding needs the directory. Run `bun run build:admin` to serve the real admin from the Worker instead.
 
-Local URLs:
+## Publish and read your first entry
 
-- API: `http://localhost:8787`
-- Admin: `http://localhost:5173` (Vite proxies `/api` to the API; set `EDGECMS_API_PROXY_TARGET` if the API runs on another port)
+1. In the admin, open the tenant and the `smoke-posts` collection (or create your own collection or singleton).
+2. Create an entry.
+3. Check its SEO fields, locale, media and schedule, then publish it.
+4. Read it through the public API:
 
-Sign in to the admin at `http://localhost:5173` with the smoke admin, then open `http://localhost:5173/tenants/smoke/collections/smoke-posts/entries` to see the seeded collection's entry list.
+   ```bash
+   curl http://localhost:8787/api/tenants/smoke/api/public/smoke-posts/<entry-slug>
+   ```
 
-Automated proof of that path against the running services:
+A successful read includes `Cache-Control`, `CDN-Cache-Control` and `Cache-Tag` headers. Misses and invalid filters return `no-store`.
 
-```bash
-cd apps/admin
-BASE_URL=http://localhost:5173 E2E_LIVE_PERSISTED=1 bunx playwright test e2e/live-quickstart.spec.ts
+Public routes are tenant-scoped. Both forms below reach the same handler; the Worker rewrites the first to the second:
+
+```text
+/api/tenants/:tenantSlug/public/:collectionSlug/:entrySlug
+/api/tenants/:tenantSlug/api/public/:collectionSlug/:entrySlug
 ```
 
-Automated live health check:
+Draft content is never returned by public routes. `filter[status]=published` is accepted on list routes; `filter[status]=draft` returns a validation error. Do not use admin collection or entry routes for public delivery. See [Public API](public-api.md) for the full route list.
 
-```bash
-bun run smoke:e2e:local-live
-```
+## Run the smoke tests
 
-Expected: wrapper starts local API/admin processes and runs live API smoke checks.
+| What it checks | Command |
+| --- | --- |
+| Admin UI against mocked API responses | `bun run smoke:e2e:local` |
+| Starts local API and admin, then runs live API smoke checks | `bun run smoke:e2e:local-live` |
+| Publishes content, reads it through the public API and uploads media, using the seeded data | see below |
+| The sign-in and entry list path above, against running services | see below |
 
-Run this from a clean terminal when `localhost:8787` is free. Keep the manual dev terminals for browsing the app.
+Run `smoke:e2e:local-live` from a clean terminal while port `8787` is free; it starts its own processes. Keep your dev terminals for browsing.
 
-## Migration Status
-
-Local D1 migrations are managed through the API workspace:
-
-```bash
-bun run --filter edgecms-api db:migrate:local
-```
-
-Remote migration execution is an operator action and is not implied by this quickstart. Record the target environment, migration command, date/time, and rollback expectation in the release receipt before claiming remote migration proof.
-
-Cloudflare Worker runtime code cannot depend on ad hoc filesystem migration bundles at request time. Migrations must be generated, reviewed, and applied as deployment/release steps rather than discovered dynamically inside the Worker.
-
-Migration status proof is local unless the operator receipt includes:
-
-- Environment name and D1 database binding.
-- Migration directory or generated migration ids reviewed for that release.
-- Command used for local or remote migration status.
-- Rollback expectation and owner.
-
-This docs path does not run production migrations or prove rollback health.
-
-Worker migration bundling proof is also local. The Worker should serve requests from deployed code and bindings, not discover migration files from the runtime filesystem. Treat generated Drizzle files as release inputs reviewed before deployment, then record migration status in the release receipt after the operator runs the local or remote command.
-
-T014 local proof commands for this boundary:
-
-```bash
-bun run --filter edgecms-api db:migrate:local
-bun run check:docs
-```
-
-Those commands do not prove production migration completion.
-
-## Run Smoke Checks
-
-Mocked admin smoke:
-
-```bash
-bun run smoke:e2e:local
-```
-
-Expected: Playwright PRD smoke passes against mocked backend responses.
-
-Live persisted smoke after seed:
+Live persisted smoke, after seeding:
 
 ```bash
 E2E_ADMIN_EMAIL=smoke.admin@example.com \
@@ -175,134 +133,79 @@ E2E_COLLECTION_SLUG=smoke-posts \
 bun run smoke:e2e:local-live -- --live-persisted
 ```
 
-Expected: smoke publishes first content, reads it through the public API, and verifies media upload.
-
-## Release Proof Boundaries
-
-Local release proof for public docs is:
+Quickstart path against your running dev servers:
 
 ```bash
-bun run check:docs
-bun test scripts/docs-quality.test.ts scripts/seed-smoke-db.test.ts
+cd apps/admin
+BASE_URL=http://localhost:5173 E2E_LIVE_PERSISTED=1 bunx playwright test e2e/live-quickstart.spec.ts
 ```
 
-External proof still needs operator receipts for deployed URL, remote migration status, remote backup/export, and production smoke results.
+## Migrations
 
-Acceptance checklist for local proof:
-
-- `bun run db:seed:smoke` completed for tenant `smoke` and collection `smoke-posts`.
-- `bun run smoke:e2e:local-live -- --live-persisted` completed with public read and media upload checks.
-- Public read path used tenant-scoped routing: `/api/tenants/smoke/api/public/smoke-posts/<entry-slug>`.
-- Evidence stayed local unless a deployed Worker URL and operator receipt were recorded separately.
-
-Starter template proof uses `bun run seed:smoke`, `bun run smoke`, and `bun run validate` inside the generated starter. The starter smoke checks `.env.example` for `EDGE_CMS_URL`, `EDGE_CMS_ADMIN_URL`, `EDGE_CMS_TENANT`, and `EDGE_CMS_COLLECTION` before reporting the public read proof path.
-
-## Public Delivery Model
-
-Public reads use tenant-scoped routes. Current live persisted smoke verifies:
-
-```text
-/api/tenants/:tenantSlug/api/public/:collectionSlug/:entrySlug
-```
-
-Mocked admin smoke also covers the legacy PRD route:
-
-```text
-/api/tenants/:tenantSlug/public/:collectionSlug/:entrySlug
-```
-
-Use tenant slugs in client examples. Do not rely on admin-only collection or entry routes for public delivery.
-
-Copy/paste local read shape after live smoke creates published content:
+Run local D1 migrations through the API workspace:
 
 ```bash
-curl http://localhost:8787/api/tenants/smoke/api/public/smoke-posts/<entry-slug>
+bun run --filter edgecms-api db:migrate:local
 ```
 
-Expected public read headers include `Cache-Control`, `CDN-Cache-Control`, and `Cache-Tag`. Public misses and invalid filters return `no-store`.
+Remote migrations are a separate deployment step; see the [Deployment runbook](../deployment-runbook.md). The Worker does not read migration files at request time. Generate migrations with Drizzle, review them, and apply them as part of a release.
 
-Draft content is not readable from public routes. `filter[status]=published` is allowed for explicit public list checks; `filter[status]=draft` returns a validation error instead of querying draft snapshots.
+## Cloudflare bindings
 
-## Cloudflare Bindings
+The Worker needs these bindings locally and when deployed. `apps/api/wrangler.toml` holds the current names and per-environment sections.
 
-Local and deployed Workers need these binding categories before deploy proof can be claimed:
+| Binding | Type | Used for |
+| --- | --- | --- |
+| `DB` | D1 database | CMS state and migrations |
+| `CACHE` | KV namespace | Cache metadata and snapshots |
+| `MEDIA` | R2 bucket | Media assets |
+| `WEBHOOK_QUEUE` | Queue | Webhook and background delivery |
+| `PUBLISH_SCHEDULER` | Durable Object | Scheduled publishing |
+| `ASSETS` | Static assets | The built admin SPA |
+| `ASSET_VECTORS` | Vectorize index (optional) | Semantic search |
 
-- D1 database binding for CMS state and migrations.
-- KV namespace binding for cache metadata.
-- R2 bucket binding for media assets.
-- Queue binding for webhook/background delivery.
-- Durable Object binding for scheduling/stateful coordination.
-- Static assets binding for the built admin SPA.
+## Deploy with the Cloudflare button
 
-`apps/api/wrangler.toml` is the source of truth for current binding names and env sections. This checklist is setup guidance only; it does not prove a remote deploy, migration, or live binding health.
+The Workers Deploy button creates a Worker from the public repository in your Cloudflare account:
 
-## Collection Config Export
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/skyvis-my/edgecms)
 
-Use the collection create/edit form's Developer Export panel to copy the current schema as TypeScript. This is local admin proof only: it helps move visual content modeling into code, but it does not replace migrations, starter packaging, or deploy validation.
+It sets up the D1 database, KV cache and R2 media bucket bindings. For a staged setup with secrets, migrations and rollback, follow the [Deployment runbook](../deployment-runbook.md).
 
-Suggested local workflow:
+## Export a collection as code
 
-1. Create or edit a collection in admin.
-2. Use Developer Export and copy the TypeScript config.
-3. Paste it into starter/plugin code as a review artifact, not as an automatic migration.
-4. Run the relevant schema, API, and admin tests before applying any matching backend change.
+The collection create and edit form has a Developer Export panel that copies the current schema as TypeScript.
 
-Current boundary: EdgeCMS does not yet import this export back into the database. Treat the export as a deterministic handoff from visual modeling to code review. Import preview proof must stay non-destructive: it can count additions, changes, and removals, but it cannot apply migrations or delete production data.
+1. Create or edit a collection in the admin.
+2. Open Developer Export and copy the TypeScript config.
+3. Paste it into your starter or plugin code for review.
+4. Run the relevant schema, API and admin tests before you change the backend to match.
 
-## Admin First-Run Checklist
+The export is one-way. EdgeCMS cannot import it back into the database, and it does not run migrations. Import preview is read-only: it counts additions, changes and removals but never applies migrations or deletes data.
 
-Before counting admin onboarding proof, verify:
+## Set up frontend revalidation
 
-- Tenant exists or is selected.
-- Collection exists.
-- Entry exists.
-- Entry is published through the publishing path.
-- Published entry is readable through the tenant-scoped public API.
-- Required media workflow is confirmed when content depends on media.
+1. Create a webhook with an HTTPS destination. For local testing, use a public HTTPS tunnel and set `WEBHOOK_ALLOWED_HOSTS` to the exact host or parent domain.
+2. Send a dry run first. It checks tenant scope, the destination policy and signing without sending a request.
+3. Publish an entry. Your handler receives an `entry.published` event with `data.metadata.revalidate.paths` or `data.metadata.revalidate.tags`.
 
-This is local docs/UI proof only. It does not prove a deployed onboarding flow.
+See [Frontend integration](frontend-integration.md) for handler code and [Webhooks](webhooks.md) for the event format.
 
-## Revalidation Setup
-
-Create frontend revalidation webhooks with HTTPS destinations only. For local testing, use a public HTTPS tunnel and set `WEBHOOK_ALLOWED_HOSTS` to the exact host or parent domain you expect.
-
-Use webhook dry-run first to validate tenant scope, destination policy, and signing without sending an outbound request. Then publish an entry and confirm the frontend handler receives an `entry.published` event with `data.metadata.revalidate.paths` or `data.metadata.revalidate.tags`.
-
-## Quality Gate
-
-Run the full local gate before merge:
-
-```bash
-bun run check:all
-```
-
-For release candidates:
-
-```bash
-bun run check:release
-```
-
-`check:release` can fail when Cloudflare staging or production binding IDs are still placeholders. Treat that as an operator setup blocker, not a quickstart failure.
-
-## Performance Proof
-
-Use local performance proof before repeating edge-performance claims:
+## Check performance locally
 
 ```bash
 bun run perf:public-read:local -- --path /api/tenants/smoke/api/public/smoke-posts/<entry-slug> --expected-kind detail
 ```
 
-Use remote performance proof only when an operator provides a deployed Worker URL and a known published public-read path:
+This reports local p50 and p95 timings. It says nothing about deployed latency, cold starts or global edge performance.
+
+To measure a deployed Worker, pass its URL and a known published path:
 
 ```bash
 EDGE_CMS_URL=https://<deployed-worker> bun run perf:public-read:remote -- --path /api/tenants/smoke/api/public/smoke-posts/<entry-slug>
 ```
 
-Remote performance receipts must record the deployed URL, path, date/time, p95, and command used. Do not claim cold-start behavior from local perf output, package checks, or docs-only proof.
-
-Keep local and remote receipts separate. Local perf proves command wiring and local response behavior; it does not prove deployed latency, cold-start behavior, or global edge performance.
-
-Remote receipt template:
+Record remote results with the URL, path, time, p95 and command, for example:
 
 ```json
 {
@@ -315,28 +218,34 @@ Remote receipt template:
 }
 ```
 
-## Private Starter CLI
+## Run the full check suite
 
-`packages/create-app` contains a private workspace `create-edgecms-app` CLI for local starter proof. It is not published to npm or installable outside this repo yet. `templates/starter/README.md` remains the acceptance checklist before any external install path is claimed.
+Before you open a pull request:
 
-## Starter Gap Checklist
+```bash
+bun run check:all
+```
 
-Before extracting a future starter or `create-edgecms-app`, this path should prove:
+For a release candidate:
 
-- Local install succeeds.
-- API and admin start locally.
-- Smoke seed creates admin user, tenant, and collection.
-- Live persisted smoke creates and publishes content.
-- Public API read returns the published entry.
-- Media upload smoke passes.
-- One trusted plugin appears in the admin plugin panel.
+```bash
+bun run check:release
+```
 
-Current known gap: the seed script does not create an asset or plugin state by itself; live smoke and admin plugin checks cover those surfaces separately.
+`check:release` fails while the staging or production D1 and KV IDs in `apps/api/wrangler.toml` are placeholders, and while the deploy workflows it expects are missing. That is deployment setup, not a problem with your local install. For a framework release without hosting, run `bun run check:release:library`.
 
-## Next Docs
+## Starter app
 
-- Plugin SDK: `docs/public/plugin-sdk.md`
-- Sample plugins: `docs/public/sample-plugins.md`
-- Starter template checklist: `templates/starter/README.md`
-- Cloudflare operations: `docs/operations-guide.md`
-- Deployment: `docs/deployment-runbook.md`
+`packages/create-app` contains a private workspace `create-edgecms-app` CLI. It is not published to npm or installable outside this repo yet. `templates/starter/README.md` lists what a starter must do before it ships.
+
+Inside a generated starter, `bun run seed:smoke`, `bun run smoke` and `bun run validate` run the starter checks. The starter smoke checks that `.env.example` defines `EDGE_CMS_URL`, `EDGE_CMS_ADMIN_URL`, `EDGE_CMS_TENANT` and `EDGE_CMS_COLLECTION` before it reports the public read path.
+
+A future starter should let a new developer, in one sitting: install, start the API and admin, seed an admin user, tenant and collection, publish content, read it through the public API, upload media, and see one trusted plugin in the admin plugin panel.
+
+## Next steps
+
+- [Content model](content-model.md)
+- [Public API](public-api.md)
+- [Plugin SDK](plugin-sdk.md) and [Sample plugins](sample-plugins.md)
+- [Operations guide](../operations-guide.md)
+- [Deployment runbook](../deployment-runbook.md)

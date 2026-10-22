@@ -1,34 +1,36 @@
-# Hosting Seams
+# Hosting seams
 
-Hooks for running EdgeCMS as a multi-customer service (`PRD.md` §10.1). A host passes them to `createApp({ host })` when it composes the app. Each app instance keeps its own copy, and request input never changes them. Omitted hooks keep the framework defaults.
+This guide covers the policy hooks a host passes to `createApp({ host })` to run EdgeCMS as a multi-customer service: who may create tenants, tenant states and lifecycle events, sign-up and MFA rules, usage metering, quotas and per-tenant rate limits. It is for developers composing their own Worker entry around `edgecms-api`. Background is in `PRD.md` §10.1.
+
+Each app instance keeps its own copy of the policies, and request input never changes them. Omitted hooks keep the framework defaults.
 
 ```ts
 import { createApp, type HostPolicies } from 'edgecms-api/app'
 
 const host: HostPolicies = {
-  // HS-02: who may create a tenant. Return a boolean or a decision object.
+  // Who may create a tenant. Return a boolean or a decision object.
   canCreateTenant: async (actor) =>
     actor.isSuperAdmin || { allowed: true, initialStatus: 'pending' },
-  // HS-08: awaited after a tenant lifecycle change commits. Keep it fast; errors are logged.
+  // Awaited after a tenant lifecycle change commits. Keep it fast; errors are logged.
   onTenantEvent: async (event) => {
     console.log(event.event, event.tenant.slug)
   },
-  // HS-01 / HS-11: signup policy, email sender and super-admin MFA.
+  // Sign-up policy, email sender and super-admin MFA.
   auth: {
     signupPolicy: 'invite-only',
     emailSender: { send: async ({ to, subject, text }) => myMailer.send(to, subject, text) },
     requireMfaForSuperAdmins: true,
   },
-  // HS-05: per-tenant usage, delivered after the response through waitUntil.
+  // Per-tenant usage, delivered after the response through waitUntil.
   usageSink: { record: (events) => usageQueue.sendBatch(events.map((body) => ({ body }))) },
-  // HS-06: quotas. Return true to allow, or a denial with an upgrade link.
+  // Quotas. Return true to allow, or a denial with an upgrade link.
   limits: {
     check: async ({ dimension, tenant }) =>
       dimension === 'entries' && tenant && (await entriesLeft(tenant.id)) <= 0
         ? { allowed: false, upgradeUrl: 'https://example.com/billing', period: '2026-10' }
         : true,
   },
-  // HS-07: per-tenant rate limits. Return nothing to keep the framework policy.
+  // Per-tenant rate limits. Return nothing to keep the framework policy.
   rateLimits: ({ tenantSlug, category, defaultPolicy }) =>
     category === 'public_read' ? { ...defaultPolicy, tenantLimit: 1_000 } : undefined,
 }
@@ -38,7 +40,7 @@ export const app = createApp({ host })
 
 `usageQueue` and `entriesLeft` stand for the host's own Queue binding and plan lookup.
 
-## Tenant creation (HS-02)
+## Tenant creation
 
 `canCreateTenant(actor)` is asked before `POST /api/admin/tenants` and `POST /api/bootstrap/provision-tenant`. `actor.source` is `admin-api` or `onboarding`.
 
@@ -47,7 +49,7 @@ export const app = createApp({ host })
 - Return `{ allowed: true, initialStatus: 'pending' }` to create the tenant as `pending`.
 - A creator who is not a super-admin becomes the tenant `owner`. The membership is written in the same D1 batch as the tenant.
 
-## Tenant states (HS-04)
+## Tenant states
 
 | Status | Admin, MCP, AI, sync | Public REST reads and GraphQL | Super-admin |
 | --- | --- | --- | --- |
@@ -58,7 +60,7 @@ export const app = createApp({ host })
 
 The legacy `inactive` status, and any status not listed above, behaves like `disabled`. Draft preview tokens (`/public/preview-token`) are admin work, so a suspended tenant cannot issue them. Responses that a CDN or browser cached before a status change stay cached until their TTL ends.
 
-## Tenant lifecycle events (HS-08)
+## Tenant lifecycle events
 
 | Event | When |
 | --- | --- |
@@ -66,13 +68,13 @@ The legacy `inactive` status, and any status not listed above, behaves like `dis
 | `tenant.activated` | Status changes to `active` from any other status. |
 | `tenant.suspended` | Status changes to `suspended`. |
 | `tenant.deleted` | A tenant is deleted. |
-| `tenant.limit_reached` | A limit (HS-06) denied a request. Sent once per tenant, dimension and period. |
+| `tenant.limit_reached` | A limit denied a request. Sent once per tenant, dimension and period. |
 
 Events go to `host.onTenantEvent` and to the webhook event bus. Both are awaited inside the request, so a slow listener slows tenant changes. Enqueue the work instead of calling slow APIs. Webhook delivery uses global scope: only super-admins can subscribe a global webhook (created on `/api/admin/webhooks` without a tenant) to `tenant.*` events, because those events describe every tenant. A tenant-scoped webhook cannot subscribe to them.
 
 `tenant.limit_reached` carries `limit: { dimension, kind, limit?, used?, upgradeUrl?, period }`. The period is the denial's `period`, or the UTC day when the host gives none. A KV marker suppresses repeats across isolates, but two isolates that race can each send one, so treat delivery as at least once. A denied tenant creation has no tenant yet and sends no event.
 
-## Sign-up and email verification (HS-01)
+## Sign-up and email verification
 
 `host.auth.signupPolicy` (or the `SIGNUP_POLICY` var) is `open`, `invite-only` or `disabled`. The default is `open` so existing deployments keep working; use `disabled` for new ones.
 
@@ -82,7 +84,7 @@ Events go to `host.onTenantEvent` and to the webhook event bus. Both are awaited
 - Super-admin by `SUPER_ADMIN_EMAILS` requires a verified email. A listed address can be registered only when verification is enforced (an email sender is set) or the identity provider verified it.
 - Unlike `canCreateTenant` and `onTenantEvent`, auth policies apply to the whole Worker isolate.
 
-## Multi-factor authentication (HS-11)
+## Multi-factor authentication
 
 Users enrol an authenticator app with recovery codes under **Settings → Profile**; sign-in then asks for a code.
 
@@ -91,11 +93,11 @@ Users enrol an authenticator app with recovery codes under **Settings → Profil
 - Blocked requests get `403 MFA_REQUIRED`. Access tokens are not minted for such sessions, and changing a tenant's setting invalidates its existing tokens.
 - Microsoft and Google sign-ins get no EdgeCMS second-factor challenge, so they do not satisfy an MFA requirement.
 
-## Usage metering (HS-05)
+## Usage metering
 
 `host.usageSink.record(events)` receives batches of `UsageEvent`:
 
-```ts
+```text
 { tenantId, tenantSlug?, metric, quantity, detail?, timestamp }
 ```
 
@@ -115,7 +117,7 @@ Recording never fails or slows a request. The framework hands each batch to `wai
 
 `createD1UsageRollupSink({ db: env.DB })` sums events into `usage_daily` (tenant, UTC day, metric, detail). Migration `0035_usage_daily.sql` creates the table; apply it with the other migrations. The sink buffers in the isolate. When an event arrives at least 10 s (`flushIntervalMs`) after the last write, or once 50 rows are pending (`maxBufferedRows`), it writes the buffer in one D1 batch. There is no timer, so rows wait in the buffer until the next event arrives; call `flush()` yourself if you need them written sooner. A failed flush keeps its rows for the next one. Counts still in the buffer when an isolate is evicted are lost, so treat these rollups as approximate. For billing-grade counts, send events to a Queue and aggregate them there.
 
-## Limit policy (HS-06)
+## Limit policy
 
 `host.limits.check({ dimension, amount, tenant?, actor? })` runs before:
 
@@ -149,7 +151,7 @@ Return `true` or `{ allowed: true }` to allow. Return `false` or `{ allowed: fal
 
 `upgradeUrl` must be an absolute `http` or `https` URL; any other value is dropped. The admin shows these errors in a toast, with an Upgrade button when a link is present. A provider that throws allows the request (fail open) and logs `host_limits_check_failed`. Without `host.limits`, every check passes and nothing changes. Global routes are not limited.
 
-## Per-tenant rate limits (HS-07)
+## Per-tenant rate limits
 
 Every API request except health checks and `/api/docs` is rate limited per caller (user, else IP) and route, in one of these categories:
 

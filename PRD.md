@@ -1,6 +1,6 @@
 # EdgeCMS Product Requirements
 
-Version: 3.5 (2026-10-22)
+Version: 3.6 (2026-10-22)
 Owner: EdgeCMS maintainers
 Status: Living document. Every feature PR cites a requirement ID from this file (see [Change control](#12-change-control)).
 
@@ -91,7 +91,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | **CM-01** | Collections define typed fields, relations, localization rules, a singleton flag and lifecycle behavior. | Shipped |
 | **CM-02** | Singleton collections hold exactly one entry (site settings, homepage, navigation). | Shipped |
 | **CM-03** | Per-field localization: each field can be localized independently, stored as `{ en: "...", fr: "..." }`, with a default and supported locales per collection. | Shipped |
-| **CM-04** | Relations: one-to-one, one-to-many, many-to-many in normalized tables, resolved at snapshot time with a bounded populate depth. | Shipped |
+| **CM-04** | Relations: one-to-one, one-to-many, many-to-many in normalized tables, resolved at snapshot time with a bounded populate depth. Gap: public `populate` does not yet filter unpublished related entries (breaks P5). | Partial |
 | **CM-05** | Entry lifecycle: `draft`, `scheduled`, `published`, `archived`, with optional `publishAt` and `unpublishAt`. | Shipped |
 | **CM-06** | Entry versions with history, diff and rollback; retention policy for old versions. | Shipped |
 | **CM-07** | Field types beyond the current matrix (see [public API field matrix](docs/public/public-api.md)) arrive only through CM-01 or a trusted plugin field (EX-02). | Planned |
@@ -102,7 +102,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | --- | --- | --- |
 | **CMD-01** | All content mutations are typed commands: `createEntry`, `updateEntry`, `deleteEntry`, `bulkUpdate`, `updateSingleton`, `linkRelation`, `unlinkRelation`, `schedulePublish`, `scheduleUnpublish`, `publishNow`, `unpublishNow`, `transaction`. | Shipped |
 | **CMD-02** | Envelopes carry actor metadata, optimistic version checks, transaction grouping and dry-run mode. | Shipped |
-| **CMD-03** | Dry-run returns a diff before execution. | Shipped |
+| **CMD-03** | Dry-run returns a diff before execution. Gap: a `transaction` ignores the top-level `dryRun` and executes its sub-commands. | Partial |
 | **CMD-04** | Durable duplicate suppression: a replayed envelope executes at most once. | Shipped |
 | **CMD-05** | Every executed command writes audit and change-log records with secrets redacted. | Shipped |
 | **CMD-06** | Post-commit side effects (webhooks, cache purge, search indexing) are recorded as committed intents and delivered asynchronously with retries. | Partial |
@@ -134,11 +134,11 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 
 | ID | Requirement | Status |
 | --- | --- | --- |
-| **MD-01** | Uploads are optimized in the browser with jSquash WASM (resize, WebP, optional AVIF) before upload; the Worker path is the fallback for API uploads. | Shipped |
+| **MD-01** | Uploads are optimized in the browser with jSquash WASM (resize, WebP, optional AVIF) before upload; the Worker path is the fallback for API uploads. Today the admin encodes with the browser canvas (jSquash is not wired) and API uploads store only the original. | Partial |
 | **MD-02** | Each upload stores the original plus `thumbnail` (150px), `small` (480), `medium` (1024), `large` (2048) variants in R2 under tenant-scoped immutable keys. | Shipped |
-| **MD-03** | Asset metadata (dimensions, blurhash, variants) lives in D1; public variants are format-negotiated (AVIF > WebP > original) and cached as immutable. | Shipped |
+| **MD-03** | Asset metadata (dimensions, blurhash, variants) lives in D1; public variants are format-negotiated (AVIF > WebP > original) and cached as immutable. Gaps: blurhash is stored only if the uploader sends one; negotiated responses lack `Vary: Accept`. | Partial |
 | **MD-04** | Deleting an asset is a soft delete; R2 cleanup runs later through garbage collection. | Shipped |
-| **MD-05** | Upload size, dimension and file-type limits are stored per tenant and enforced at the API (default 5 MB, 2048 px). | Shipped |
+| **MD-05** | Upload size, dimension and file-type limits are stored per tenant and enforced at the API (default 5 MB, 2048 px). Gap: the dimension limit is not checked on the server. | Partial |
 
 ## 9. Delivery, caching and scheduling
 
@@ -160,7 +160,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | --- | --- | --- |
 | **PL-01** | Multi-tenant: tenant resolution by path, provisioning, per-tenant bindings and CORS, super-admin tooling. | Shipped |
 | **PL-02** | Sign-in with Better Auth (email/password, optional Microsoft Entra ID and Google), JWT validation, sessions cached at the edge. | Shipped |
-| **PL-03** | RBAC with built-in roles; every route, command, AI and MCP action checks the caller's permissions. | Shipped |
+| **PL-03** | RBAC with built-in roles; every route, command, AI and MCP action checks the caller's permissions. Gaps: custom-role grants are not enforced on content routes, and editors can manage webhooks, roles and permanent asset deletion. | Partial |
 | **PL-04** | CSRF protection, rate limits, security headers and audit logging on admin routes. | Shipped |
 | **EX-01** | Trusted plugin catalog: manifests resolve from the catalog, unknown plugins are blocked, disabled plugins register nothing. See [plugin SDK](docs/public/plugin-sdk.md). | Shipped |
 | **EX-02** | One versioned extension contract (`@edgecms/plugin-sdk`) declaring version range, dependencies, bindings, routes, fields, admin contributions, hooks and AI tools, validated at composition time. | Partial |
@@ -231,6 +231,7 @@ Every PR that adds or changes product behavior must fit this PRD.
 
 | Date | Version | Change |
 | --- | --- | --- |
+| 2026-10-22 | 3.6 | Corrected CM-04, CMD-03, MD-01, MD-03, MD-05 and PL-03 to Partial after the developer guides were written against the code; each row names its gap. |
 | 2026-10-22 | 3.5 | Shipped `HS-05`, `HS-06`, `HS-07` (usage sink, limit policy, per-tenant rate limits) and `HS-08` (`tenant.limit_reached` now emitted). |
 | 2026-10-22 | 3.4 | `HS-01` and `HS-11` shipped (signup policy, invites, email verification, MFA). |
 | 2026-10-22 | 3.3 | Shipped `HS-02` and `HS-04`; `HS-08` partial (`tenant.limit_reached` reserved). Added the `createApp({ host })` policy surface under OP-02. |

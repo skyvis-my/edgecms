@@ -1,82 +1,88 @@
-# Model Context Protocol (MCP) Server
+# MCP server
 
-EdgeCMS provides a native [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server interface at `/api/mcp` (and `/api/admin/mcp`), enabling AI developer tools, editors, and agent assistants to discover content models, inspect entries, perform semantic RAG search, and generate verified mutation receipts.
+This guide explains how to connect an AI client to EdgeCMS through its [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) endpoint, and what each tool does. It is for developers wiring up editors, agents or assistants that read content and propose changes.
 
-## Overview
+Through MCP a client can list collections and schemas, read entries, run semantic search, and change content in two steps: preview, then execute a preview receipt. Every change goes through the command engine, as described in [AI command safety](ai-command-safety.md).
 
-The EdgeCMS MCP server adheres to the JSON-RPC 2.0 specification over HTTP POST. It enables AI clients to interact with your CMS without direct database access or unreviewed data mutations.
+## Endpoints
 
-All mutations flow through the EdgeCMS Command Engine and require dry-run preview receipts before execution.
+| Path | Scope |
+| --- | --- |
+| `POST /api/mcp` | Global (no tenant) |
+| `POST /api/admin/mcp` | Global (no tenant) |
+| `POST /api/tenants/:slug/api/mcp` | One tenant |
+| `POST /api/tenants/:slug/api/admin/mcp` | One tenant |
 
-## Endpoint & Authentication
+Requests are JSON-RPC 2.0 with `Content-Type: application/json`. A request body can be a single message or a batch array of up to 25 messages. The server answers over plain HTTP POST; it has no SSE stream.
 
-- **Endpoint**: `POST /api/mcp` or `POST /api/admin/mcp`
-- **Content-Type**: `application/json`
+Use a tenant-scoped path whenever you can. The tenant comes from the path; there is no tenant header.
 
-### Authentication Methods
+## Authenticate
 
-1. **API Key Header**:
-   ```http
-   X-EdgeCMS-API-Key: <your-api-key>
-   ```
-   Or:
-   ```http
-   Authorization: Bearer <your-api-key>
-   ```
-   Configured on the Worker via `EDGECMS_API_KEY` or `MCP_API_KEY` secret.
+Send one of:
 
-2. **Session Cookie**:
-   Browser-based AI agents sharing an active administrative session cookie automatically inherit the authenticated user context.
+- `X-EdgeCMS-API-Key: <key>`
+- `Authorization: Bearer <key>`
+- An admin session cookie, for browser-based agents running in a signed-in admin session.
 
-### Tenant Isolation
+The key must match the `EDGECMS_API_KEY` or `MCP_API_KEY` Worker secret. Set one with:
 
-Tool executions are strictly scoped to the active tenant. You can specify a tenant explicitly via the `X-Tenant` header or pass the optional `tenantId` parameter in supported tool arguments.
+```bash
+cd apps/api
+bunx wrangler secret put MCP_API_KEY --env production
+```
 
----
+API-key calls are recorded with the actor id `mcp-key-<first 8 characters of the key>`. Session calls use the signed-in user's id.
 
-## Supported Methods
+Errors:
 
-| Method | Description |
-|---|---|
-| `initialize` | Negotiates protocol version (`2024-11-05`), capabilities, and server metadata. |
-| `ping` | Lightweight health and availability check (`{}`). |
-| `tools/list` | Returns the schema and descriptions of all available EdgeCMS tools. |
-| `tools/call` | Executes a specific tool with validated input parameters. |
-| `resources/list` | Lists readable CMS resources (collections and entries). |
-| `resources/read` | Retrieves raw JSON payload for a collection schema or entry URI. |
+| Case | HTTP | JSON-RPC error |
+| --- | --- | --- |
+| No valid key or session | `401` | `-32001` |
+| Super-admin session without a second factor, when MFA is required | `403` | `-32001` |
+| Tenant's AI switch is off | `403` | `-32003`, `data.code = "AI_DISABLED"` |
+| Unknown method | `200` | `-32601` |
+| `tools/call` without `name` | `200` | `-32602` |
 
----
+## Methods
 
-## Available Tools
+| Method | Result |
+| --- | --- |
+| `initialize` | Protocol version `2024-11-05`, the `tools` capability and server info (`edgecms-mcp-server`). |
+| `ping` | `{}` |
+| `tools/list` | The tools below with their input schemas. |
+| `tools/call` | Runs a tool. The result is `{ content: [{ type: "text", text }] }`, where `text` is JSON, plus `isError: true` on failure. |
 
-### 1. Discovery & Schemas
+MCP resources and prompts are not implemented.
 
-#### `edgecms_list_collections`
-Lists all content collections in the current tenant scope with field summaries and localization settings.
+## Tools
+
+### `edgecms_list_collections`
+
+Lists the collections in scope with id, name, slug, singleton flag, default and supported locales, and a field summary (name, type, required).
+
 ```json
 {
   "name": "edgecms_list_collections",
-  "arguments": {
-    "tenantId": "optional-tenant-id"
-  }
+  "arguments": {}
 }
 ```
 
-#### `edgecms_get_schema`
-Retrieves the full schema definition, field types, validation rules, and indexes for a specific collection slug.
+### `edgecms_get_schema`
+
+Returns the full collection definition for a slug.
+
 ```json
 {
   "name": "edgecms_get_schema",
-  "arguments": {
-    "collectionSlug": "articles"
-  }
+  "arguments": { "collectionSlug": "articles" }
 }
 ```
 
-### 2. Reading Content
+### `edgecms_list_entries`
 
-#### `edgecms_list_entries`
-Queries entries with pagination and lifecycle status filtering.
+Lists entries in a collection. `page` defaults to 1, `perPage` to 20 (maximum 100). `status` is `draft`, `published`, `scheduled` or `archived`. Unlike the public API, this tool can read drafts.
+
 ```json
 {
   "name": "edgecms_list_entries",
@@ -89,21 +95,21 @@ Queries entries with pagination and lifecycle status filtering.
 }
 ```
 
-#### `edgecms_get_entry`
-Fetches the full content object and metadata for an entry by unique ID.
+### `edgecms_get_entry`
+
+Returns one entry by id.
+
 ```json
 {
   "name": "edgecms_get_entry",
-  "arguments": {
-    "entryId": "entry_01h7x..."
-  }
+  "arguments": { "entryId": "entry_01h7x..." }
 }
 ```
 
-### 3. Semantic Search (RAG)
+### `edgecms_search_rag`
 
-#### `edgecms_search_rag`
-Searches published content using Cloudflare Vectorize vector embeddings. Accepts natural language queries.
+Semantic search over published entries, using the `ASSET_VECTORS` Vectorize index. `limit` defaults to 5 (maximum 20); `collectionSlug` is optional. Query embeddings use Workers AI when `CF_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are set.
+
 ```json
 {
   "name": "edgecms_search_rag",
@@ -115,46 +121,42 @@ Searches published content using Cloudflare Vectorize vector embeddings. Accepts
 }
 ```
 
-### 4. Safe Command Mutations
+### Change content in two steps
 
-EdgeCMS strictly prevents unreviewed, direct mutations from AI tools. Mutations follow a two-step preview and commit protocol.
+1. Call `edgecms_preview_command` with a command `type` and `payload`, and optionally `optimisticVersion`. It runs the command as a dry run and returns `status: "dry_run"`, the `diff`, a `previewReceipt`, its `sha256Hash` and `expiresAt`.
 
-#### Step 1: `edgecms_preview_command`
-Simulates the mutation against current validation rules and optimistic versioning locks. Returns a diff preview and a cryptographic preview receipt ID.
-```json
-{
-  "name": "edgecms_preview_command",
-  "arguments": {
-    "type": "createEntry",
-    "payload": {
-      "collectionSlug": "posts",
-      "data": {
-        "title": "Getting Started with EdgeCMS",
-        "slug": "getting-started"
-      }
-    }
-  }
-}
-```
+   ```json
+   {
+     "name": "edgecms_preview_command",
+     "arguments": {
+       "type": "createEntry",
+       "payload": {
+         "collectionId": "<collection id>",
+         "slug": "getting-started",
+         "data": { "title": "Getting Started with EdgeCMS" }
+       }
+     }
+   }
+   ```
 
-#### Step 2: `edgecms_execute_command`
-Executes the mutation using the unconsumed preview receipt.
-```json
-{
-  "name": "edgecms_execute_command",
-  "arguments": {
-    "previewReceipt": "prv_sha256_hash_here"
-  }
-}
-```
+   Supported types: `createEntry`, `updateEntry`, `deleteEntry`, `bulkUpdate`, `updateSingleton`, `linkRelation`, `unlinkRelation`, `publishNow`, `unpublishNow`, `schedulePublish`, `scheduleUnpublish`, `cancelSchedule`. Payloads are described in [Commands](commands.md).
 
----
+2. Show the diff to a person. If they approve, call `edgecms_execute_command` with the receipt:
 
-## Client Configuration Examples
+   ```json
+   {
+     "name": "edgecms_execute_command",
+     "arguments": { "previewReceipt": "<previewReceipt from step 1>" }
+   }
+   ```
 
-### Claude Desktop (`claude_desktop_config.json`)
+   You can also pass `command`, the envelope you expect, and execution fails if it does not match the receipt. Receipts expire after 15 minutes, work once, and only for the same caller and tenant. A receipt with several commands runs as one transaction.
 
-To use EdgeCMS tools in Claude Desktop via an HTTP-to-stdio proxy or direct remote MCP:
+There is no tool that writes without a preview receipt.
+
+## Connect a client
+
+Claude Desktop and other stdio-only clients can reach the endpoint through the `mcp-remote` bridge. In `claude_desktop_config.json`:
 
 ```json
 {
@@ -163,37 +165,43 @@ To use EdgeCMS tools in Claude Desktop via an HTTP-to-stdio proxy or direct remo
       "command": "npx",
       "args": [
         "-y",
-        "mcp-remote-bridge",
-        "--url",
-        "https://<your-deployed-worker>/api/mcp",
+        "mcp-remote",
+        "https://<your-worker>/api/tenants/<slug>/api/mcp",
         "--header",
-        "X-EdgeCMS-API-Key=YOUR_SECRET_API_KEY"
-      ]
+        "X-EdgeCMS-API-Key:${EDGECMS_MCP_KEY}"
+      ],
+      "env": { "EDGECMS_MCP_KEY": "<your key>" }
     }
   }
 }
 ```
 
-### Antigravity & Agent Workflows
-
-In agent configurations or custom MCP tool integrations, configure the remote HTTP server:
+Clients that support remote HTTP servers directly need the URL and the header:
 
 ```json
 {
   "serverName": "edgecms",
-  "url": "https://<your-worker>.workers.dev/api/mcp",
+  "url": "https://<your-worker>/api/tenants/<slug>/api/mcp",
   "headers": {
-    "X-EdgeCMS-API-Key": "<your-secret-api-key>"
+    "X-EdgeCMS-API-Key": "<your key>"
   }
 }
 ```
 
----
+Test a connection with `curl`:
 
-## Security Boundaries
+```bash
+curl -X POST https://<your-worker>/api/tenants/<slug>/api/mcp \
+  -H 'content-type: application/json' \
+  -H "X-EdgeCMS-API-Key: $EDGECMS_MCP_KEY" \
+  -d '{ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }'
+```
 
-- **Actor Provenance**: All MCP tool executions record `actor.source = 'ai'` and attach the authenticated caller's identity in the audit trail.
-- **Optimistic Locking**: Command envelopes support optimistic locking versions to reject stale edits.
-- **Tenant Isolation**: Queries and mutations strictly enforce tenant foreign key filters on Cloudflare D1 and KV bindings.
-- **Tenant AI switch (HS-14)**: On tenant-scoped MCP paths (`/api/tenants/:slug/api/mcp` and `/api/tenants/:slug/api/admin/mcp`), every request is refused with HTTP 403 and JSON-RPC error `-32003` (`data.code = "AI_DISABLED"`) while the tenant's AI switch is off. Global MCP paths have no tenant switch.
-- **Tenant override**: The optional `tenantId` tool argument is rejected on tenant-scoped MCP paths when it names another tenant. On global paths it is honored only when that tenant's AI switch is on. It does not check the caller's membership in that tenant, so expose global MCP paths only to deployment-level API keys.
+## Security notes
+
+- Every MCP command runs with `actor.source = "ai"` and the caller's id, and executed commands are written to the audit chain.
+- Commands accept `optimisticVersion` to reject stale edits.
+- Queries and changes are filtered by tenant in D1 and KV.
+- On tenant-scoped paths, every request gets `403` and JSON-RPC error `-32003` while the tenant's AI switch is off. Global paths have no tenant switch.
+- Tools accept an optional `tenantId` argument. On tenant-scoped paths it is rejected when it names another tenant. On global paths it is honored only when that tenant's AI switch is on, and it does not check the caller's membership in that tenant. Give global MCP paths only to deployment-level API keys.
+- A tenant that requires MFA blocks sessions without a second factor on its MCP routes.

@@ -1,23 +1,25 @@
-# EdgeCMS Plugin SDK
+# Plugin SDK
 
-EdgeCMS currently supports trusted runtime plugins. A plugin is loaded only when it is listed in the trusted catalog and enabled by runtime configuration plus KV state.
+This guide explains how to write a trusted EdgeCMS plugin: hooks, AI tools, field types, admin routes and admin menu items. It is for developers extending EdgeCMS in their own fork or deployment.
 
-This is the first stable boundary for extensions. Do not treat arbitrary uploaded code as supported.
+EdgeCMS runs trusted plugins only. A plugin loads when it is listed in the trusted catalog in the API source and is enabled by runtime configuration and KV state. Uploading arbitrary plugin code is not supported, and there is no plugin marketplace.
 
-## Current Files
+## Where the code lives
 
-- `packages/plugin-sdk/src/index.ts`
-- `apps/api/src/plugins/plugin-hooks.ts`
-- `apps/api/src/plugins/plugin-registry.ts`
-- `apps/api/src/plugins/plugin-loader.ts`
-- `apps/api/src/plugins/trusted-plugin-catalog.ts`
-- `apps/api/src/plugins/plugins.controller.ts`
-- `apps/admin/src/features/plugins`
-- `examples/plugins/preview-revalidation.plugin.ts`
+| Path | Purpose |
+| --- | --- |
+| `packages/plugin-sdk/src/index.ts` | Authoring types (`@edgecms/plugin-sdk`) |
+| `apps/api/src/plugins/trusted-plugin-catalog.ts` | The trusted catalog |
+| `apps/api/src/plugins/plugin-loader.ts` | Resolves manifests against the catalog |
+| `apps/api/src/plugins/plugin-registry.ts` | Runs hooks with a timeout; stores enabled state |
+| `apps/api/src/plugins/plugin-hooks.ts` | Hook wiring |
+| `apps/api/src/plugins/plugins.controller.ts` | Admin plugin API |
+| `apps/admin/src/features/plugins` | Admin plugin panel |
+| `examples/plugins/` | Example plugins; see [Sample plugins](sample-plugins.md) |
 
-## Package Boundary
+## The SDK package
 
-Use `@edgecms/plugin-sdk` as the type-only authoring package for trusted plugins:
+`@edgecms/plugin-sdk` is a types-only package:
 
 ```ts
 import type {
@@ -29,40 +31,40 @@ import type {
 } from '@edgecms/plugin-sdk'
 ```
 
-The SDK remains private until release approval, but the package shape is publish-ready. It emits ESM JavaScript and TypeScript declarations to `packages/plugin-sdk/dist`, and its package exports point at that build output.
+It builds ESM JavaScript and TypeScript declarations to `packages/plugin-sdk/dist`; `types`, `exports` and the packed files all point there. It has no dependencies and imports nothing from `apps/api` or Worker runtime modules. Loading, validation, sandboxing and route safety stay in `apps/api/src/plugins`.
 
-Package invariants:
+The package is marked `private: true` and is not published to npm yet. Use it as a workspace dependency.
 
-- Dependency-free.
-- `private: true` until manual publish approval.
-- `types`, `exports`, and packed files resolve to `dist`.
-- No imports from `apps/api` or Worker runtime modules.
-- Runtime loading, validation, sandboxing, and route safety remain inside `apps/api/src/plugins`.
+## How plugins load
 
-## Runtime Model
+1. You list plugins by name in the `EDGE_PLUGINS_JSON` Worker variable.
+2. The loader looks up each name in the trusted catalog. Unknown names are marked `blocked`.
+3. Disabled plugins stay visible in the admin but register nothing.
+4. For an enabled, trusted plugin, the loader registers only these capabilities: hooks, AI tools, field types, admin routes and admin menu items.
 
-Plugins are declared by manifest name. The loader resolves each manifest against the trusted catalog, then registers only safe capabilities:
+`EDGE_PLUGINS_JSON` is a JSON array of manifests:
 
-- Hooks
-- AI tools
-- Field types
-- Admin plugin routes
-- Admin menu items
+```json
+[
+  { "name": "audit-trace" },
+  { "name": "seo-metadata", "enabled": true },
+  { "name": "preview-revalidation", "enabled": false }
+]
+```
 
-Unknown plugins are marked `blocked`. Disabled plugins remain visible but do not register runtime behavior.
+`enabled` defaults to `true`. Manifests can also carry `version`, `dependencies`, `requiredBindings`, `capabilities`, `coreVersionRange` and `sdkVersionRange`.
 
-Manifest proof is fail-closed: a plugin is trusted only when it resolves from the trusted catalog. Manifest config alone cannot grant routes, hooks, fields, AI tools, admin menu items, or public access.
-The shared release schema also records plugin permissions and hook timeout budget as local proof. A trusted manifest is considered safe only when it is enabled, sourced from the trusted catalog, includes explicit permissions, and keeps the hook timeout at or below the current local budget.
+Loading fails closed: a manifest alone cannot grant routes, hooks, fields, AI tools, menu items or public access. Only the catalog entry can. The shared release schema treats a manifest as safe only when it is enabled, comes from the trusted catalog, lists explicit permissions, and keeps the hook timeout within the budget below.
 
-## Hook Contract
+## Hooks
 
-Supported hook names:
+| Hook | Runs |
+| --- | --- |
+| `beforeCommand` | Before a command executes |
+| `afterCommand` | After a command executes |
+| `beforeAiCommand` | Before an AI command request |
 
-- `beforeCommand`
-- `afterCommand`
-- `beforeAiCommand`
-
-Hook context:
+Hooks receive a frozen context:
 
 ```ts
 type PluginHookContext = {
@@ -80,14 +82,9 @@ type PluginHookContext = {
 }
 ```
 
-Hooks receive a frozen context. They must be fast and side-effect aware. The registry uses a short timeout so plugin hooks cannot dominate the request path.
+Hooks run inside the request, under a timeout of 250 ms by default (`EDGE_PLUGIN_HOOK_TIMEOUT_MS` changes it). Keep them fast and aware of side effects. Move slow network or storage work to a queue instead of raising the timeout. If you do raise it, add a registry test and explain the latency cost.
 
-Timeout proof belongs in plugin registry tests. If a hook needs slow network or storage work, move it behind an async queue/background path instead of extending request-critical timeout.
-The shared release schema keeps the default hook budget at 250 ms or lower for local proof. Raising that budget needs a focused registry test and latency rationale.
-
-## Trusted Definition
-
-A trusted plugin can define:
+## Plugin definition
 
 ```ts
 type PluginDefinition<
@@ -111,9 +108,9 @@ type PluginDefinition<
 }
 ```
 
-`TrustedPluginDefinition` is kept as a type alias for API catalog compatibility.
+`TrustedPluginDefinition` is an alias kept for the API catalog.
 
-## Authoring Example
+## Example
 
 ```ts
 import type { PluginDefinition } from '@edgecms/plugin-sdk'
@@ -150,15 +147,19 @@ export const plugin = {
 } satisfies PluginDefinition<unknown, Command, typeof schema>
 ```
 
-## Route Safety
+## Routes
 
-Plugin routes must stay under documented plugin route spaces. Route factories are probed during load, and unsafe route paths are blocked.
+Plugin routes must live under:
 
-Allowed route namespaces:
+```text
+/api/admin/plugins/:pluginName/*
+```
 
-- Admin: `/api/admin/plugins/:pluginName/*`
+The loader probes each route factory at load time and blocks unsafe paths. Use plugin routes for small admin endpoints such as health checks, status reads or plugin settings. They must not bypass tenant isolation, auth middleware or the public delivery rules.
 
-SDK route descriptors can document intended route shape before runtime factories are wired:
+Public plugin routes are not supported. Do not register `/api/public/plugins/:pluginName/*`; that needs tenant isolation, auth policy, cache behavior and route-prefix tests first.
+
+Describe routes with `PluginRouteDescriptor` before wiring their factories:
 
 ```ts
 const routes = [
@@ -170,35 +171,17 @@ const routes = [
 ] satisfies PluginRouteDescriptor<'audit-trace'>[]
 ```
 
-Use plugin routes for small plugin-owned admin endpoints, such as health checks, status reads, or plugin settings. Do not use them to bypass tenant isolation, auth middleware, or public delivery contracts.
+## AI tools
 
-Public plugin routes are deferred. Do not register `/api/public/plugins/:pluginName/*` until tenant isolation, auth policy, cache behavior, and route-prefix tests exist.
-
-Preview Revalidation proves outbound signing through an admin-only dry-run route. It reuses the existing webhook destination policy and HMAC signer, and never exposes a public plugin route.
-
-Sample plugins currently prove admin-only extension shapes:
-
-- `examples/plugins/audit-trace.plugin.ts`: lifecycle hook and health-route proof.
-- `examples/plugins/seo-metadata.plugin.ts`: SEO metadata field/tool proof.
-- `examples/plugins/preview-revalidation.plugin.ts`: admin-only revalidation dry-run proof.
-
-These examples are trusted-plugin examples only. They do not prove public plugin routes, marketplace installs, or untrusted plugin sandboxing.
-
-## AI Tools
-
-AI tools convert plugin-specific input into command envelopes. Tool input is cloned and frozen before command generation.
-
-Rules:
+An AI tool turns plugin-specific input into command envelopes. Its input is cloned and frozen before `toCommands` runs.
 
 - Validate parameters with ArkType.
-- Return only supported command types.
-- Keep tool names unique.
-- Do not mutate args.
-- Prefer dry-run-compatible commands.
+- Return only supported command types. See [Commands](commands.md).
+- Use unique tool names.
+- Do not mutate `args`.
+- Prefer commands that work as dry runs. See [AI command safety](ai-command-safety.md).
 
-## Admin Menu
-
-Admin menu entries expose plugin-owned admin surfaces:
+## Admin menu
 
 ```ts
 type TrustedPluginAdminMenuItem = {
@@ -208,44 +191,39 @@ type TrustedPluginAdminMenuItem = {
 }
 ```
 
-Menu paths should point to plugin settings or plugin status pages. Plugin labels and paths must be deterministic.
+Point menu paths at plugin settings or status pages. Labels and paths must be deterministic.
 
-## Enable And Disable
+## Enable and disable
 
-Plugin enabled state is stored in KV as:
+Enabled state is stored in KV under:
 
 ```text
 plugin:<pluginName>:enabled
 ```
 
-The admin plugin panel reads plugin status from `/api/admin/plugins` and patches enabled state through the admin plugin controller.
+The admin plugin panel lists plugins with `GET /api/admin/plugins` and toggles them with `PATCH /api/admin/plugins/:pluginName`.
 
-The SDK exports `LoadedPluginMetadata`, `PluginAdminListResponse`, and `PluginAdminToggleResponse` so admin clients and trusted plugin docs share the loader response shape. `routes` lists all loaded route names; `adminRoutes` and `publicRoutes` split those names by safe namespace.
+The SDK exports `LoadedPluginMetadata`, `PluginAdminListResponse` and `PluginAdminToggleResponse` so admin clients share the loader's response shape. In that response, `routes` lists all loaded route names; `adminRoutes` and `publicRoutes` split them by namespace.
 
-## Authoring Checklist
+## Add a plugin
 
-- Add plugin to `apps/api/src/plugins/trusted-plugin-catalog.ts`.
-- Define metadata with version, category, and permissions.
-- Register only needed hooks.
-- Keep plugin routes under `/api/admin/plugins/:pluginName/*`.
-- Add tests for loaded, disabled, and blocked states.
-- Add route namespace tests for every plugin route.
-- Add admin panel coverage when exposing menu items.
-- Add docs in `docs/public/sample-plugins.md`.
-- Add or update example modules under `examples/plugins`.
+1. Add the plugin to `apps/api/src/plugins/trusted-plugin-catalog.ts`.
+2. Give it metadata with version, category and permissions.
+3. Register only the hooks it needs.
+4. Keep its routes under `/api/admin/plugins/:pluginName/*`.
+5. Add tests for the loaded, disabled and blocked states.
+6. Add a namespace test for every route.
+7. Add admin panel coverage if it adds menu items.
+8. Document it in [Sample plugins](sample-plugins.md).
+9. Add or update its example module in `examples/plugins`.
+10. Add its name to `EDGE_PLUGINS_JSON`.
 
-## Future Package Boundary
+## Check the package
 
-`@edgecms/plugin-sdk` now exposes the public type names for plugin authors through a built package artifact. Keep runtime loading in `apps/api`; the package should expose types only until a runtime helper earns its place.
-
-## Package Verification
-
-Run focused SDK checks before considering the package publish-ready:
-
-```sh
-/Users/nanfengcheong/.bun/bin/bun run --filter @edgecms/plugin-sdk build
-/Users/nanfengcheong/.bun/bin/bun -e "await import('./packages/plugin-sdk/dist/index.js')"
+```bash
+bun run --filter @edgecms/plugin-sdk build
+bun -e "await import('./packages/plugin-sdk/dist/index.js')"
 cd packages/plugin-sdk && npm pack --dry-run
 ```
 
-The local release gate remains private until manual approval. Passing these commands proves local package shape only; it is not npm publish, marketplace availability, public plugin-route support, or untrusted sandboxing proof.
+These check the local package shape only. `bun run check:package` runs the same checks for all workspace packages.
