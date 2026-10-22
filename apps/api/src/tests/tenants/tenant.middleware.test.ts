@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, mock, vi } from 'bun:test'
-import { Elysia } from 'elysia'
+import { Elysia, t } from 'elysia'
 import type { TenantContext } from '../../tenants/tenant-context'
 
 // Mock modules using Bun's mock.module (must be before dynamic imports)
@@ -434,6 +434,56 @@ describe('Tenant Middleware', () => {
 
       expect(response.status).toBe(200)
       expect(mockFindTenantUser).not.toHaveBeenCalled()
+    })
+  })
+  describe('routes whose params schema omits tenantSlug', () => {
+    // Public, asset and entry controllers declare `params` without
+    // `tenantSlug` and use `normalize: 'typebox'`, which strips the group
+    // param before derive hooks run. The tenant must still resolve from
+    // the path, or the handler silently runs in global scope.
+    function buildApp() {
+      const controller = new Elysia({ prefix: '/api/public', normalize: 'typebox' }).get(
+        '/:collectionSlug',
+        { params: t.Object({ collectionSlug: t.String({ minLength: 1 }) }) },
+        (ctx) => ({
+          tenantId: (ctx as { tenant?: TenantContext }).tenant?.tenant.id ?? null,
+          collectionSlug: ctx.params.collectionSlug,
+        })
+      )
+      return new Elysia().group('/api/tenants/:tenantSlug', (app) =>
+        app.use(tenantMiddleware).use(controller)
+      )
+    }
+
+    it('resolves the tenant from the path', async () => {
+      mockFindBySlug.mockResolvedValue({
+        id: 'tenant-123',
+        slug: 'acme',
+        name: 'Acme Corp',
+        status: 'active',
+        createdAt: '2026-02-07T00:00:00Z',
+        updatedAt: '2026-02-07T00:00:00Z',
+      })
+      mockGetSession.mockResolvedValue(null)
+
+      const response = await buildApp().handle(
+        new Request('http://localhost/api/tenants/acme/api/public/posts')
+      )
+
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ tenantId: 'tenant-123', collectionSlug: 'posts' })
+      expect(mockFindBySlug).toHaveBeenCalledWith(expect.anything(), 'acme')
+    })
+
+    it('returns 404 for an unknown tenant instead of falling back to global scope', async () => {
+      mockFindBySlug.mockResolvedValue(undefined)
+
+      const response = await buildApp().handle(
+        new Request('http://localhost/api/tenants/nope/api/public/posts')
+      )
+
+      expect(response.status).toBe(404)
+      expect(mockFindBySlug).toHaveBeenCalledWith(expect.anything(), 'nope')
     })
   })
 })

@@ -83,6 +83,19 @@ function tenantStateError(tenantSlug: string, tenantStatus: string) {
   })
 }
 
+const TENANT_PATH_PREFIX = /^\/api\/tenants\/([^/]+)(?:\/|$)/
+
+/** Tenant slug from a `/api/tenants/:tenantSlug/...` path, if any. */
+export function tenantSlugFromPath(pathname: string): string | undefined {
+  const raw = TENANT_PATH_PREFIX.exec(pathname)?.[1]
+  if (!raw) return undefined
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+}
+
 /**
  * Tenant resolution middleware for ElysiaJS.
  *
@@ -109,8 +122,12 @@ function tenantStateError(tenantSlug: string, tenantStatus: string) {
  */
 export const tenantMiddleware = new Elysia({ name: 'tenant-middleware' })
   .use(betterAuthPlugin).derive('plugin', async ({ params, request }): Promise<{ tenant?: TenantContext }> => {
-  // Extract tenant slug from path params
-  const tenantSlug = (params as { tenantSlug?: string } | undefined)?.tenantSlug
+  // Extract tenant slug from path params, falling back to the URL path:
+  // routes that declare a `params` schema without `tenantSlug` (with
+  // `normalize: 'typebox'`) strip the group param before this hook runs.
+  const tenantSlug =
+    (params as { tenantSlug?: string } | undefined)?.tenantSlug ??
+    tenantSlugFromPath(getRequestUrl(request).pathname)
 
   // If no tenantSlug in params, this is not a tenant-scoped route
   // Return empty context (will be ignored by non-tenant routes)
