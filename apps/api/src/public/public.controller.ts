@@ -5,6 +5,7 @@ import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import { getRequestUrl } from '@/shared/utils/request-url'
 import { publicService, type ImageTransformOptions } from './public.service'
 import { publicRepository } from './public.repository'
+import type { CollectionRow } from '@/collections/collections.repository'
 import { generatePreviewToken, verifyPreviewToken } from './preview-token'
 import { handleX402Gate } from './x402.middleware'
 
@@ -68,7 +69,21 @@ function setPublicCacheHeaders(
     for (const [key, value] of Object.entries(debugHeaders)) {
       headers[key] = value
     }
+    const serverTiming = toServerTiming(debugHeaders)
+    if (serverTiming) headers['Server-Timing'] = serverTiming
   }
+}
+
+/**
+ * Standard `Server-Timing` view of the cache tracker headers, so clients and
+ * benchmarks can separate in-Worker time from network time:
+ * `cache;desc="memory";dur=1`.
+ */
+export function toServerTiming(debugHeaders: Record<string, string>): string | undefined {
+  const source = debugHeaders['X-Cache-Source']
+  const duration = Number.parseFloat(debugHeaders['X-Response-Time'] ?? '')
+  if (!source || !Number.isFinite(duration)) return undefined
+  return `cache;desc="${source.replace(/[^a-z]/gi, '')}";dur=${duration}`
 }
 
 export const publicController = new Elysia({ prefix: '/api/public', normalize: 'typebox' })
@@ -214,22 +229,17 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       return { error: 'Invalid filter parameters', details: errors }
     }
 
-    // Resolve the collection once and pass it through: the singleton-alias
-    // fallback below reuses it instead of running a second lookup pipeline.
-    // Best-effort: on lookup failure the service re-resolves and surfaces
-    // the proper error, so a preload miss must never 500 the route.
-    let preloadedCollection: Awaited<
-      ReturnType<typeof publicRepository.findCollectionBySlug>
-    > | null = null
-    try {
-      preloadedCollection =
-        (await publicRepository.findCollectionBySlug(
-          db,
-          params.collectionSlug,
-          tenantCtx?.tenant.id
-        )) ?? null
-    } catch {
-      preloadedCollection = null
+    // Resolve the collection lazily and at most once: KV/memory hits never
+    // touch D1, and the singleton-alias fallback below reuses the lookup the
+    // list miss already made instead of running a second query. A failed
+    // lookup reads as "not found" (404, no-store), as before, never a 500.
+    let collectionLookup: Promise<CollectionRow | null> | undefined
+    const resolveCollection = () => {
+      collectionLookup ??= publicRepository
+        .findCollectionBySlug(db, params.collectionSlug, tenantCtx?.tenant.id)
+        .then((row) => row ?? null)
+        .catch(() => null)
+      return collectionLookup
     }
 
     const result = await publicService.getCollectionList({
@@ -242,7 +252,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       tenantId: tenantCtx?.tenant.id,
       filters,
       sort,
-      preloadedCollection,
+      resolveCollection,
     })
 
     if (!result.success && result.error.status === 404) {
@@ -252,7 +262,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
         collectionSlug: params.collectionSlug,
         locale: (query.locale as string) || 'en',
         tenantId: tenantCtx?.tenant.id,
-        preloadedCollection,
+        resolveCollection,
       })
 
       if (singletonFallback.success) {

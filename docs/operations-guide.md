@@ -186,6 +186,10 @@ wrangler tail --env <env> --status error --search "429"
 
 Review aggregate metrics in the Cloudflare dashboard under Workers > Analytics.
 
+Metric counters (`http_requests_total`, `cache_hits_total`, `cache_misses_total` and others) are written as structured `metric` log lines, so they show up in Workers Logs and `wrangler tail`. Mirroring them to KV under `metrics:*` is off by default because it costs one KV write per increment, several per public read. Set `EDGE_METRICS_KV_SINK=1` to turn it back on.
+
+Public reads send `Server-Timing: cache;desc="memory|kv|origin";dur=<ms>`, which shows where the response came from and how long the Worker spent on it, separate from network time.
+
 ## Cache Invalidation Procedures
 
 EdgeCMS uses a KV namespace (`CACHE` binding) for caching public API responses and computed data.
