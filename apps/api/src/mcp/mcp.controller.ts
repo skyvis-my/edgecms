@@ -11,12 +11,13 @@ import type { TenantContext } from '@/tenants/tenant-context'
 import { createCommandHostHooks } from '@/host/command-hooks'
 import { getHostRuntime } from '@/host/host-context'
 import { getRequestPathname, getRequestUrl } from '@/shared/utils/request-url'
-import { processMcpMessage, type McpJsonRpcRequest } from './mcp-server'
+import { processMcpMessage, type McpJsonRpcResponse } from './mcp-server'
+import { looksLikeJwt, matchesMcpApiKey, readApiKeyHeader, readBearerToken } from './mcp-auth'
+import { parseAccessClaims, validateRequestJwt } from '@/auth/jwt'
 import { AI_DISABLED_CODE, AI_DISABLED_MESSAGE, isTenantAiEnabled } from '@/ai/ai-access'
 
 async function resolveMcpAuth(
   request: Request,
-  headers: Record<string, string | undefined>,
   workerEnv: Env,
   user?: { id: string }
 ): Promise<{ authenticated: boolean; actorId?: string; mfaRequired?: boolean }> {
@@ -25,25 +26,44 @@ async function resolveMcpAuth(
     return { authenticated: true, actorId: user.id }
   }
 
-  // 2. Check X-EdgeCMS-API-Key or Bearer token header
-  const apiKey =
-    request.headers.get('x-edgecms-api-key') ||
-    headers['x-edgecms-api-key'] ||
-    request.headers.get('authorization')?.replace(/^Bearer\s+/i, '')
-
-  if (apiKey && typeof apiKey === 'string' && apiKey.trim().length > 0) {
-    const cleanKey = apiKey.trim()
-    const valid =
-      (workerEnv.EDGECMS_API_KEY && cleanKey === workerEnv.EDGECMS_API_KEY) ||
-      (workerEnv.MCP_API_KEY && cleanKey === workerEnv.MCP_API_KEY)
-
-    if (valid) {
-      return { authenticated: true, actorId: `mcp-key-${cleanKey.slice(0, 8)}` }
-    }
-    return { authenticated: false }
+  // 2. X-EdgeCMS-API-Key header: must match a deployment key.
+  const headerKey = readApiKeyHeader(request)
+  if (headerKey) {
+    return matchesMcpApiKey(headerKey, workerEnv)
+      ? { authenticated: true, actorId: `mcp-key-${headerKey.slice(0, 8)}` }
+      : { authenticated: false }
   }
 
-  // 3. Fallback check for session cookie if not pre-populated
+  // 3. Authorization: Bearer — a deployment key or an EdgeCMS access token
+  //    (JWT from GET /api/auth/access-token).
+  const bearer = readBearerToken(request)
+  if (bearer) {
+    if (matchesMcpApiKey(bearer, workerEnv)) {
+      return { authenticated: true, actorId: `mcp-key-${bearer.slice(0, 8)}` }
+    }
+    if (!looksLikeJwt(bearer)) return { authenticated: false }
+    const validation = await validateRequestJwt(request, {
+      secret: workerEnv.JWT_HS256_SECRET,
+      issuer: workerEnv.JWT_ISSUER,
+      audience: workerEnv.JWT_AUDIENCE,
+      required: true,
+    })
+    const claims = validation.valid ? parseAccessClaims(validation.payload) : undefined
+    if (!claims) return { authenticated: false }
+    const missingMfa = isSuperAdminMissingMfa(
+      {
+        email: claims.email,
+        emailVerified: claims.ev === 1,
+        userRole: claims.sa === 1 ? 'superadmin' : claims.role,
+        mfaVerified: claims.mfa === 1,
+      },
+      workerEnv
+    )
+    if (missingMfa) return { authenticated: false, mfaRequired: true }
+    return { authenticated: true, actorId: claims.sub }
+  }
+
+  // 4. Fallback check for session cookie if not pre-populated
   try {
     const baseURL = getRequestUrl(request).origin
     const auth = createAuthForEnv(workerEnv, baseURL)
@@ -71,6 +91,15 @@ async function resolveMcpAuth(
   return { authenticated: false }
 }
 
+function firstMessageId(body: unknown): string | number | null {
+  const first = Array.isArray(body) ? body[0] : body
+  if (first && typeof first === 'object' && 'id' in first) {
+    const id = (first as { id?: unknown }).id
+    if (typeof id === 'string' || typeof id === 'number') return id
+  }
+  return null
+}
+
 interface McpRequestContext {
   body: unknown
   request: Request
@@ -88,19 +117,14 @@ async function handleMcpRequest(ctx: McpRequestContext) {
   const { body, set, user, workerEnv, db, kv, tenantCtx, request } = ctx
   const requestPathname = getRequestPathname(request)
 
-  const auth = await resolveMcpAuth(
-    request,
-    ctx.headers,
-    workerEnv,
-    user
-  )
+  const auth = await resolveMcpAuth(request, workerEnv, user)
 
   if (auth.mfaRequired) {
     set.status = 403
     set.headers['content-type'] = 'application/json'
     return {
       jsonrpc: '2.0',
-      id: Array.isArray(body) ? (body[0]?.id ?? null) : ((body as McpJsonRpcRequest)?.id ?? null),
+      id: firstMessageId(body),
       error: { code: -32001, message: MFA_REQUIRED_MESSAGE },
     }
   }
@@ -110,7 +134,7 @@ async function handleMcpRequest(ctx: McpRequestContext) {
     set.headers['content-type'] = 'application/json'
     return {
       jsonrpc: '2.0',
-      id: Array.isArray(body) ? (body[0]?.id ?? null) : ((body as McpJsonRpcRequest)?.id ?? null),
+      id: firstMessageId(body),
       error: {
         code: -32001,
         message: 'Unauthorized: MCP endpoint requires an active session or a valid X-EdgeCMS-API-Key header',
@@ -124,7 +148,7 @@ async function handleMcpRequest(ctx: McpRequestContext) {
     set.headers['content-type'] = 'application/json'
     return {
       jsonrpc: '2.0',
-      id: Array.isArray(body) ? (body[0]?.id ?? null) : ((body as McpJsonRpcRequest)?.id ?? null),
+      id: firstMessageId(body),
       error: { code: -32003, message: AI_DISABLED_MESSAGE, data: { code: AI_DISABLED_CODE } },
     }
   }
@@ -153,29 +177,56 @@ async function handleMcpRequest(ctx: McpRequestContext) {
   set.headers['content-type'] = 'application/json'
 
   if (Array.isArray(body)) {
+    if (body.length === 0) {
+      set.status = 400
+      return { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Empty batch' } }
+    }
     if (body.length > 25) {
       set.status = 400
       return {
         jsonrpc: '2.0',
-        id: (body[0] as McpJsonRpcRequest)?.id ?? null,
+        id: firstMessageId(body),
         error: {
           code: -32600,
           message: 'Batch request exceeds maximum of 25 messages',
         },
       }
     }
-    const results: unknown[] = []
+    const results: McpJsonRpcResponse[] = []
     for (let i = 0; i < body.length; i += 5) {
       const chunk = body.slice(i, i + 5)
-      const settled = await Promise.all(
-        chunk.map((req) => processMcpMessage(commandContext, req as McpJsonRpcRequest))
-      )
-      results.push(...settled)
+      const settled = await Promise.all(chunk.map((msg) => processMcpMessage(commandContext, msg)))
+      for (const response of settled) if (response) results.push(response)
     }
+    // Streamable HTTP: a body of only notifications/responses gets 202 with no body.
+    if (results.length === 0) return accepted(set)
     return results
   }
 
-  return processMcpMessage(commandContext, body as McpJsonRpcRequest)
+  const response = await processMcpMessage(commandContext, body)
+  if (!response) return accepted(set)
+  return response
+}
+
+function accepted(set: McpRequestContext['set']) {
+  set.status = 202
+  delete set.headers['content-type']
+  return new Response(null, { status: 202 })
+}
+
+/**
+ * Streamable HTTP: this server does not offer a server-to-client SSE stream or
+ * sessions, so GET and DELETE answer 405 (clients then stay on POST).
+ */
+function methodNotAllowed(set: McpRequestContext['set']) {
+  set.status = 405
+  set.headers['allow'] = 'POST'
+  set.headers['content-type'] = 'application/json'
+  return {
+    jsonrpc: '2.0',
+    id: null,
+    error: { code: -32000, message: 'Method not allowed: use POST for MCP JSON-RPC messages' },
+  }
 }
 
 export const mcpController = new Elysia()
@@ -183,3 +234,7 @@ export const mcpController = new Elysia()
   .use(withTenantBindings)
   .post('/api/mcp', (ctx) => handleMcpRequest(ctx as unknown as McpRequestContext))
   .post('/api/admin/mcp', (ctx) => handleMcpRequest(ctx as unknown as McpRequestContext))
+  .get('/api/mcp', ({ set }) => methodNotAllowed(set as McpRequestContext['set']))
+  .delete('/api/mcp', ({ set }) => methodNotAllowed(set as McpRequestContext['set']))
+  .get('/api/admin/mcp', ({ set }) => methodNotAllowed(set as McpRequestContext['set']))
+  .delete('/api/admin/mcp', ({ set }) => methodNotAllowed(set as McpRequestContext['set']))

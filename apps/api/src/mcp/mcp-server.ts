@@ -183,6 +183,17 @@ export async function handleMcpToolCall(
     return { content: [{ type: 'text', text: `Error: ${AI_DISABLED_MESSAGE}` }], isError: true }
   }
 
+  const tool = MCP_TOOLS.find((t) => t.name === name)
+  const missing = (tool?.inputSchema.required ?? []).filter(
+    (key) => args[key] === undefined || args[key] === null || args[key] === ''
+  )
+  if (missing.length > 0) {
+    return {
+      content: [{ type: 'text', text: `Error: missing required argument(s): ${missing.join(', ')}` }],
+      isError: true,
+    }
+  }
+
   try {
     switch (name) {
       case 'edgecms_list_collections': {
@@ -492,14 +503,59 @@ export async function handleMcpToolCall(
   }
 }
 
+/** Protocol revisions this server speaks, newest first. */
+export const MCP_SUPPORTED_PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'] as const
+export const MCP_LATEST_PROTOCOL_VERSION = MCP_SUPPORTED_PROTOCOL_VERSIONS[0]
+
 /**
- * Handles incoming JSON-RPC 2.0 requests according to Model Context Protocol specification.
+ * MCP version negotiation: answer with the client's requested version when we
+ * support it, otherwise with our latest (the client then decides whether to continue).
+ */
+export function negotiateProtocolVersion(requested: unknown): string {
+  return typeof requested === 'string' &&
+    (MCP_SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(requested)
+    ? requested
+    : MCP_LATEST_PROTOCOL_VERSION
+}
+
+function isValidId(id: unknown): id is string | number | null {
+  return id === null || typeof id === 'string' || typeof id === 'number'
+}
+
+/**
+ * Handles one incoming JSON-RPC 2.0 message according to the Model Context Protocol.
+ *
+ * Returns `null` for messages that get no reply: notifications (no `id`) and
+ * client responses (no `method`). The controller answers those with HTTP 202.
  */
 export async function processMcpMessage(
   ctx: CommandContext,
-  request: McpJsonRpcRequest
-): Promise<McpJsonRpcResponse> {
-  const { id = null, method, params = {} } = request
+  message: unknown
+): Promise<McpJsonRpcResponse | null> {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) {
+    return { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid Request' } }
+  }
+  const request = message as Partial<McpJsonRpcRequest> & { result?: unknown; error?: unknown }
+  const hasId = 'id' in request && request.id !== undefined
+
+  // A client response to a server request: this server never sends requests.
+  if (request.method === undefined && hasId && ('result' in request || 'error' in request)) {
+    return null
+  }
+  if (request.jsonrpc !== '2.0' || typeof request.method !== 'string' || (hasId && !isValidId(request.id))) {
+    return {
+      jsonrpc: '2.0',
+      id: hasId && isValidId(request.id) ? request.id : null,
+      error: { code: -32600, message: 'Invalid Request' },
+    }
+  }
+  // Notifications (e.g. notifications/initialized, notifications/cancelled) get no reply.
+  if (!hasId) return null
+
+  const id = request.id ?? null
+  const method = request.method
+  const params =
+    request.params && typeof request.params === 'object' ? request.params : ({} as Record<string, unknown>)
 
   switch (method) {
     case 'initialize': {
@@ -507,7 +563,7 @@ export async function processMcpMessage(
         jsonrpc: '2.0',
         id,
         result: {
-          protocolVersion: '2024-11-05',
+          protocolVersion: negotiateProtocolVersion(params.protocolVersion),
           capabilities: {
             tools: {},
           },
@@ -530,9 +586,12 @@ export async function processMcpMessage(
     }
 
     case 'tools/call': {
-      const toolName = params.name as string
-      const toolArgs = (params.arguments as Record<string, unknown>) || {}
-      if (!toolName) {
+      const toolName = params.name
+      const toolArgs =
+        params.arguments && typeof params.arguments === 'object'
+          ? (params.arguments as Record<string, unknown>)
+          : {}
+      if (!toolName || typeof toolName !== 'string') {
         return {
           jsonrpc: '2.0',
           id,
