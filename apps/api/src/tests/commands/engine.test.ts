@@ -858,6 +858,62 @@ describe('executeCommand', () => {
 
       verifyReceiptSpy.mockRestore()
     })
+
+    it('verifies a receipt bound to the request tenant scope (MCP/AI on tenant routes)', async () => {
+      const receiptModule = await import('@/ai/preview-receipt.service')
+      receiptModule.__resetPreviewReceiptStoreForTests()
+      const envelope: CommandEnvelope = {
+        type: 'createEntry',
+        payload: { collectionId: 'c1', data: { title: 'Scoped' } },
+        actor: { userId: 'user1', source: 'ai' },
+        dryRun: true,
+        timestamp: new Date().toISOString(),
+      }
+      // Minted the way the MCP adapter and AI service do: bound to ctx.tenantScope.
+      const receipt = await receiptModule.createPreviewReceipt({
+        commands: [envelope],
+        userId: 'user1',
+        tenantId: 'tenant-1',
+      })
+      mockCreateEntry.mockResolvedValue({ success: true, data: { id: 'e1' }, auditEntries: [] })
+
+      const result = await executeCommand(
+        { ...ctx, tenantScope: 'tenant-1' },
+        { ...envelope, dryRun: false, previewReceipt: receipt.receiptId }
+      )
+
+      expect(result.error?.code).toBeUndefined()
+      expect(result.status).toBe('success')
+      expect(mockCreateEntry).toHaveBeenCalled()
+      const stored = await receiptModule.getPreviewReceipt(receipt.receiptId, undefined, 'tenant-1')
+      expect(stored?.consumedAt).toBeDefined()
+    })
+
+    it('still refuses a receipt minted for another tenant', async () => {
+      const receiptModule = await import('@/ai/preview-receipt.service')
+      receiptModule.__resetPreviewReceiptStoreForTests()
+      const envelope: CommandEnvelope = {
+        type: 'createEntry',
+        payload: { collectionId: 'c1', data: { title: 'Foreign' } },
+        actor: { userId: 'user1', source: 'ai' },
+        dryRun: true,
+        timestamp: new Date().toISOString(),
+      }
+      const receipt = await receiptModule.createPreviewReceipt({
+        commands: [envelope],
+        userId: 'user1',
+        tenantId: 'tenant-2',
+      })
+
+      const result = await executeCommand(
+        { ...ctx, tenantScope: 'tenant-1' },
+        { ...envelope, dryRun: false, previewReceipt: receipt.receiptId }
+      )
+
+      expect(result.status).toBe('failed')
+      expect(result.error?.code).toBe('INVALID_PREVIEW_RECEIPT')
+      expect(mockCreateEntry).not.toHaveBeenCalled()
+    })
   })
 
   describe('durable command idempotency (C-10)', () => {

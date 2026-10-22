@@ -424,6 +424,16 @@ async function checkIdempotency(
   return null
 }
 
+/**
+ * Tenant a preview receipt is bound to: the request's tenant scope, else the
+ * sync channel. Creation, verification and consumption must all use this so a
+ * receipt minted on a tenant route (REST, AI or MCP) verifies on that route.
+ */
+function receiptScope(ctx: CommandContext): string | null {
+  if (ctx.tenantScope) return ctx.tenantScope
+  return ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : null
+}
+
 async function verifyReceiptSafely(
   envelope: CommandEnvelope,
   commandsToVerify: CommandEnvelope[],
@@ -556,7 +566,7 @@ async function handlePostExecution(
   opts?: { cacheTags?: string[]; outboxEventId?: string }
 ): Promise<void> {
   // 1. Consume preview receipt upon mutation success
-  await consumeReceiptSafely(envelope.previewReceipt, ctx.kv, tenantScope)
+  await consumeReceiptSafely(envelope.previewReceipt, ctx.kv, receiptScope(ctx))
 
   // 2. Record change log entries for sync
   if (handlerResult.auditEntries && handlerResult.auditEntries.length > 0) {
@@ -775,7 +785,7 @@ async function executeSingleCommand(
   }
 
   // Verify preview receipt if supplied for execution
-  const receiptCheck = await verifyReceiptSafely(envelope, [envelope], ctx, tenantScope)
+  const receiptCheck = await verifyReceiptSafely(envelope, [envelope], ctx, receiptScope(ctx))
   if (!receiptCheck.valid) {
     const errorResult: CommandResult = {
       commandId,
@@ -805,7 +815,7 @@ async function executeSingleCommand(
         const receipt = await createPreviewReceipt({
           commands: [envelope],
           userId: envelope.actor.userId,
-          tenantId: tenantScope ?? undefined,
+          tenantId: receiptScope(ctx) ?? undefined,
           kv: ctx.kv,
         })
         previewReceiptId = receipt.receiptId
@@ -1060,7 +1070,7 @@ async function handleTransaction(
   }
 
   // Verify preview receipt if supplied for transaction
-  const receiptCheck = await verifyReceiptSafely(envelope, payload.commands, ctx, tenantScope)
+  const receiptCheck = await verifyReceiptSafely(envelope, payload.commands, ctx, receiptScope(ctx))
   if (!receiptCheck.valid) {
     const errorResult: CommandResult = {
       commandId: transactionId,
@@ -1131,7 +1141,7 @@ async function handleTransaction(
 
   // Consume transaction preview receipt upon overall success
   if (allSucceeded) {
-    await consumeReceiptSafely(envelope.previewReceipt, ctx.kv, tenantScope)
+    await consumeReceiptSafely(envelope.previewReceipt, ctx.kv, receiptScope(ctx))
   }
 
   return finalize({

@@ -8,37 +8,50 @@ Through MCP a client can list collections and schemas, read entries, run semanti
 
 | Path | Scope |
 | --- | --- |
+| `POST /api/tenants/:slug/api/mcp` | One tenant (use this for MCP clients) |
 | `POST /api/mcp` | Global (no tenant) |
-| `POST /api/admin/mcp` | Global (no tenant) |
-| `POST /api/tenants/:slug/api/mcp` | One tenant |
-| `POST /api/tenants/:slug/api/admin/mcp` | One tenant |
+| `POST /api/admin/mcp` | Global, browser admin session only |
+| `POST /api/tenants/:slug/api/admin/mcp` | One tenant, browser admin session only |
 
-Requests are JSON-RPC 2.0 with `Content-Type: application/json`. A request body can be a single message or a batch array of up to 25 messages. The server answers over plain HTTP POST; it has no SSE stream.
+The two `admin` aliases sit under the admin CSRF check, so every POST to them needs the `X-CSRF-Token` header and `csrf_token` cookie pair (from `GET /api/csrf`). Use them only from the signed-in admin app; external MCP clients use the first two paths.
 
 Use a tenant-scoped path whenever you can. The tenant comes from the path; there is no tenant header.
+
+### Transport
+
+The endpoint implements the MCP [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http) transport in its stateless, JSON-only form:
+
+- Requests are JSON-RPC 2.0, `POST`ed with `Content-Type: application/json`. Clients should send `Accept: application/json, text/event-stream`; replies are always `application/json`, never an SSE stream.
+- A body can be one message or a batch array of up to 25 messages (`400` and `-32600` beyond that, or for an empty batch).
+- Notifications (messages without `id`, such as `notifications/initialized`) and client responses get `202 Accepted` with no body. In a batch, they get no entry in the reply array.
+- `GET` and `DELETE` return `405` with `Allow: POST`: there is no server-to-client stream and no session to end.
+- There are no sessions: the server sends no `Mcp-Session-Id` and ignores one if sent. Every request is authenticated on its own.
 
 ## Authenticate
 
 Send one of:
 
-- `X-EdgeCMS-API-Key: <key>`
-- `Authorization: Bearer <key>`
-- An admin session cookie, for browser-based agents running in a signed-in admin session.
+- `X-EdgeCMS-API-Key: <key>`, or `Authorization: Bearer <key>`, where the key matches the `EDGECMS_API_KEY` or `MCP_API_KEY` Worker secret. This is a deployment-level key: it works on every tenant path and is not tied to a user.
+- `Authorization: Bearer <access token>`, an EdgeCMS access token from `GET /api/auth/access-token?tenant=<slug>` (signed in). It acts as that user, on that tenant only, and expires after 10 minutes, so it suits scripts more than long-lived client configs.
+- A Better Auth session cookie, for agents running in a signed-in browser session.
 
-The key must match the `EDGECMS_API_KEY` or `MCP_API_KEY` Worker secret. Set one with:
+On tenant paths, users (session or access token) must be an owner, admin or editor of the tenant; other users get `403`, and calls without credentials get `401`.
+
+Set a deployment key with:
 
 ```bash
 cd apps/api
 bunx wrangler secret put MCP_API_KEY --env production
 ```
 
-API-key calls are recorded with the actor id `mcp-key-<first 8 characters of the key>`. Session calls use the signed-in user's id.
+API-key calls are recorded with the actor id `mcp-key-<first 8 characters of the key>`. Session and access-token calls use the signed-in user's id.
 
 Errors:
 
 | Case | HTTP | JSON-RPC error |
 | --- | --- | --- |
-| No valid key or session | `401` | `-32001` |
+| No valid key, token or session | `401` | `-32001` (tenant paths answer `401` with an `UNAUTHORIZED` error envelope before the MCP handler) |
+| Signed-in user who is not an owner, admin or editor of the tenant | `403` | none (`FORBIDDEN` error envelope) |
 | Super-admin session without a second factor, when MFA is required | `403` | `-32001` |
 | Tenant's AI switch is off | `403` | `-32003`, `data.code = "AI_DISABLED"` |
 | Unknown method | `200` | `-32601` |
@@ -48,10 +61,11 @@ Errors:
 
 | Method | Result |
 | --- | --- |
-| `initialize` | Protocol version `2024-11-05`, the `tools` capability and server info (`edgecms-mcp-server`). |
+| `initialize` | The negotiated protocol version, the `tools` capability and server info (`edgecms-mcp-server`). The server supports `2025-06-18`, `2025-03-26` and `2024-11-05`: it answers with the version the client asked for when supported, otherwise with `2025-06-18`. |
 | `ping` | `{}` |
 | `tools/list` | The tools below with their input schemas. |
-| `tools/call` | Runs a tool. The result is `{ content: [{ type: "text", text }] }`, where `text` is JSON, plus `isError: true` on failure. |
+| `tools/call` | Runs a tool. The result is `{ content: [{ type: "text", text }] }`, where `text` is JSON, plus `isError: true` on failure, including a missing required argument. |
+| Notifications | Accepted with `202`, no reply. |
 
 MCP resources and prompts are not implemented.
 
@@ -188,7 +202,15 @@ Clients that support remote HTTP servers directly need the URL and the header:
 }
 ```
 
-Test a connection with `curl`:
+Check a connection with the MCP Inspector CLI, which runs the full handshake:
+
+```bash
+npx -y @modelcontextprotocol/inspector --cli https://<your-worker>/api/tenants/<slug>/api/mcp \
+  --transport http --method tools/list \
+  --header "X-EdgeCMS-API-Key: $EDGECMS_MCP_KEY"
+```
+
+Or send one request with `curl`:
 
 ```bash
 curl -X POST https://<your-worker>/api/tenants/<slug>/api/mcp \
@@ -204,4 +226,4 @@ curl -X POST https://<your-worker>/api/tenants/<slug>/api/mcp \
 - Queries and changes are filtered by tenant in D1 and KV.
 - On tenant-scoped paths, every request gets `403` and JSON-RPC error `-32003` while the tenant's AI switch is off. Global paths have no tenant switch.
 - Tools accept an optional `tenantId` argument. On tenant-scoped paths it is rejected when it names another tenant. On global paths it is honored only when that tenant's AI switch is on, and it does not check the caller's membership in that tenant. Give global MCP paths only to deployment-level API keys.
-- A tenant that requires MFA blocks sessions without a second factor on its MCP routes.
+- A tenant that requires MFA blocks sessions without a second factor on its MCP routes and access tokens without the `mfa` claim. Deployment API keys are not user credentials and are not subject to tenant MFA, so keep them in a secret store and rotate them like any other Worker secret.

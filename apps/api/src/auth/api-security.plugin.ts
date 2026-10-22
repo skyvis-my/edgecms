@@ -31,6 +31,7 @@ import { rbacService } from './rbac.service'
 import { hasSuperAdminRole, isSuperAdminEmail, parseSuperAdminEmails } from './super-admin'
 import { isSuperAdminMissingMfa, MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE } from './mfa'
 import { createDb } from '@/database/db'
+import { hasValidMcpApiKey, TENANT_MCP_PATH } from '@/mcp/mcp-auth'
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
 import { getRequestPathname, getRequestUrl } from '@/shared/utils/request-url'
@@ -175,7 +176,14 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
       const method = ctx.request.method
       const tenantSlug = extractTenantSlug(pathname)
       const typedEnv = env as Env
-      const shouldCheckAuthorization = requiresAuthorizationCheck(pathname, method)
+      // A deployment MCP key on the tenant MCP endpoint is not a user: skip the
+      // user RBAC guard here; the MCP controller verifies the key itself.
+      const isMcpKeyRequest =
+        method === 'POST' &&
+        TENANT_MCP_PATH.test(pathname) &&
+        hasValidMcpApiKey(ctx.request, typedEnv)
+      const shouldCheckAuthorization =
+        !isMcpKeyRequest && requiresAuthorizationCheck(pathname, method)
 
       let accessClaims: AccessTokenClaims | undefined
       if (shouldCheckAuthorization) {

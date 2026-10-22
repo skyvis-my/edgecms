@@ -3,7 +3,11 @@ import type { Database } from '@/database/db'
 import type { CommandContext } from '@/commands/engine'
 import type { Env } from '@/env'
 import { aiSwitchD1 } from '../ai/ai-enabled-d1'
-import { processMcpMessage, MCP_TOOLS } from '@/mcp/mcp-server'
+import {
+  processMcpMessage as rawProcessMcpMessage,
+  MCP_TOOLS,
+  MCP_LATEST_PROTOCOL_VERSION,
+} from '@/mcp/mcp-server'
 import { collectionsRepository } from '@/collections/collections.repository'
 import { entriesRepository } from '@/entries/entries.repository'
 import { __resetPreviewReceiptStoreForTests } from '@/ai/preview-receipt.service'
@@ -27,6 +31,13 @@ vi.mock('@/entries/entries.repository', () => ({
     findById: vi.fn(),
   },
 }))
+
+/** Request messages always get a reply; narrow away the notification `null`. */
+async function processMcpMessage(...args: Parameters<typeof rawProcessMcpMessage>) {
+  const response = await rawProcessMcpMessage(...args)
+  if (!response) throw new Error('expected a JSON-RPC response')
+  return response
+}
 
 describe('Native MCP Server Adapter Gated by Command Engine (C-01)', () => {
   const mockDb = {} as Database
@@ -60,7 +71,7 @@ describe('Native MCP Server Adapter Gated by Command Engine (C-01)', () => {
       jsonrpc: '2.0',
       id: 1,
       result: {
-        protocolVersion: '2024-11-05',
+        protocolVersion: MCP_LATEST_PROTOCOL_VERSION,
         capabilities: { tools: {} },
         serverInfo: {
           name: 'edgecms-mcp-server',
@@ -393,6 +404,70 @@ describe('Native MCP Server Adapter Gated by Command Engine (C-01)', () => {
     expect(response.error).toEqual({
       code: -32601,
       message: 'Method not found: unknown/method',
+    })
+  })
+
+  describe('protocol conformance (AI-06)', () => {
+    it.each(['2024-11-05', '2025-03-26', '2025-06-18'])(
+      'answers initialize with the requested supported version %s',
+      async (version) => {
+        const response = await processMcpMessage(ctx, {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: { protocolVersion: version, capabilities: {}, clientInfo: { name: 't', version: '0' } },
+        })
+        expect(response.result).toMatchObject({ protocolVersion: version })
+      }
+    )
+
+    it('answers an unsupported requested version with the latest supported one', async () => {
+      const response = await processMcpMessage(ctx, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '1999-01-01' },
+      })
+      expect(response.result).toMatchObject({ protocolVersion: MCP_LATEST_PROTOCOL_VERSION })
+    })
+
+    it('sends no reply to notifications', async () => {
+      expect(
+        await rawProcessMcpMessage(ctx, { jsonrpc: '2.0', method: 'notifications/initialized' })
+      ).toBeNull()
+      expect(
+        await rawProcessMcpMessage(ctx, {
+          jsonrpc: '2.0',
+          method: 'notifications/cancelled',
+          params: { requestId: 3 },
+        })
+      ).toBeNull()
+      expect(await rawProcessMcpMessage(ctx, { jsonrpc: '2.0', method: 'unknown/notice' })).toBeNull()
+    })
+
+    it('sends no reply to client responses', async () => {
+      expect(await rawProcessMcpMessage(ctx, { jsonrpc: '2.0', id: 7, result: {} })).toBeNull()
+    })
+
+    it('rejects malformed messages with -32600', async () => {
+      for (const bad of [null, 'x', 42, { id: 1, method: 'ping' }, { jsonrpc: '2.0', id: 1 }]) {
+        const response = await processMcpMessage(ctx, bad)
+        expect(response.error?.code).toBe(-32600)
+      }
+    })
+
+    it('returns a tool error instead of querying when a required argument is missing', async () => {
+      const response = await processMcpMessage(ctx, {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'edgecms_get_entry', arguments: {} },
+      })
+      expect(response.result).toMatchObject({
+        isError: true,
+        content: [{ type: 'text', text: expect.stringContaining('entryId') }],
+      })
+      expect(entriesRepository.findById).not.toHaveBeenCalled()
     })
   })
 
