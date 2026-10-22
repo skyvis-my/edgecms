@@ -32,11 +32,14 @@ export function AppSidebar() {
   const { pathname } = useLocation()
   const { state, isMobile, setOpenMobile } = useSidebar()
   const { data: sessionData } = useSession()
-  const { data: collections, isLoading: isLoadingCollections } = useCollections()
+  const activeTenantSlug = resolveTenantSlugFromPathname(pathname || '/')
+  // Collections are tenant-scoped: outside a tenant workspace the request has no tenant.
+  const { data: collections, isLoading: isLoadingCollections } = useCollections({
+    enabled: Boolean(activeTenantSlug),
+  })
   const [collectionFilter, setCollectionFilter] = useState('')
   const [debouncedCollectionFilter, setDebouncedCollectionFilter] = useState('')
   const sessionUser = sessionData?.user
-  const activeTenantSlug = resolveTenantSlugFromPathname(pathname || '/')
   const navGroups = buildNavGroups(getSidebarNavGroups(activeTenantSlug), activeTenantSlug)
   useEffect(() => {
     const timeout = window.setTimeout(() => {

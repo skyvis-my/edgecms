@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, mock, vi } from 'bun:test'
-import { Elysia } from 'elysia'
+import { Elysia, t } from 'elysia'
 
 // HS-04 tenant states through the real tenant middleware.
 const mockEnv: { DB: Record<string, never>; SUPER_ADMIN_EMAILS?: string } = {
@@ -177,5 +177,44 @@ describe('isPublicReadRequest', () => {
     expect(tenantStateAccess('suspended', false)).toBe('super-admin-only')
     expect(tenantStateAccess('disabled', true)).toBe('super-admin-only')
     expect(tenantStateAccess('pending', true)).toBe('super-admin-only')
+  })
+})
+
+describe('tenant resolution with route params schemas', () => {
+  // A route `params` schema drops `tenantSlug` from the group prefix before the
+  // middleware's derive runs, so the slug must come from the request path.
+  const schemaApp = new Elysia().group('/api/tenants/:tenantSlug', (group) =>
+    group.use(tenantMiddleware).use(
+      new Elysia({ prefix: '/api/public', normalize: 'typebox' }).get(
+        '/:collectionSlug',
+        { params: t.Object({ collectionSlug: t.String({ minLength: 1 }) }) },
+        (ctx) => ({
+          tenantId: (ctx as { tenant?: { tenant: { id: string } } }).tenant?.tenant.id,
+        })
+      )
+    )
+  )
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockGetSession.mockResolvedValue(null)
+  })
+
+  it('resolves the tenant for public reads', async () => {
+    mockFindBySlug.mockResolvedValue(tenantWithStatus('active'))
+    const response = await schemaApp.handle(
+      new Request('http://localhost/api/tenants/acme/api/public/posts')
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ tenantId: 'tenant-1' })
+    expect(mockFindBySlug).toHaveBeenCalledWith({}, 'acme')
+  })
+
+  it('returns 404 for an unknown tenant', async () => {
+    mockFindBySlug.mockResolvedValue(undefined)
+    const response = await schemaApp.handle(
+      new Request('http://localhost/api/tenants/nope/api/public/posts')
+    )
+    expect(response.status).toBe(404)
   })
 })

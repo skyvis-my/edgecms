@@ -72,6 +72,13 @@ describe('collections-api', () => {
       expect(result.current.data).toEqual([sampleCollection])
       expect(mockEdenGet).toHaveBeenCalledWith('/admin/collections')
     })
+
+    it('does not run query when disabled', () => {
+      const { wrapper } = createWrapper()
+      renderHook(() => useCollections({ enabled: false }), { wrapper })
+
+      expect(mockEdenGet).not.toHaveBeenCalled()
+    })
   })
 
   describe('useCollection', () => {

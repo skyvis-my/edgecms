@@ -191,7 +191,7 @@ Generic hooks that let anyone run EdgeCMS as a multi-customer service, including
 
 | ID | Requirement | Status |
 | --- | --- | --- |
-| **OP-01** | Documented local path: install, run API and admin, migrate, seed, publish, read publicly ([quickstart](docs/public/quickstart.md)). Install through admin sign-in and the entry list work on a clean checkout; the local tenant public read still returns `Collection not found`. | Partial |
+| **OP-01** | Documented local path: install, run API and admin, migrate, seed, publish, read publicly ([quickstart](docs/public/quickstart.md)). Verified end to end on a clean checkout by the live quickstart and live persisted e2e specs. | Shipped |
 | **OP-02** | `createApp()` composition: an application instance owns its config, modules and registries; independent instances can run side by side in tests. Host policies (`createApp({ host })`, §10.1) are per instance. | Partial |
 | **OP-03** | `create-edgecms-app` starter that scaffolds a working consumer app. Not published to npm yet. | Partial |
 | **OP-04** | Deploy to the adopter's own Cloudflare account via the Deploy button or the [deployment runbook](docs/deployment-runbook.md), with dev, staging and production environments. | Shipped |
