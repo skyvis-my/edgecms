@@ -1,6 +1,6 @@
 # EdgeCMS Product Requirements
 
-Version: 3.6 (2026-10-22)
+Version: 3.7 (2026-10-22)
 Owner: EdgeCMS maintainers
 Status: Living document. Every feature PR cites a requirement ID from this file (see [Change control](#12-change-control)).
 
@@ -126,7 +126,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | **AI-03** | Provider-agnostic via the Vercel AI SDK, routed through Cloudflare AI Gateway. Qwen primary, Gemini fallback, swappable by config. | Shipped |
 | **AI-04** | A model router picks a cost tier by command complexity. | Shipped |
 | **AI-05** | Preview receipts: execution is accepted only when it matches the reviewed preview. | Partial |
-| **AI-06** | MCP server exposes tenant-scoped discovery, read, semantic search and command tools with the caller's RBAC. See [MCP docs](docs/public/mcp-server.md). | Shipped |
+| **AI-06** | MCP server exposes tenant-scoped discovery, read, semantic search and command tools with the caller's RBAC, over Streamable HTTP (version negotiation, session cookie, access token or deployment key). Reads and preview/execute writes verified on staging with the official MCP SDK client. See [MCP docs](docs/public/mcp-server.md). | Shipped |
 | **AI-07** | Semantic search and RAG over tenant content using Vectorize. | Shipped |
 | **AI-08** | AI-assisted imports (for example WordPress WXR) run as a non-destructive preview first. | Partial |
 
@@ -153,6 +153,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | **DL-07** | Paid public reads (x402/L402 challenge middleware) as an opt-in per-route option. | Partial |
 | **DL-08** | Signed preview tokens for draft preview inside authenticated frontends; no anonymous draft route (NG5). | Partial |
 | **DL-09** | Webhooks through an outbox and Queues, with destination policy, retries and replay. | Partial |
+| **DL-10** | A cached public read does no D1 or KV round trip before the cache: tenant resolution and rate-limit state are cached at the edge. Today every request queries the tenant row (D1) and reads the rate-limit counter (KV), which is most of the server time on a cache hit. | Planned |
 
 ## 10. Platform: tenants, auth, extensions
 
@@ -202,16 +203,16 @@ Generic hooks that let anyone run EdgeCMS as a multi-customer service, including
 
 ### 11.1 Targets
 
-These are design targets to measure against, not measured results.
+Design targets, with the latest staging measurement. Staging numbers are server-side (`wrangler tail`, sampled) from the 2026-10-22 audit; they are not production results. Client-seen latency adds the network round trip.
 
-| Target | Value |
-| --- | --- |
-| Cached public read latency | < 50 ms |
-| Uncached global read latency | < 100 ms |
-| CDN-served share of public reads | > 90% |
-| Worker CPU per cached request | < 5 ms |
-| Browser image pipeline (4 WebP variants) | < 3 s |
-| Offline sync recovery | < 5 s |
+| Target | Value | Staging, 2026-10-22 |
+| --- | --- | --- |
+| Cached public read latency | < 50 ms | Entry 38 ms, list 52 ms server p50 (met / borderline) |
+| Uncached global read latency | < 100 ms | Not measured |
+| CDN-served share of public reads | > 90% | About 0%: no CDN cache layer yet (DL-03) |
+| Worker CPU per cached request | < 5 ms | 5–6 ms p50 cached reads; 3.2 ms p50 across all routes (borderline) |
+| Browser image pipeline (4 WebP variants) | < 3 s | Not measured |
+| Offline sync recovery | < 5 s | Not measured |
 
 Measure locally with `bun run perf:public-read:local`; remote numbers require a deployed URL and `bun run perf:public-read:remote`.
 
@@ -231,6 +232,7 @@ Every PR that adds or changes product behavior must fit this PRD.
 
 | Date | Version | Change |
 | --- | --- | --- |
+| 2026-10-22 | 3.7 | Recorded #20 (tenant public reads fixed; OP-01 Shipped), #21 (MCP writes, auth and Streamable HTTP fixed; AI-06 verified on staging) and #23 (list cache hits skip D1, opt-in KV metrics; DL-03 Partial for the missing CDN layer). Added staging measurements to §11.1 and DL-10 for the per-request D1/KV lookups the audit found. |
 | 2026-10-22 | 3.6 | Corrected CM-04, CMD-03, MD-01, MD-03, MD-05 and PL-03 to Partial after the developer guides were written against the code; each row names its gap. |
 | 2026-10-22 | 3.5 | Shipped `HS-05`, `HS-06`, `HS-07` (usage sink, limit policy, per-tenant rate limits) and `HS-08` (`tenant.limit_reached` now emitted). |
 | 2026-10-22 | 3.4 | `HS-01` and `HS-11` shipped (signup policy, invites, email verification, MFA). |
