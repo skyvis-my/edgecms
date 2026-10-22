@@ -78,6 +78,26 @@ export function createCompositeMetricSink(...sinks: Array<MetricSink | undefined
   }
 }
 
+/**
+ * Default metric sink: structured console lines (Workers Logs). The KV sink
+ * is opt-in (`EDGE_METRICS_KV_SINK=1`) because it issues one KV write per
+ * metric increment, i.e. several writes on every public read, which hits
+ * KV's per-key write rate limit and write quota on busy routes and stores
+ * only the isolate-local counter value.
+ */
+export function createDefaultMetricSink(targetEnv: {
+  CACHE?: KVNamespace
+  EDGE_METRICS_KV_SINK?: string
+}): MetricSink {
+  const kvSinkEnabled = ['1', 'true'].includes(
+    (targetEnv.EDGE_METRICS_KV_SINK ?? '').trim().toLowerCase()
+  )
+  return createCompositeMetricSink(
+    createConsoleMetricSink(),
+    kvSinkEnabled && targetEnv.CACHE ? createKvMetricSink(targetEnv.CACHE) : undefined
+  )
+}
+
 export type MetricSink = (name: string, labels: Record<string, string>, value: number) => void
 
 export class MetricsRegistry {

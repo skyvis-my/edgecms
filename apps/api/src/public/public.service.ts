@@ -184,6 +184,25 @@ function parseRangeHeader(
   return { start, end: Math.min(end, total - 1) }
 }
 
+type CollectionResolver = () => Promise<CollectionRow | null | undefined>
+
+/**
+ * Collection lookup for the snapshot miss path. Order: an explicitly
+ * preloaded row (null = known missing), then a caller-supplied memoized
+ * resolver, then a direct repository query.
+ */
+async function loadCollectionForMiss(
+  db: Database,
+  collectionSlug: string,
+  tenantId: string | undefined,
+  preloadedCollection: CollectionRow | null | undefined,
+  resolveCollection: CollectionResolver | undefined
+): Promise<CollectionRow | null | undefined> {
+  if (preloadedCollection !== undefined) return preloadedCollection
+  if (resolveCollection) return resolveCollection()
+  return publicRepository.findCollectionBySlug(db, collectionSlug, tenantId)
+}
+
 export const publicService = {
   async getAssetVariant(params: {
     db: Database
@@ -335,6 +354,8 @@ export const publicService = {
     filters?: ParsedFilter[]
     sort?: ParsedSort[]
     preloadedCollection?: CollectionRow | null
+    /** Memoized lookup used only on a snapshot miss (no D1 on cache hits). */
+    resolveCollection?: CollectionResolver
   }): Promise<PublicSnapshotResult> {
     const {
       db,
@@ -347,6 +368,7 @@ export const publicService = {
       filters = [],
       sort,
       preloadedCollection,
+      resolveCollection,
     } = params
     const filterHash = hashFilterParams(filters, sort ?? [])
     const tracker = new CacheMetadataTracker()
@@ -360,10 +382,13 @@ export const publicService = {
       return buildCachedPublicResult(snapshot, cacheTag, tracker)
     }
 
-    const collection =
-      preloadedCollection === undefined
-        ? await publicRepository.findCollectionBySlug(db, collectionSlug, tenantId)
-        : preloadedCollection
+    const collection = await loadCollectionForMiss(
+      db,
+      collectionSlug,
+      tenantId,
+      preloadedCollection,
+      resolveCollection
+    )
     if (!collection) {
       return { success: false, error: { status: 404, message: 'Collection not found' } }
     }
@@ -459,10 +484,13 @@ export const publicService = {
       return buildCachedPublicResult(snapshot, cacheTag, tracker)
     }
 
-    const collection =
-      preloadedCollection === undefined
-        ? await publicRepository.findCollectionBySlug(db, collectionSlug, tenantId)
-        : preloadedCollection
+    const collection = await loadCollectionForMiss(
+      db,
+      collectionSlug,
+      tenantId,
+      preloadedCollection,
+      undefined
+    )
     if (!collection) {
       return { success: false, error: { status: 404, message: 'Collection not found' } }
     }
@@ -527,8 +555,11 @@ export const publicService = {
     locale: string
     tenantId?: string
     preloadedCollection?: CollectionRow | null
+    /** Memoized lookup used only on a snapshot miss (no D1 on cache hits). */
+    resolveCollection?: CollectionResolver
   }): Promise<PublicSnapshotResult> {
-    const { db, kv, collectionSlug, locale, tenantId, preloadedCollection } = params
+    const { db, kv, collectionSlug, locale, tenantId, preloadedCollection, resolveCollection } =
+      params
     const tracker = new CacheMetadataTracker()
     const baseKey = `snapshot:${collectionSlug}:${locale}:singleton`
     const version = await kvService.getCurrentVersion(kv, collectionSlug, locale, tenantId)
@@ -540,10 +571,13 @@ export const publicService = {
       return buildCachedPublicResult(snapshot, cacheTag, tracker)
     }
 
-    const collection =
-      preloadedCollection === undefined
-        ? await publicRepository.findCollectionBySlug(db, collectionSlug, tenantId)
-        : preloadedCollection
+    const collection = await loadCollectionForMiss(
+      db,
+      collectionSlug,
+      tenantId,
+      preloadedCollection,
+      resolveCollection
+    )
     if (!collection) {
       return { success: false, error: { status: 404, message: 'Collection not found' } }
     }

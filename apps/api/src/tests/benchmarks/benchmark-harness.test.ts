@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'bun:test'
 import { PUBLIC_READ_PERFORMANCE_GOALS } from '@/observability/performance-goals'
 import {
+  CI_BUDGET_SCALE,
   evaluateBenchmarkDurations,
+  medianBudgetForMethod,
   percentile,
+  READ_MEDIAN_BUDGET_MS,
+  resolveBenchmarkBudgetScale,
   roundMs,
   runBenchmarkCase,
+  runBenchmarkCaseWithRetry,
+  WRITE_MEDIAN_BUDGET_MS,
 } from './benchmark-harness'
 
 describe('benchmark harness deterministic evaluation (F03)', () => {
@@ -169,6 +175,65 @@ describe('benchmark harness deterministic evaluation (F03)', () => {
       })
       expect(failing.p95Ms).toBe(110)
       expect(failing.p95Passed).toBe(false)
+    })
+  })
+
+  describe('CI-aware method budgets and retry', () => {
+    it('scales budgets under CI and honours an explicit BENCH_BUDGET_SCALE', () => {
+      expect(resolveBenchmarkBudgetScale({})).toBe(1)
+      expect(resolveBenchmarkBudgetScale({ CI: 'false' })).toBe(1)
+      expect(resolveBenchmarkBudgetScale({ CI: 'true' })).toBe(CI_BUDGET_SCALE)
+      expect(resolveBenchmarkBudgetScale({ CI: 'true', BENCH_BUDGET_SCALE: '1.5' })).toBe(1.5)
+      expect(resolveBenchmarkBudgetScale({ BENCH_BUDGET_SCALE: 'nope' })).toBe(1)
+    })
+
+    it('gives reads the 1 ms median contract and writes a wider budget', () => {
+      expect(medianBudgetForMethod('GET')).toBe(READ_MEDIAN_BUDGET_MS)
+      expect(medianBudgetForMethod('head')).toBe(READ_MEDIAN_BUDGET_MS)
+      expect(medianBudgetForMethod('POST')).toBe(WRITE_MEDIAN_BUDGET_MS)
+      expect(medianBudgetForMethod('DELETE', 3)).toBe(WRITE_MEDIAN_BUDGET_MS * 3)
+    })
+
+    it('retries a case that was over budget once and keeps the better run', async () => {
+      let run = 0
+      const app = {
+        handle: async (request: Request) => {
+          // First run (warmup + samples) is slow, the retry is fast.
+          if (request.url.endsWith('/slow') && run++ < 3) {
+            await new Promise((resolve) => setTimeout(resolve, 5))
+          }
+          return new Response('ok', { status: 200 })
+        },
+      }
+      const summary = await runBenchmarkCaseWithRetry(app, {
+        name: 'transient slowness',
+        request: () => new Request('http://localhost/slow'),
+        expectedStatus: 200,
+        warmup: 0,
+        samples: 3,
+        budgetMs: 2,
+      })
+      expect(summary.attempts).toBe(2)
+      expect(summary.overBudget).toBe(false)
+    })
+
+    it('still fails a case that is over budget on every run', async () => {
+      const app = {
+        handle: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 3))
+          return new Response('ok', { status: 200 })
+        },
+      }
+      const summary = await runBenchmarkCaseWithRetry(app, {
+        name: 'real regression',
+        request: () => new Request('http://localhost/regressed'),
+        expectedStatus: 200,
+        warmup: 0,
+        samples: 3,
+        budgetMs: 1,
+      })
+      expect(summary.attempts).toBe(2)
+      expect(summary.overBudget).toBe(true)
     })
   })
 })

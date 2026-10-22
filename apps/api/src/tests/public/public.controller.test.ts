@@ -111,6 +111,29 @@ describe('publicController', () => {
     expect(response.headers.get('x-edgecms-cache')).toBe('hit')
   })
 
+  it('GET /:collectionSlug serves a cached list without a collection lookup (zero D1 on hit)', async () => {
+    kvService.getSnapshot.mockResolvedValueOnce({ entries: [] })
+
+    const response = await app.handle(new Request('http://localhost/api/public/posts'))
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('x-edgecms-cache')).toBe('hit')
+    expect(response.headers.get('server-timing')).toMatch(/^cache;desc="(memory|kv)";dur=\d+(\.\d+)?$/)
+    expect(publicRepository.findCollectionBySlug).not.toHaveBeenCalled()
+    expect(collectionsRepository.findBySlug).not.toHaveBeenCalled()
+  })
+
+  it('GET /:collectionSlug looks the collection up once across list miss and singleton fallback', async () => {
+    kvService.getSnapshot.mockResolvedValue(null)
+    publicRepository.findCollectionBySlug.mockResolvedValue(null)
+
+    const response = await app.handle(new Request('http://localhost/api/public/missing'))
+
+    expect(response.status).toBe(404)
+    expect(publicRepository.findCollectionBySlug).toHaveBeenCalledTimes(1)
+    kvService.getSnapshot.mockReset()
+  })
+
   it('GET /:collectionSlug keys cached list snapshots by locale', async () => {
     kvService.getSnapshot.mockResolvedValueOnce({ entries: [{ id: 'ms-entry' }] })
 

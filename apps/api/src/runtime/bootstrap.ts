@@ -1,12 +1,7 @@
 import { initializeWebhookProducerIfNeeded } from '@/commands/commands.controller'
 import { validateAuthPolicyEnv } from '@/auth/auth-policies'
 import type { Env } from '@/env'
-import {
-  createCompositeMetricSink,
-  createConsoleMetricSink,
-  createKvMetricSink,
-  setMetricSink,
-} from '@/observability/metrics'
+import { createDefaultMetricSink, setMetricSink } from '@/observability/metrics'
 import {
   getLoadedPlugins,
   type PluginRuntime,
@@ -52,12 +47,7 @@ export async function bootstrapApp(options: BootstrapOptions = {}): Promise<Boot
   validateAuthPolicyEnv(targetEnv)
 
   if (options.configureMetrics !== false) {
-    setMetricSink(
-      createCompositeMetricSink(
-        createConsoleMetricSink(),
-        targetEnv.CACHE ? createKvMetricSink(targetEnv.CACHE) : undefined
-      )
-    )
+    setMetricSink(createDefaultMetricSink(targetEnv))
   }
 
   const registry = options.pluginRegistry ?? options.pluginRuntime?.registry ?? pluginRegistry

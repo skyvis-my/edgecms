@@ -30,6 +30,8 @@ export interface Env {
   AUDIT_RETENTION_DAYS?: string
   EDGE_PLUGINS_JSON?: string
   EDGE_PLUGIN_HOOK_TIMEOUT_MS?: string
+  /** Opt-in: mirror metric counters to KV (one write per increment). */
+  EDGE_METRICS_KV_SINK?: string
   CF_API_TOKEN?: string
   CLOUDFLARE_ACCOUNT_ID?: string
   CLOUDFLARE_ZONE_ID?: string
@@ -73,6 +75,7 @@ export const envSchema = {
   AUDIT_RETENTION_DAYS: 'string',
   EDGE_PLUGINS_JSON: 'string',
   EDGE_PLUGIN_HOOK_TIMEOUT_MS: 'string',
+  EDGE_METRICS_KV_SINK: 'string',
   WEBHOOK_ALLOWED_HOSTS: 'string',
   SUPER_ADMIN_EMAILS: 'string',
   SUPER_ADMIN_DEV_MODE: 'string',

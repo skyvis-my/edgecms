@@ -146,7 +146,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | --- | --- | --- |
 | **DL-01** | Tenant-scoped public REST: list, get by ID, singletons and asset variants. Published content only (P5). See [public API](docs/public/public-api.md). | Shipped |
 | **DL-02** | Typed client (`@edgecms/client`) and fetch examples for frontends. | Shipped |
-| **DL-03** | Cache hierarchy Browser → CDN → KV → memory → D1 with versioned keys, tag invalidation and stale-while-revalidate. | Shipped |
+| **DL-03** | Cache hierarchy Browser → CDN → KV → memory → D1 with versioned keys, tag invalidation and stale-while-revalidate. Gap: the Worker sets `CDN-Cache-Control` and `Cache-Tag` but does not store responses in the Cloudflare cache (no Cache API), so public reads are served by the Worker from memory/KV, not the CDN. | Partial |
 | **DL-04** | Snapshots per collection, locale and query pattern, with relations resolved and lifecycle filtered. | Shipped |
 | **DL-05** | Scheduled publishing is evaluated at request time; cache TTLs shrink toward the next `publishAt`/`unpublishAt`; a Durable Object alarm invalidates KV at the transition. | Shipped |
 | **DL-06** | GraphQL read endpoint over published content, guarded against expensive D1 queries. Not a parity claim with REST. | Partial |
