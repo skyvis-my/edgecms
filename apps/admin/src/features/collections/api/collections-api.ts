@@ -112,10 +112,11 @@ const deleteCollectionMutationDescriptor: OfflineMutationDescriptor<string> = {
 /**
  * Hook to fetch all collections
  */
-export function useCollections() {
+export function useCollections(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: collectionsKeys.all,
     queryFn: async () => edenGet<CollectionDefinition[]>('/admin/collections'),
+    enabled: options?.enabled ?? true,
     staleTime: 5 * 60 * 1000,
   })
 }

@@ -38,11 +38,13 @@ vi.mock('@/lib/auth-client', () => ({
   }),
 }))
 
+const mockUseCollections = vi.fn((_options?: { enabled?: boolean }) => ({
+  data: mockCollectionsData,
+  isLoading: mockIsLoadingCollections,
+}))
+
 vi.mock('@/features/collections/api/collections-api', () => ({
-  useCollections: () => ({
-    data: mockCollectionsData,
-    isLoading: mockIsLoadingCollections,
-  }),
+  useCollections: (options?: { enabled?: boolean }) => mockUseCollections(options),
 }))
 
 vi.mock('@/features/tenants/components/tenant-switcher', () => ({
@@ -118,5 +120,24 @@ describe('AppSidebar Component', () => {
     )
 
     expect(screen.queryByText('Content')).not.toBeInTheDocument()
+  })
+
+  it('only fetches collections when a tenant is active in pathname', () => {
+    mockPathname = '/'
+    const { unmount } = render(
+      <SidebarProvider defaultOpen={true}>
+        <AppSidebar />
+      </SidebarProvider>
+    )
+    expect(mockUseCollections).toHaveBeenLastCalledWith({ enabled: false })
+    unmount()
+
+    mockPathname = '/tenants/tenant-1'
+    render(
+      <SidebarProvider defaultOpen={true}>
+        <AppSidebar />
+      </SidebarProvider>
+    )
+    expect(mockUseCollections).toHaveBeenLastCalledWith({ enabled: true })
   })
 })

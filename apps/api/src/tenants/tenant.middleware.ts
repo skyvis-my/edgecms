@@ -10,6 +10,7 @@ import type { Env } from '@/env'
 import { getRequestUrl } from '@/shared/utils/request-url'
 import type { TenantContext } from './tenant-context'
 import { verifyTenantMembership } from './tenant-context'
+import { extractTenantSlug } from './tenant-path'
 import { tenantsRepository } from './tenants.repository'
 import {
   getCachedTenant,
@@ -93,7 +94,7 @@ function tenantStateError(tenantSlug: string, tenantStatus: string) {
  * Route pattern: `/api/tenants/:tenantSlug/*`
  *
  * Behavior:
- * - Extracts `tenantSlug` from path params
+ * - Extracts `tenantSlug` from path params, or the request path when a route schema strips it
  * - Looks up tenant in the global database
  * - Returns 404 if tenant not found
  * - Applies tenant states (HS-04, see `tenantStateAccess`): `suspended` keeps
@@ -109,8 +110,11 @@ function tenantStateError(tenantSlug: string, tenantStatus: string) {
  */
 export const tenantMiddleware = new Elysia({ name: 'tenant-middleware' })
   .use(betterAuthPlugin).derive('plugin', async ({ params, request }): Promise<{ tenant?: TenantContext }> => {
-  // Extract tenant slug from path params
-  const tenantSlug = (params as { tenantSlug?: string } | undefined)?.tenantSlug
+  // A route `params` schema strips the group's `tenantSlug` before this derive
+  // runs, so fall back to the request path.
+  const tenantSlug =
+    (params as { tenantSlug?: string } | undefined)?.tenantSlug ??
+    extractTenantSlug(getRequestUrl(request).pathname)
 
   // If no tenantSlug in params, this is not a tenant-scoped route
   // Return empty context (will be ignored by non-tenant routes)
