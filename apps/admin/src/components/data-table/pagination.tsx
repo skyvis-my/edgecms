@@ -47,7 +47,7 @@ export function DataTablePagination<TData>({ table, className }: DataTablePagina
               table.setPageSize(Number(value))
             }}
           >
-            <SelectTrigger className='h-8 w-[70px]'>
+            <SelectTrigger className='h-8 w-[70px]' aria-label='Rows per page'>
               <SelectValue placeholder={table.getState().pagination.pageSize} />
             </SelectTrigger>
             <SelectContent side='top'>
@@ -98,6 +98,7 @@ export function DataTablePagination<TData>({ table, className }: DataTablePagina
                   className='h-8 min-w-8 px-2'
                   onClick={() => table.setPageIndex((pageNumber as number) - 1)}
                   aria-current={currentPage === pageNumber ? 'page' : undefined}
+                  aria-label={`Go to page ${pageNumber}`}
                 >
                   <span className='sr-only'>Go to page {pageNumber}</span>
                   {pageNumber}
