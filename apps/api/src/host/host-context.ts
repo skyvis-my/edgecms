@@ -54,7 +54,7 @@ export function createHostRuntimePlugin(runtime: HostRuntime) {
     .onRequest(({ request }) => {
       requestRuntimes.set(request, runtime)
     })
-    .onAfterHandle({ as: 'global' }, (ctx) => {
+    .onAfterHandle('global', (ctx) => {
       const method = ctx.request.method
       if (method !== 'GET' && method !== 'HEAD' && method !== 'POST') return
       const pathname = getRequestPathname(ctx.request)

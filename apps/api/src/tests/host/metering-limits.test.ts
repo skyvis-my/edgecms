@@ -141,7 +141,7 @@ describe('HS-05 public read metering', () => {
   function publicApp(runtime: HostRuntime) {
     return new Elysia()
       .use(createHostRuntimePlugin(runtime))
-      .derive({ as: 'global' }, ({ params }) => {
+      .derive('global', ({ params }) => {
         const slug = (params as { tenantSlug?: string }).tenantSlug
         const tenant = slug === 'acme' ? acme : slug === 'globex' ? globex : undefined
         return tenant ? { tenant: { tenant, resources: { mode: 'shared' as const } } } : {}
