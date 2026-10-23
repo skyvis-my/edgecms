@@ -18,7 +18,7 @@ This guide focuses on practical coding standards for this repository, grounded i
 
 - Define runtime validation for all external boundaries (`params`, `query`, `body`, `headers`, `cookie`) and set response schemas on endpoints.
 - Keep request/response contracts close to route definitions to preserve E2E type inference for Eden clients.
-- Use `@elysiajs/openapi` for API docs generation. Do not add new usage of deprecated `@elysiajs/swagger`.
+- Use `@elysia/openapi` for API docs generation. Do not add new usage of deprecated `@elysiajs/swagger`.
 - Name route params by the resource they identify. Never add vague params such as `/:id`; use `/:assetId`, `/:collectionId`, `/:entryId`, `/:tenantSlug`, or another domain-specific name. This avoids handler bugs when nested routes or fallback routes mix multiple IDs.
 
 ## 3. Error Handling and HTTP Semantics
