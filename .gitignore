@@ -52,6 +52,7 @@ apps/api/.wrangler
 .wrangler/
 .cloudflare/
 apps/api/.cloudflare
-.agents/
+.agents/*
+!.agents/skills/
 .claude/settings.local.json
 .perf/
