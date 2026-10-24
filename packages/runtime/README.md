@@ -33,7 +33,7 @@ export default {
 ## Eden Treaty client (admin)
 
 ```ts
-import { treaty } from '@elysiajs/eden'
+import { treaty } from '@elysia/eden'
 import type { App } from '@edgecms/runtime'
 
 const eden = treaty<App>('http://localhost:8787')

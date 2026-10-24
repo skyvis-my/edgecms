@@ -18,7 +18,7 @@ The project is split into two primary workspaces:
 *   **Routing:** TanStack Router
 *   **State/Data:** TanStack Query, Zustand
 *   **Charts:** Recharts
-*   **API Client:** `@elysiajs/eden` (Type-safe client for Elysia)
+*   **API Client:** `@elysia/eden` (Type-safe client for Elysia)
 
 ### 2. API (`apps/api`)
 *   **Runtime:** Cloudflare Workers
