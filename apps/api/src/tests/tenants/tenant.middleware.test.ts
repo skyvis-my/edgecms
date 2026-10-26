@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, mock, vi } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, mock, vi } from 'bun:test'
 import { Elysia } from 'elysia'
 import type { TenantContext } from '../../tenants/tenant-context'
 
@@ -55,10 +55,12 @@ mock.module('@/auth/auth.middleware', () => ({
 // Cache-busted import: @/app (loaded by app/main tests) binds the real
 // tenant.middleware; a plain import would reuse that copy with real deps.
 const { tenantMiddleware } = await import(`../../tenants/tenant.middleware?bypass=${Date.now()}`)
+const { clearTenantIsolateCache, setTenantIsolateCacheEnabled } = await import('../../tenants/tenant-cache')
 
 describe('Tenant Middleware', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    clearTenantIsolateCache()
   })
 
   it('should resolve valid tenant slug to context', async () => {
@@ -434,6 +436,87 @@ describe('Tenant Middleware', () => {
 
       expect(response.status).toBe(200)
       expect(mockFindTenantUser).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('in-isolate tenant caching (DL-10)', () => {
+    beforeEach(() => {
+      setTenantIsolateCacheEnabled(true)
+      clearTenantIsolateCache()
+    })
+
+    afterEach(() => {
+      setTenantIsolateCacheEnabled(false)
+      clearTenantIsolateCache()
+    })
+
+    it('bypasses D1 lookup on second request in same isolate and clears on invalidation', async () => {
+      const mockTenant = {
+        id: 'tenant-isolate-1',
+        slug: 'isolate-test',
+        name: 'Isolate Test Corp',
+        status: 'active',
+        createdAt: '2026-02-07T00:00:00Z',
+        updatedAt: '2026-02-07T00:00:00Z',
+      }
+
+      mockFindBySlug.mockResolvedValue(mockTenant)
+
+      const app = new Elysia()
+        .use(tenantMiddleware)
+        .get('/test/:tenantSlug', ({ tenant }: { tenant?: TenantContext }) => ({
+          id: tenant?.tenant.id,
+        }))
+
+      // Request 1: cold cache -> hits D1
+      const res1 = await app.handle(new Request('http://localhost/test/isolate-test'))
+      expect(res1.status).toBe(200)
+      expect(mockFindBySlug).toHaveBeenCalledTimes(1)
+
+      // Request 2: new Request instance (warm isolate) -> hits isolate cache, skips D1!
+      const res2 = await app.handle(new Request('http://localhost/test/isolate-test'))
+      expect(res2.status).toBe(200)
+      expect(mockFindBySlug).toHaveBeenCalledTimes(1)
+
+      // Invalidation clears isolate cache -> next request hits D1 again
+      clearTenantIsolateCache('isolate-test')
+      const res3 = await app.handle(new Request('http://localhost/test/isolate-test'))
+      expect(res3.status).toBe(200)
+      expect(mockFindBySlug).toHaveBeenCalledTimes(2)
+    })
+
+    it('negatively caches nonexistent tenant slug to guard against flood stampedes', async () => {
+      mockFindBySlug.mockResolvedValue(undefined)
+
+      const app = new Elysia()
+        .use(tenantMiddleware)
+        .get('/test/:tenantSlug', ({ tenant }: { tenant?: TenantContext }) => ({
+          id: tenant?.tenant.id,
+        }))
+
+      // Request 1: not found -> hits D1
+      const res1 = await app.handle(new Request('http://localhost/test/nonexistent-tenant'))
+      expect(res1.status).toBe(404)
+      expect(mockFindBySlug).toHaveBeenCalledTimes(1)
+
+      // Request 2: new Request -> negatively cached in isolate, skips D1!
+      const res2 = await app.handle(new Request('http://localhost/test/nonexistent-tenant'))
+      expect(res2.status).toBe(404)
+      expect(mockFindBySlug).toHaveBeenCalledTimes(1)
+
+      // Clearing isolate cache for that slug (as tenantsService.create does) immediately unblocks resolution
+      clearTenantIsolateCache('nonexistent-tenant')
+      mockFindBySlug.mockResolvedValueOnce({
+        id: 'newly-created-id',
+        slug: 'nonexistent-tenant',
+        name: 'Newly Created',
+        status: 'active',
+        createdAt: '2026-02-07T00:00:00Z',
+        updatedAt: '2026-02-07T00:00:00Z',
+      })
+      const res3 = await app.handle(new Request('http://localhost/test/nonexistent-tenant'))
+      expect(res3.status).toBe(200)
+      expect(mockFindBySlug).toHaveBeenCalledTimes(2)
     })
   })
 })

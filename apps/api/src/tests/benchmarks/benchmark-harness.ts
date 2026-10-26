@@ -26,7 +26,9 @@ export type BenchmarkSummary = {
   samples: number
   minMs: number
   medianMs: number
+  p90Ms?: number
   p95Ms: number
+  p99Ms?: number
   maxMs: number
   budgetMs: number
   // Legacy compatibility: overBudget reflects median > budgetMs
@@ -66,7 +68,7 @@ async function consumeResponse(response: Response): Promise<string> {
 
 export function percentile(sorted: number[], ratio: number): number {
   if (sorted.length === 0) return 0
-  const index = Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1)
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1))
   return sorted[index] ?? 0
 }
 
@@ -81,7 +83,9 @@ export function evaluateBenchmarkDurations(
   samples: number
   minMs: number
   medianMs: number
+  p90Ms: number
   p95Ms: number
+  p99Ms: number
   maxMs: number
   budgetMs: number
   medianBudgetMs: number
@@ -104,7 +108,9 @@ export function evaluateBenchmarkDurations(
   const minMs = roundMs(sorted[0] ?? 0)
   const maxMs = roundMs(sorted[sorted.length - 1] ?? 0)
   const medianMs = roundMs(percentile(sorted, 0.5))
+  const p90Ms = roundMs(percentile(sorted, 0.9))
   const p95Ms = roundMs(percentile(sorted, 0.95))
+  const p99Ms = roundMs(percentile(sorted, 0.99))
 
   const budgetMs = options.budgetMs ?? DEFAULT_BENCHMARK_BUDGET_MS
   const medianBudgetMs = options.medianBudgetMs ?? budgetMs
@@ -122,7 +128,9 @@ export function evaluateBenchmarkDurations(
     samples: durations.length,
     minMs,
     medianMs,
+    p90Ms,
     p95Ms,
+    p99Ms,
     maxMs,
     budgetMs,
     medianBudgetMs,
@@ -279,7 +287,9 @@ export async function runBenchmarkCase(app: AppLike, testCase: BenchmarkCase): P
     samples,
     minMs: evaluation.minMs,
     medianMs: evaluation.medianMs,
+    p90Ms: evaluation.p90Ms,
     p95Ms: evaluation.p95Ms,
+    p99Ms: evaluation.p99Ms,
     maxMs: evaluation.maxMs,
     budgetMs,
     medianBudgetMs,

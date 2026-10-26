@@ -8,6 +8,7 @@ import { computeDynamicTTL } from '@/scheduling/ttl.service'
 import type { ParsedFilter, ParsedSort } from '@/public/query-filter'
 
 import { buildDrizzleConditions, buildSortClause, enforceSearchAllowlist, hashFilterParams } from '@/public/query-filter'
+import { scheduleDeferredWork } from '@/commands/deferred-work'
 import { publicRepository } from './public.repository'
 
 const DEFAULT_BROWSER_TTL = 60
@@ -356,6 +357,7 @@ export const publicService = {
     preloadedCollection?: CollectionRow | null
     /** Memoized lookup used only on a snapshot miss (no D1 on cache hits). */
     resolveCollection?: CollectionResolver
+    waitUntil?: unknown
   }): Promise<PublicSnapshotResult> {
     const {
       db,
@@ -369,6 +371,7 @@ export const publicService = {
       sort,
       preloadedCollection,
       resolveCollection,
+      waitUntil,
     } = params
     const filterHash = hashFilterParams(filters, sort ?? [])
     const tracker = new CacheMetadataTracker()
@@ -424,15 +427,17 @@ export const publicService = {
       const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
       const tags = snapshotService.generateCacheTags(collection.id, undefined, locale)
-      await Promise.all([
-        kvService.putSnapshot(
-          kv,
-          versionedKey,
-          withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL }),
-          dynamicTTL
-        ),
-        snapshotService.storeCacheTags(db, versionedKey, tags),
-      ])
+      await kvService.putSnapshot(
+        kv,
+        versionedKey,
+        withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL }),
+        dynamicTTL
+      )
+      scheduleDeferredWork(
+        waitUntil,
+        Promise.resolve(snapshotService.storeCacheTags(db, versionedKey, tags)),
+        'public_store_cache_tags'
+      )
 
       return {
         success: true,
@@ -459,6 +464,7 @@ export const publicService = {
     depth: number
     tenantId?: string
     preloadedCollection?: CollectionRow | null
+    waitUntil?: unknown
   }): Promise<PublicSnapshotResult> {
     const {
       db,
@@ -470,6 +476,7 @@ export const publicService = {
       depth,
       tenantId,
       preloadedCollection,
+      waitUntil,
     } = params
     const tracker = new CacheMetadataTracker()
     const { cacheToken, fieldNames } = normalizePopulateQuery(populateParam)
@@ -523,15 +530,17 @@ export const publicService = {
         generatedSnapshot.entry.id,
         locale
       )
-      await Promise.all([
-        kvService.putSnapshot(
-          kv,
-          versionedKey,
-          withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL }),
-          dynamicTTL
-        ),
-        snapshotService.storeCacheTags(db, versionedKey, tags),
-      ])
+      await kvService.putSnapshot(
+        kv,
+        versionedKey,
+        withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL }),
+        dynamicTTL
+      )
+      scheduleDeferredWork(
+        waitUntil,
+        Promise.resolve(snapshotService.storeCacheTags(db, versionedKey, tags)),
+        'public_store_cache_tags'
+      )
 
       return {
         success: true,
@@ -557,9 +566,18 @@ export const publicService = {
     preloadedCollection?: CollectionRow | null
     /** Memoized lookup used only on a snapshot miss (no D1 on cache hits). */
     resolveCollection?: CollectionResolver
+    waitUntil?: unknown
   }): Promise<PublicSnapshotResult> {
-    const { db, kv, collectionSlug, locale, tenantId, preloadedCollection, resolveCollection } =
-      params
+    const {
+      db,
+      kv,
+      collectionSlug,
+      locale,
+      tenantId,
+      preloadedCollection,
+      resolveCollection,
+      waitUntil,
+    } = params
     const tracker = new CacheMetadataTracker()
     const baseKey = `snapshot:${collectionSlug}:${locale}:singleton`
     const version = await kvService.getCurrentVersion(kv, collectionSlug, locale, tenantId)
@@ -611,15 +629,17 @@ export const publicService = {
       const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
       const tags = snapshotService.generateCacheTags(collection.id, entry.id, locale)
-      await Promise.all([
-        kvService.putSnapshot(
-          kv,
-          versionedKey,
-          withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL }),
-          dynamicTTL
-        ),
-        snapshotService.storeCacheTags(db, versionedKey, tags),
-      ])
+      await kvService.putSnapshot(
+        kv,
+        versionedKey,
+        withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL }),
+        dynamicTTL
+      )
+      scheduleDeferredWork(
+        waitUntil,
+        Promise.resolve(snapshotService.storeCacheTags(db, versionedKey, tags)),
+        'public_store_cache_tags'
+      )
 
       return {
         success: true,

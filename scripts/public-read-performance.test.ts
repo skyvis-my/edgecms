@@ -7,6 +7,7 @@ import {
   percentile,
   runPublicReadPerformance,
   summarizeDurations,
+  summarizePercentiles,
   timeAndValidateRequest,
 } from './public-read-performance'
 
@@ -24,6 +25,15 @@ describe('public read performance helpers', () => {
       maxMs: 25,
       p50Ms: 12,
       p95Ms: 25,
+    })
+  })
+
+  it('summarizes full percentiles with p50, p90, p95, and p99', () => {
+    expect(summarizePercentiles([10, 12, 18, 25, 30, 45, 50, 70, 90, 100])).toEqual({
+      p50Ms: 30,
+      p90Ms: 90,
+      p95Ms: 100,
+      p99Ms: 100,
     })
   })
 

@@ -1318,7 +1318,9 @@ describe('API in-process benchmark contract', () => {
         cases: summaries.map((summary) => ({
           name: summary.name,
           medianMs: summary.medianMs,
+          p90Ms: summary.p90Ms,
           p95Ms: summary.p95Ms,
+          p99Ms: summary.p99Ms,
           budgetMs: summary.budgetMs,
           attempts: summary.attempts,
           overBudget: summary.overBudget,

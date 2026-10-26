@@ -45,12 +45,69 @@ function setPublicMissCache(headers: CacheHeaders) {
   headers['x-edgecms-cache'] = 'miss'
 }
 
+export function generateWeakETag(tag: string, payload: unknown): string {
+  let marker = ''
+  if (payload && typeof payload === 'object') {
+    const record = payload as Record<string, unknown>
+    if (typeof record.generatedAt === 'string') {
+      marker = record.generatedAt
+    } else if (record.entry && typeof record.entry === 'object') {
+      const entry = record.entry as Record<string, unknown>
+      marker = `${String(entry.id ?? '')}:${String(entry.updatedAt ?? entry.version ?? '')}`
+    } else if (Array.isArray(record.entries)) {
+      const itemKeys = record.entries
+        .slice(0, 25)
+        .map((e) => {
+          if (e && typeof e === 'object') {
+            const rec = e as Record<string, unknown>
+            return `${rec.id ?? ''}:${rec.updatedAt ?? rec.version ?? ''}`
+          }
+          return String(e ?? '')
+        })
+        .join(',')
+      marker = `${record.total ?? record.entries.length}:${itemKeys}`
+    } else {
+      try {
+        marker = JSON.stringify(record)
+      } catch {
+        marker = ''
+      }
+    }
+  } else {
+    marker = String(payload ?? '')
+  }
+  const str = `${tag}:${marker}`
+  let h = 0x811c9dc5
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  const hex = (h >>> 0).toString(16)
+  return `W/"${hex}"`
+}
+
+export function isIfNoneMatch(headerValue: string | null | undefined, etag: string): boolean {
+  if (!headerValue || !etag) return false
+  const trimmed = headerValue.trim()
+  if (trimmed === '*' || trimmed === 'W/"*"') return true
+  const candidates = trimmed.split(',').map((c) => c.trim())
+  const normalizedEtag = etag.replace(/^W\//, '').replace(/"/g, '')
+  for (const candidate of candidates) {
+    const normalizedCandidate = candidate.replace(/^W\//, '').replace(/"/g, '')
+    if (candidate === etag || normalizedCandidate === normalizedEtag) {
+      return true
+    }
+  }
+  return false
+}
+
 function setPublicCacheHeaders(
   headers: CacheHeaders,
   cacheTag: string,
   browserTTL: number,
   cdnTTL: number,
-  debugHeaders?: Record<string, string>
+  debugHeaders?: Record<string, string>,
+  etag?: string
 ) {
   headers['Cache-Control'] =
     `public, max-age=${browserTTL}, ` +
@@ -62,6 +119,9 @@ function setPublicCacheHeaders(
     `stale-if-error=${PUBLIC_STALE_IF_ERROR_SECONDS}`
   headers.Vary = 'Accept-Encoding'
   headers['Cache-Tag'] = cacheTag
+  if (etag) {
+    headers.ETag = etag
+  }
   headers['x-edgecms-cache'] =
     debugHeaders?.['x-edgecms-cache'] ??
     (debugHeaders?.['X-Cache-Status'] ? debugHeaders['X-Cache-Status'].toLowerCase() : 'miss')
@@ -253,6 +313,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       filters,
       sort,
       resolveCollection,
+      waitUntil: ctx,
     })
 
     if (!result.success && result.error.status === 404) {
@@ -263,15 +324,33 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
         locale: (query.locale as string) || 'en',
         tenantId: tenantCtx?.tenant.id,
         resolveCollection,
+        waitUntil: ctx,
       })
 
       if (singletonFallback.success) {
+        const cacheTag = singletonFallback.data.cache.cacheTag
+        const etag = generateWeakETag(cacheTag, singletonFallback.data.payload)
+        const ifNoneMatch = request.headers.get('if-none-match')
+        if (isIfNoneMatch(ifNoneMatch, etag)) {
+          set.status = 304
+          setPublicCacheHeaders(
+            set.headers,
+            cacheTag,
+            singletonFallback.data.cache.browserTTL,
+            singletonFallback.data.cache.cdnTTL,
+            singletonFallback.data.cache.debugHeaders,
+            etag
+          )
+          return
+        }
+
         setPublicCacheHeaders(
           set.headers,
-          singletonFallback.data.cache.cacheTag,
+          cacheTag,
           singletonFallback.data.cache.browserTTL,
           singletonFallback.data.cache.cdnTTL,
-          singletonFallback.data.cache.debugHeaders
+          singletonFallback.data.cache.debugHeaders,
+          etag
         )
         return singletonFallback.data.payload
       }
@@ -283,12 +362,29 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       return { error: result.error.message }
     }
 
+    const cacheTag = result.data.cache.cacheTag
+    const etag = generateWeakETag(cacheTag, result.data.payload)
+    const ifNoneMatch = request.headers.get('if-none-match')
+    if (isIfNoneMatch(ifNoneMatch, etag)) {
+      set.status = 304
+      setPublicCacheHeaders(
+        set.headers,
+        cacheTag,
+        result.data.cache.browserTTL,
+        result.data.cache.cdnTTL,
+        result.data.cache.debugHeaders,
+        etag
+      )
+      return
+    }
+
     setPublicCacheHeaders(
       set.headers,
-      result.data.cache.cacheTag,
+      cacheTag,
       result.data.cache.browserTTL,
       result.data.cache.cdnTTL,
-      result.data.cache.debugHeaders
+      result.data.cache.debugHeaders,
+      etag
     )
 
     return result.data.payload
@@ -304,7 +400,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       depth: t.Optional(t.String()),
     }),
   }, async (ctx) => {
-    const { params, query, set, db, kv, tenantCtx, workerEnv } = ctx
+    const { params, query, set, db, kv, tenantCtx, workerEnv, request } = ctx
     const depthParam = Number.parseInt((query.depth as string) || '1', 10)
     const depth = Math.min(Math.max(depthParam, 1), 3)
 
@@ -324,6 +420,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       populateParam: (query.populate as string) || '',
       depth,
       tenantId: tenantCtx?.tenant.id,
+      waitUntil: ctx,
     })
 
     if (!result.success) {
@@ -332,12 +429,29 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       return { error: result.error.message }
     }
 
+    const cacheTag = result.data.cache.cacheTag
+    const etag = generateWeakETag(cacheTag, result.data.payload)
+    const ifNoneMatch = request.headers.get('if-none-match')
+    if (isIfNoneMatch(ifNoneMatch, etag)) {
+      set.status = 304
+      setPublicCacheHeaders(
+        set.headers,
+        cacheTag,
+        result.data.cache.browserTTL,
+        result.data.cache.cdnTTL,
+        result.data.cache.debugHeaders,
+        etag
+      )
+      return
+    }
+
     setPublicCacheHeaders(
       set.headers,
-      result.data.cache.cacheTag,
+      cacheTag,
       result.data.cache.browserTTL,
       result.data.cache.cdnTTL,
-      result.data.cache.debugHeaders
+      result.data.cache.debugHeaders,
+      etag
     )
 
     return result.data.payload
@@ -350,7 +464,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       locale: t.Optional(t.String()),
     }),
   }, async (ctx) => {
-    const { params, query, set, db, kv, tenantCtx, workerEnv } = ctx
+    const { params, query, set, db, kv, tenantCtx, workerEnv, request } = ctx
 
     const x402Res = await handleX402Gate(ctx, {
       secret: workerEnv?.BETTER_AUTH_SECRET || workerEnv?.EDGECMS_API_KEY || 'edgecms_secret',
@@ -373,12 +487,29 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       return { error: result.error.message }
     }
 
+    const cacheTag = result.data.cache.cacheTag
+    const etag = generateWeakETag(cacheTag, result.data.payload)
+    const ifNoneMatch = request.headers.get('if-none-match')
+    if (isIfNoneMatch(ifNoneMatch, etag)) {
+      set.status = 304
+      setPublicCacheHeaders(
+        set.headers,
+        cacheTag,
+        result.data.cache.browserTTL,
+        result.data.cache.cdnTTL,
+        result.data.cache.debugHeaders,
+        etag
+      )
+      return
+    }
+
     setPublicCacheHeaders(
       set.headers,
-      result.data.cache.cacheTag,
+      cacheTag,
       result.data.cache.browserTTL,
       result.data.cache.cdnTTL,
-      result.data.cache.debugHeaders
+      result.data.cache.debugHeaders,
+      etag
     )
 
     return result.data.payload

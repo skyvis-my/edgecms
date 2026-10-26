@@ -8,6 +8,11 @@ const MEMORY_CACHE_MAX_BYTES = 8 * 1024 * 1024 // 8 MB: well clear of the 128 MB
 
 const memorySnapshotCache = new LRUMemoryCache({ maxSizeBytes: MEMORY_CACHE_MAX_BYTES })
 
+// Singleflight promise deduplication to guard against cache stampedes and redundant KV reads
+const inFlightKVReads = new Map<string, Promise<unknown | null>>()
+const inFlightVersionReads = new Map<string, Promise<number>>()
+const inFlightGetOrSet = new Map<string, Promise<unknown | null>>()
+
 /** Short-TTL L1 for collection/locale version counters (avoids a KV read per request). */
 const VERSION_CACHE_TTL_SECONDS = 10
 
@@ -55,6 +60,9 @@ function readMemorySnapshot(key: string): unknown | null {
 export const kvService = {
   __resetInMemorySnapshotCacheForTests() {
     memorySnapshotCache.clear()
+    inFlightKVReads.clear()
+    inFlightVersionReads.clear()
+    inFlightGetOrSet.clear()
   },
 
   getMemoryCacheStats() {
@@ -86,11 +94,24 @@ export const kvService = {
     const versionKey = tenantScope
       ? `${tenantScope}:version:${collectionSlug}:${locale}`
       : `version:${collectionSlug}:${locale}`
-    const versionStr = await kv.get(versionKey)
-    const version = versionStr ? Number.parseInt(versionStr, 10) : 1
-    const normalized = Number.isInteger(version) && version >= 1 ? version : 1
-    memorySnapshotCache.setFrozen(cacheKey, normalized, VERSION_CACHE_TTL_SECONDS, 16)
-    return normalized
+
+    const inFlight = inFlightVersionReads.get(versionKey)
+    if (inFlight) return inFlight
+
+    const readPromise = (async () => {
+      try {
+        const versionStr = await kv.get(versionKey)
+        const version = versionStr ? Number.parseInt(versionStr, 10) : 1
+        const normalized = Number.isInteger(version) && version >= 1 ? version : 1
+        memorySnapshotCache.setFrozen(cacheKey, normalized, VERSION_CACHE_TTL_SECONDS, 16)
+        return normalized
+      } finally {
+        inFlightVersionReads.delete(versionKey)
+      }
+    })()
+
+    inFlightVersionReads.set(versionKey, readPromise)
+    return readPromise
   },
 
   /**
@@ -123,6 +144,7 @@ export const kvService = {
     // out via their own TTLs). Expiring a version key would reset it to 1 and
     // resurrect stale snapshots — worse than the few bytes of counter storage.
     await kv.put(versionKey, newVersion.toString())
+    inFlightVersionReads.delete(versionKey)
     memorySnapshotCache.setFrozen(
       versionCacheKey(collectionSlug, locale, tenantScope),
       newVersion,
@@ -166,26 +188,47 @@ export const kvService = {
       tracker?.recordHit('memory')
       return inMemoryValue
     }
-    incrementMetric('cache_misses_total', { layer: 'memory' })
-
-    const value = await kv.get(key)
-    if (!value) {
-      incrementMetric('cache_misses_total', { layer: 'kv' })
+    const inFlight = inFlightKVReads.get(key)
+    if (inFlight) {
+      const result = await inFlight
+      if (result !== null) {
+        incrementMetric('cache_hits_total', { layer: 'kv' })
+        tracker?.recordHit('kv')
+        return result
+      }
       return null
     }
-    incrementMetric('cache_hits_total', { layer: 'kv' })
-    tracker?.recordHit('kv')
 
-    try {
-      const parsed = JSON.parse(value)
-      // Single stringify for size accounting: reuse the KV payload length
-      // instead of re-serializing inside the LRU cache.
-      writeFrozenMemorySnapshot(key, parsed, getMemoryTTL(namespace), value.length * 2)
-      return parsed
-    } catch {
-      logger.error('snapshot_json_parse_failed', { key })
-      return null
+    const readPromise = (async () => {
+      try {
+        incrementMetric('cache_misses_total', { layer: 'memory' })
+        const value = await kv.get(key)
+        if (!value) {
+          incrementMetric('cache_misses_total', { layer: 'kv' })
+          return null
+        }
+        try {
+          const parsed = JSON.parse(value)
+          // Single stringify for size accounting: reuse the KV payload length
+          // instead of re-serializing inside the LRU cache.
+          writeFrozenMemorySnapshot(key, parsed, getMemoryTTL(namespace), value.length * 2)
+          return parsed
+        } catch {
+          logger.error('snapshot_json_parse_failed', { key })
+          return null
+        }
+      } finally {
+        inFlightKVReads.delete(key)
+      }
+    })()
+
+    inFlightKVReads.set(key, readPromise)
+    const result = await readPromise
+    if (result !== null) {
+      incrementMetric('cache_hits_total', { layer: 'kv' })
+      tracker?.recordHit('kv')
     }
+    return result
   },
 
   /**
@@ -210,6 +253,8 @@ export const kvService = {
     ttl: number,
     namespace: CacheNamespace = CACHE_NAMESPACE.CONTENT
   ): Promise<void> {
+    inFlightKVReads.delete(key)
+    inFlightGetOrSet.delete(key)
     // Clamp TTL between min (60s) and max (3600s) for safety
     const boundedTTL = Math.max(60, Math.min(ttl, 3600))
     // Stringify once: the same payload serves KV and LRU size accounting.
@@ -228,6 +273,8 @@ export const kvService = {
    * @param key - Versioned or unversioned key
    */
   async deleteSnapshot(kv: KVNamespace, key: string): Promise<void> {
+    inFlightKVReads.delete(key)
+    inFlightGetOrSet.delete(key)
     await kv.delete(key)
     memorySnapshotCache.delete(key)
   },
@@ -254,17 +301,35 @@ export const kvService = {
     namespace: CacheNamespace = CACHE_NAMESPACE.CONTENT,
     tracker?: CacheMetadataTracker
   ): Promise<T | null> {
+    const inFlightEarly = inFlightGetOrSet.get(key)
+    if (inFlightEarly) {
+      return inFlightEarly as Promise<T | null>
+    }
+
     const cached = await this.getSnapshot(kv, key, tracker, namespace)
     if (cached !== null) {
       return cached as T
     }
 
-    const fresh = await factory()
-    if (fresh === null || fresh === undefined) {
-      return null
+    const inFlight = inFlightGetOrSet.get(key)
+    if (inFlight) {
+      return inFlight as Promise<T | null>
     }
 
-    await this.putSnapshot(kv, key, fresh, ttl, namespace)
-    return fresh
+    const promise = (async () => {
+      try {
+        const fresh = await factory()
+        if (fresh === null || fresh === undefined) {
+          return null
+        }
+        await this.putSnapshot(kv, key, fresh, ttl, namespace)
+        return fresh
+      } finally {
+        inFlightGetOrSet.delete(key)
+      }
+    })()
+
+    inFlightGetOrSet.set(key, promise)
+    return promise
   },
 }

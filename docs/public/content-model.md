@@ -207,7 +207,7 @@ The direct route `PUT /api/admin/entries/:entryId` does not apply these rules an
 
 A scheduled unpublish moves the entry to `draft`, not `archived`.
 
-If the Durable Object call is lost, the `schedule_intents` row stays open. `POST /api/admin/system/sweep-schedules` re-sends open intents (up to 50 per call). `wrangler.scheduler.toml` declares a one-minute cron for a separate scheduler worker, but its entry file `src/scheduler/worker.ts` is not in the repo, so nothing runs the sweep automatically today.
+If the Durable Object call is lost, the `schedule_intents` row stays open. `POST /api/admin/system/sweep-schedules` re-sends open intents (up to 50 per call). `wrangler.scheduler.toml` declares a one-minute cron for a separate scheduler worker (`src/scheduler/worker.ts`), which periodically sweeps and reconciles open intents automatically.
 
 The timestamps are not validated: a past or malformed `publishAt` is stored as sent.
 

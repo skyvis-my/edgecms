@@ -21,6 +21,9 @@ export type DeferredWorkScheduler = (promise: Promise<unknown>) => void
 
 /** Anything that may carry a `waitUntil` — Elysia request ctx or CommandContext. */
 function readWaitUntil(source: unknown): ((promise: Promise<unknown>) => void) | undefined {
+  if (typeof source === 'function') {
+    return source as (promise: Promise<unknown>) => void
+  }
   if (!source || typeof source !== 'object') return undefined
   const record = source as Record<string, unknown>
   // Elysia request-context shape: `ctx.waitUntil` (mirrors assets.controller).
@@ -61,7 +64,7 @@ export function scheduleDeferredWork(
   promise: Promise<unknown>,
   task: string
 ): void {
-  const guarded = promise.catch((err: unknown) => {
+  const guarded = Promise.resolve(promise).catch((err: unknown) => {
     logger.warn('deferred_work_failed', {
       task,
       error: err instanceof Error ? err.message : String(err),

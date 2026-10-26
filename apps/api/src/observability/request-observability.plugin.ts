@@ -43,6 +43,7 @@ type ObservabilityCtx = {
   requestId?: string
   pathname?: string
   parsedUrl?: URL
+  startTime?: number
 }
 
 function finalizeObservability(
@@ -71,6 +72,23 @@ function finalizeObservability(
   const headers = ctx.set.headers as MutableHeaders
   headers['traceparent'] = traceparent
   headers['X-API-Version'] = API_VERSION
+
+  const duration =
+    ctx.startTime !== undefined ? Math.max(0, performance.now() - ctx.startTime) : undefined
+  if (duration !== undefined) {
+    const totalTiming = `total;dur=${Number(duration.toFixed(2))}`
+    const existingKey = Object.keys(headers).find(
+      (k) => k.toLowerCase() === 'server-timing'
+    )
+    const existing = existingKey ? headers[existingKey] : undefined
+    if (typeof existing === 'string' && existing.length > 0) {
+      if (!existing.includes('total;dur=')) {
+        headers[existingKey!] = `${existing}, ${totalTiming}`
+      }
+    } else {
+      headers[existingKey ?? 'Server-Timing'] = totalTiming
+    }
+  }
 
   applyApiSecurityHeaders(headers, pathname)
   const url = ctx.parsedUrl ?? getRequestUrl(ctx.request)
@@ -111,6 +129,7 @@ export function createRequestObservabilityPlugin(options: RequestObservabilityOp
     .derive('global', ({ request }) => {
       const url = getRequestUrl(request)
       return {
+        startTime: performance.now(),
         requestId: getOrCreateRequestId(request),
         requestMetrics: createRequestMetrics(),
         metrics: metricsRegistry,

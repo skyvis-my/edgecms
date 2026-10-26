@@ -48,6 +48,19 @@ export type PublicReadFailure = {
   timedOut: boolean
 }
 
+export type PublicReadPercentiles = {
+  p50Ms: number
+  p90Ms: number
+  p95Ms: number
+  p99Ms: number
+}
+
+export type PublicReadExtendedMetrics = {
+  percentiles: PublicReadPercentiles
+  throughputRps: number
+  memoryDeltaBytes: number
+}
+
 export type PublicReadPerformanceResult = {
   proof: PublicReadProofType
   goal: string
@@ -55,6 +68,7 @@ export type PublicReadPerformanceResult = {
   thresholdMs: number
   summary: PublicReadTimingSummary
   validationSummary?: PublicReadTimingSummary
+  metrics?: PublicReadExtendedMetrics
   counts: PublicReadCounts
   failures?: PublicReadFailure[]
   deploymentIdentity?: string
@@ -231,6 +245,18 @@ export function summarizeDurations(durationsMs: number[]): PublicReadTimingSumma
   }
 }
 
+export function summarizePercentiles(durationsMs: number[]): PublicReadPercentiles {
+  if (durationsMs.length === 0) {
+    return { p50Ms: 0, p90Ms: 0, p95Ms: 0, p99Ms: 0 }
+  }
+  return {
+    p50Ms: roundMs(percentile(durationsMs, 50)),
+    p90Ms: roundMs(percentile(durationsMs, 90)),
+    p95Ms: roundMs(percentile(durationsMs, 95)),
+    p99Ms: roundMs(percentile(durationsMs, 99)),
+  }
+}
+
 export function evaluatePublicReadTimings(options: {
   mode: PublicReadPerformanceMode
   baseURL: string
@@ -240,6 +266,8 @@ export function evaluatePublicReadTimings(options: {
   counts?: PublicReadCounts
   failures?: PublicReadFailure[]
   deploymentIdentity?: string
+  throughputRps?: number
+  memoryDeltaBytes?: number
 }): PublicReadPerformanceResult {
   if (options.durationsMs.some((d) => typeof d !== 'number' || !Number.isFinite(d))) {
     throw new Error('Evaluation rejected: measured durations must be finite numbers')
@@ -287,12 +315,20 @@ export function evaluatePublicReadTimings(options: {
     options.durationsMs.length > 0 &&
     summary.p95Ms <= thresholdMs
 
+  const percentiles = summarizePercentiles(options.durationsMs)
+  const metrics: PublicReadExtendedMetrics = {
+    percentiles,
+    throughputRps: options.throughputRps ?? 0,
+    memoryDeltaBytes: options.memoryDeltaBytes ?? 0,
+  }
+
   const result: PublicReadPerformanceResult = {
     proof,
     goal,
     url: buildBenchmarkURL(options.baseURL, options.path),
     thresholdMs,
     summary,
+    metrics,
     counts,
     deploymentVerified,
     passed,
@@ -523,6 +559,12 @@ export async function runPublicReadPerformance(
   const failures: PublicReadFailure[] = []
   let completed = 0
 
+  const memBefore =
+    typeof process !== 'undefined' && typeof process.memoryUsage === 'function'
+      ? process.memoryUsage().heapUsed
+      : 0
+  const startedTotal = performance.now()
+
   for (let index = 0; index < options.samples; index += 1) {
     try {
       const timed = await timeAndValidateRequest({ url, validator, fetchFn, timeoutMs })
@@ -544,6 +586,15 @@ export async function runPublicReadPerformance(
     }
   }
 
+  const totalElapsedMs = performance.now() - startedTotal
+  const memAfter =
+    typeof process !== 'undefined' && typeof process.memoryUsage === 'function'
+      ? process.memoryUsage().heapUsed
+      : 0
+  const memoryDeltaBytes = Math.max(0, memAfter - memBefore)
+  const throughputRps =
+    totalElapsedMs > 0 ? Number(((completed / totalElapsedMs) * 1000).toFixed(2)) : 0
+
   const counts: PublicReadCounts = {
     attempted: options.samples,
     completed,
@@ -557,11 +608,17 @@ export async function runPublicReadPerformance(
     validationDurationsMs: durationsMs.length > 0 ? validationDurationsMs : undefined,
     counts,
     failures: failures.length > 0 ? failures : undefined,
+    throughputRps,
+    memoryDeltaBytes,
   })
 }
 
 export async function main(args = Bun.argv.slice(2)) {
-  const result = await runPublicReadPerformance(parsePublicReadPerformanceOptions(args))
+  const options = parsePublicReadPerformanceOptions(args)
+  if (!options.expectation && options.mode === 'local' && options.path === localDefaultPath) {
+    options.expectation = { kind: 'list', expectedCollection: 'posts', allowEmpty: true }
+  }
+  const result = await runPublicReadPerformance(options)
   console.log(JSON.stringify(result, null, 2))
   if (!result.passed) process.exit(1)
 }

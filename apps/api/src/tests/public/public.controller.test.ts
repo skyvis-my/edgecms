@@ -618,4 +618,78 @@ describe('publicController', () => {
     expect(verifyJson.valid).toBe(true)
     expect(verifyJson.payload.tenantSlug).toBe('acme-corp')
   })
+
+  it('GET /:collectionSlug emits ETag header and handles conditional 304 Not Modified', async () => {
+    const snapshotPayload = { entries: [{ id: 'e1' }], generatedAt: '2026-10-25T00:00:00.000Z' }
+    kvService.getSnapshot.mockResolvedValue(snapshotPayload)
+
+    // 1. Initial request receives 200 OK and ETag header
+    const initialRes = await app.handle(
+      new Request('http://localhost/api/public/posts', {
+        headers: { Accept: 'application/json' },
+      })
+    )
+    expect(initialRes.status).toBe(200)
+    const etag = initialRes.headers.get('ETag')
+    expect(etag).toBeDefined()
+    expect(etag).toMatch(/^W\/"[a-f0-9]+"$/)
+
+    // 2. Conditional request with matching If-None-Match receives 304 Not Modified
+    const notModifiedRes = await app.handle(
+      new Request('http://localhost/api/public/posts', {
+        headers: {
+          Accept: 'application/json',
+          'If-None-Match': etag!,
+        },
+      })
+    )
+    expect(notModifiedRes.status).toBe(304)
+    expect(notModifiedRes.headers.get('ETag')).toBe(etag)
+    expect(notModifiedRes.headers.get('Cache-Control')).toBeDefined()
+    const text = await notModifiedRes.text()
+    expect(text).toBe('')
+
+    // 3. Conditional request with mismatched If-None-Match receives 200 OK
+    const mismatchedRes = await app.handle(
+      new Request('http://localhost/api/public/posts', {
+        headers: {
+          Accept: 'application/json',
+          'If-None-Match': 'W/"mismatched-etag"',
+        },
+      })
+    )
+    expect(mismatchedRes.status).toBe(200)
+
+    // 4. Conditional request with comma-separated list containing matching ETag receives 304
+    const multiMatchRes = await app.handle(
+      new Request('http://localhost/api/public/posts', {
+        headers: {
+          Accept: 'application/json',
+          'If-None-Match': `W/"other-etag", ${etag}`,
+        },
+      })
+    )
+    expect(multiMatchRes.status).toBe(304)
+
+    // 5. Conditional request with wildcard * or W/"*" receives 304
+    const wildcardRes = await app.handle(
+      new Request('http://localhost/api/public/posts', {
+        headers: {
+          Accept: 'application/json',
+          'If-None-Match': '*',
+        },
+      })
+    )
+    expect(wildcardRes.status).toBe(304)
+
+    const weakWildcardRes = await app.handle(
+      new Request('http://localhost/api/public/posts', {
+        headers: {
+          Accept: 'application/json',
+          'If-None-Match': 'W/"*"',
+        },
+      })
+    )
+    expect(weakWildcardRes.status).toBe(304)
+  })
 })

@@ -18,6 +18,8 @@ describe('benchmark harness deterministic evaluation (F03)', () => {
     it('retains general helper behavior on empty arrays without crashing', () => {
       expect(percentile([], 0.5)).toBe(0)
       expect(percentile([], 0.95)).toBe(0)
+      expect(percentile([10, 20, 30], 0)).toBe(10)
+      expect(percentile([10, 20, 30], 1)).toBe(30)
       expect(roundMs(0)).toBe(0)
     })
 
@@ -98,7 +100,9 @@ describe('benchmark harness deterministic evaluation (F03)', () => {
       })
 
       expect(evaluation.medianMs).toBe(0.8)
+      expect(evaluation.p90Ms).toBe(1.8)
       expect(evaluation.p95Ms).toBe(1.8)
+      expect(evaluation.p99Ms).toBe(1.8)
       expect(evaluation.medianPassed).toBe(true)
       expect(evaluation.p95Passed).toBe(true)
       expect(evaluation.passed).toBe(true)

@@ -17,6 +17,7 @@ import {
   tenantsRepository,
 } from './tenants.repository'
 import { invalidateCorsCache } from './cors-cache'
+import { clearTenantIsolateCache } from './tenant-cache'
 import type {
   InitialTenantStatus,
   ResolvedHostPolicies,
@@ -359,6 +360,7 @@ export const tenantsService = {
       if (!created) {
         throw new Error('Failed to create tenant: batch committed but row not found')
       }
+      clearTenantIsolateCache(input.slug)
       return { success: true, data: created }
     }
 
@@ -394,6 +396,7 @@ export const tenantsService = {
       throw err
     }
 
+    clearTenantIsolateCache(input.slug)
     return { success: true, data: row }
   },
 
@@ -602,8 +605,10 @@ export const tenantsService = {
     }
 
     invalidateCorsCache(updated.slug)
+    clearTenantIsolateCache(updated.slug)
     if (existing.slug !== updated.slug) {
       invalidateCorsCache(existing.slug)
+      clearTenantIsolateCache(existing.slug)
     }
 
     const transition = tenantStatusTransitionEvent(existing.status, updated.status)
@@ -677,6 +682,7 @@ export const tenantsService = {
     }
     if (existing?.slug) {
       invalidateCorsCache(existing.slug)
+      clearTenantIsolateCache(existing.slug)
     }
     if (existing) {
       await lifecycle.events?.publish('tenant.deleted', existing, { actorId: lifecycle.actorId })

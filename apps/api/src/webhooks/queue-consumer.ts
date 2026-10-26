@@ -7,7 +7,7 @@
  */
 
 import { drizzle } from 'drizzle-orm/d1'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { webhooks, webhookDeliveries } from '@/database/schema/webhooks.schema'
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
@@ -239,18 +239,71 @@ export async function handleQueue(
 ): Promise<void> {
   const orm = drizzle(env.DB)
 
+  // Batch-level caches to avoid N-queries multiplier on webhook definitions and idempotency records
+  const webhookCache = new Map<string, Promise<typeof webhooks.$inferSelect | undefined>>()
+  const deliveryCache = new Map<string, Promise<DeliveryRow | undefined>>()
+
+  const getWebhook = (webhookId: string): Promise<typeof webhooks.$inferSelect | undefined> => {
+    let pending = webhookCache.get(webhookId)
+    if (!pending) {
+      pending = (async () => {
+        try {
+          const rows = await orm
+            .select()
+            .from(webhooks)
+            .where(eq(webhooks.id, webhookId))
+            .limit(1)
+            .all()
+          return rows[0]
+        } catch {
+          return undefined
+        }
+      })()
+      webhookCache.set(webhookId, pending)
+    }
+    return pending
+  }
+
+  // Prefetch unique webhooks across the batch in a single query when multiple webhooks are present
+  const uniqueWebhookIds = Array.from(
+    new Set(batch.messages.map((m) => m.body.webhookId).filter(Boolean))
+  )
+  if (uniqueWebhookIds.length > 1) {
+    try {
+      const rows = await orm
+        .select()
+        .from(webhooks)
+        .where(inArray(webhooks.id, uniqueWebhookIds))
+        .all()
+      for (const row of rows) {
+        if (row && row.id) {
+          webhookCache.set(row.id, Promise.resolve(row))
+        }
+      }
+    } catch {
+      // Best-effort prefetch; getWebhook will fall back on demand
+    }
+  }
+
+  const getExistingDelivery = (
+    eventId: string,
+    webhookId: string
+  ): Promise<DeliveryRow | undefined> => {
+    const key = `${webhookId}:${eventId}`
+    let pending = deliveryCache.get(key)
+    if (!pending) {
+      pending = findExistingDelivery(orm, eventId, webhookId)
+      deliveryCache.set(key, pending)
+    }
+    return pending
+  }
+
   await runWithConcurrency(batch.messages, WEBHOOK_CONSUMER_CONCURRENCY, async (msg) => {
     const message = msg.body
 
     try {
       // Defense-in-depth: re-validate webhook existence and tenant scope before delivery.
-      const rows = await orm
-        .select()
-        .from(webhooks)
-        .where(eq(webhooks.id, message.webhookId))
-        .limit(1)
-        .all()
-      const webhook = rows[0]
+      const webhook = await getWebhook(message.webhookId)
       const eventScope = resolveEventTenantScope(message.eventPayload)
       if (eventScope === null) {
         logger.warn('webhook_delivery_malformed_scope_dropped', {
@@ -300,8 +353,7 @@ export async function handleQueue(
 
       // H2 dedup (idempotency key = eventId): queue at-least-once redelivery
       // of an already-delivered (event, webhook) pair acks without re-POST.
-      const existingDelivery = await findExistingDelivery(
-        orm,
+      const existingDelivery = await getExistingDelivery(
         message.eventPayload.id,
         message.webhookId
       )
@@ -323,7 +375,7 @@ export async function handleQueue(
 
       if (result.success) {
         // Delivery succeeded — record as 'delivered'
-        await recordDelivery(orm, {
+        const deliveryRow: DeliveryValues = {
           id: crypto.randomUUID(),
           webhookId: message.webhookId,
           eventId: message.eventPayload.id,
@@ -336,7 +388,12 @@ export async function handleQueue(
           responseStatus: result.status,
           responseBody: result.body,
           createdAt: new Date().toISOString(),
-        })
+        }
+        await recordDelivery(orm, deliveryRow)
+        deliveryCache.set(
+          `${message.webhookId}:${message.eventPayload.id}`,
+          Promise.resolve(deliveryRow as unknown as DeliveryRow)
+        )
 
         // Acknowledge the message to remove it from the queue
         msg.ack()
@@ -348,7 +405,7 @@ export async function handleQueue(
           const nextRetryAt = new Date(Date.now() + delaySeconds * 1000).toISOString()
 
           // Record the failed attempt
-          await recordDelivery(orm, {
+          const failedRow: DeliveryValues = {
             id: crypto.randomUUID(),
             webhookId: message.webhookId,
             eventId: message.eventPayload.id,
@@ -361,13 +418,18 @@ export async function handleQueue(
             responseStatus: result.status,
             responseBody: result.body,
             createdAt: new Date().toISOString(),
-          })
+          }
+          await recordDelivery(orm, failedRow)
+          deliveryCache.set(
+            `${message.webhookId}:${message.eventPayload.id}`,
+            Promise.resolve(failedRow as unknown as DeliveryRow)
+          )
 
           // Retry the message using Cloudflare Queue's native retry mechanism
           msg.retry({ delaySeconds })
         } else {
           // Max retries exhausted — mark as 'failed'
-          await recordDelivery(orm, {
+          const deadRow: DeliveryValues = {
             id: crypto.randomUUID(),
             webhookId: message.webhookId,
             eventId: message.eventPayload.id,
@@ -380,7 +442,12 @@ export async function handleQueue(
             responseStatus: result.status,
             responseBody: result.body,
             createdAt: new Date().toISOString(),
-          })
+          }
+          await recordDelivery(orm, deadRow)
+          deliveryCache.set(
+            `${message.webhookId}:${message.eventPayload.id}`,
+            Promise.resolve(deadRow as unknown as DeliveryRow)
+          )
 
           // Acknowledge to prevent infinite retry
           msg.ack()

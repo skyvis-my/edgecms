@@ -7,7 +7,7 @@ import { BooleanField } from './boolean-field'
 import { ColorField } from './color-field'
 import { DateField } from './date-field'
 import { SlugField } from './slug-field'
-import { TextField } from './text-field'
+import { RichTextField, TextField } from './text-field'
 import { NumberField } from './number-field'
 import { JsonField } from './json-field'
 import { DefaultField } from './default-field'
@@ -373,5 +373,22 @@ describe('Field Renderers', () => {
       fireEvent.change(input, { target: { value: 'https://test.org' } })
       expect(onChange).toHaveBeenCalledWith('https://test.org')
     })
+
+    it('renders RichTextField with lazy loaded editor component', async () => {
+      const onChange = mock()
+      render(
+        <RichTextField
+          fieldId='rich-1'
+          name='Content'
+          currentValue='<p>Hello world</p>'
+          onChange={onChange}
+          field={{ ...baseField, type: 'richtext' }}
+        />
+      )
+
+      // The lazy component resolves and renders the rich text editor container
+      expect(await screen.findByRole('textbox')).toBeInTheDocument()
+    })
   })
 })
+

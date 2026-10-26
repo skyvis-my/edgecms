@@ -1078,8 +1078,173 @@ describe('handleQueue', () => {
       expect(msgDeadLetter.ack).toHaveBeenCalledTimes(1)
       expect(msgDeadLetter.retry).not.toHaveBeenCalled()
     })
+
+    it('deduplicates webhook config queries across multiple messages in a batch', async () => {
+      mockFetch.mockImplementation(() => Promise.resolve(new Response('OK', { status: 200 })))
+
+      const msg1 = {
+        id: 'msg-batch-1',
+        timestamp: new Date(),
+        body: {
+          webhookId: 'webhook-shared',
+          eventPayload: {
+            id: 'ev-shared-1',
+            event: 'entry.created',
+            timestamp: '',
+            data: { after: {}, metadata: { syncChannel: 'global' } },
+          },
+          webhookUrl: 'https://example.com/shared',
+          webhookSecret: 'secret',
+          maxRetries: 5,
+          timeout: 30,
+          tenantId: 'global',
+        } as WebhookQueueMessage,
+        attempts: 0,
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+
+      const msg2 = {
+        id: 'msg-batch-2',
+        timestamp: new Date(),
+        body: {
+          webhookId: 'webhook-shared',
+          eventPayload: {
+            id: 'ev-shared-2',
+            event: 'entry.updated',
+            timestamp: '',
+            data: { after: {}, metadata: { syncChannel: 'global' } },
+          },
+          webhookUrl: 'https://example.com/shared',
+          webhookSecret: 'secret',
+          maxRetries: 5,
+          timeout: 30,
+          tenantId: 'global',
+        } as WebhookQueueMessage,
+        attempts: 0,
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+
+      await handleQueue(createMessageBatch([msg1, msg2]), mockEnv)
+
+      expect(msg1.ack).toHaveBeenCalledTimes(1)
+      expect(msg2.ack).toHaveBeenCalledTimes(1)
+      // Webhook config is looked up once (deduped across the batch)
+      // Total selects = 1 webhook + 2 delivery checks = 3 (instead of 4 without webhook dedup)
+      expect(mockOrm.select).toHaveBeenCalledTimes(3)
+    })
+
+    it('deduplicates both webhook and idempotency queries when messages share event and webhook', async () => {
+      mockFetch.mockImplementation(() => Promise.resolve(new Response('OK', { status: 200 })))
+
+      const msg1 = {
+        id: 'msg-dup-1',
+        timestamp: new Date(),
+        body: {
+          webhookId: 'webhook-dup',
+          eventPayload: {
+            id: 'ev-same-1',
+            event: 'entry.created',
+            timestamp: '',
+            data: { after: {}, metadata: { syncChannel: 'global' } },
+          },
+          webhookUrl: 'https://example.com/dup',
+          webhookSecret: 'secret',
+          maxRetries: 5,
+          timeout: 30,
+          tenantId: 'global',
+        } as WebhookQueueMessage,
+        attempts: 0,
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+
+      const msg2 = {
+        id: 'msg-dup-2',
+        timestamp: new Date(),
+        body: {
+          webhookId: 'webhook-dup',
+          eventPayload: {
+            id: 'ev-same-1',
+            event: 'entry.created',
+            timestamp: '',
+            data: { after: {}, metadata: { syncChannel: 'global' } },
+          },
+          webhookUrl: 'https://example.com/dup',
+          webhookSecret: 'secret',
+          maxRetries: 5,
+          timeout: 30,
+          tenantId: 'global',
+        } as WebhookQueueMessage,
+        attempts: 0,
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+
+      await handleQueue(createMessageBatch([msg1, msg2]), mockEnv)
+
+      expect(msg1.ack).toHaveBeenCalledTimes(1)
+      expect(msg2.ack).toHaveBeenCalledTimes(1)
+      // 1 select for webhook + 1 select for existing delivery = 2 queries total (instead of 4)
+      expect(mockOrm.select).toHaveBeenCalledTimes(2)
+    })
+
+    it('caches delivery state in memory on failure to avoid re-querying D1', async () => {
+      mockFetch.mockImplementation(() => Promise.resolve(new Response('Error', { status: 500 })))
+
+      const msg1 = {
+        id: 'msg-fail-1',
+        timestamp: new Date(),
+        body: {
+          webhookId: 'webhook-fail',
+          eventPayload: {
+            id: 'ev-fail-1',
+            event: 'entry.created',
+            timestamp: '',
+            data: { after: {}, metadata: { syncChannel: 'global' } },
+          },
+          webhookUrl: 'https://example.com/fail',
+          webhookSecret: 'secret',
+          maxRetries: 5,
+          timeout: 30,
+          tenantId: 'global',
+        } as WebhookQueueMessage,
+        attempts: 0,
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+
+      const msg2 = {
+        id: 'msg-fail-2',
+        timestamp: new Date(),
+        body: {
+          webhookId: 'webhook-fail',
+          eventPayload: {
+            id: 'ev-fail-1',
+            event: 'entry.created',
+            timestamp: '',
+            data: { after: {}, metadata: { syncChannel: 'global' } },
+          },
+          webhookUrl: 'https://example.com/fail',
+          webhookSecret: 'secret',
+          maxRetries: 5,
+          timeout: 30,
+          tenantId: 'global',
+        } as WebhookQueueMessage,
+        attempts: 0,
+        ack: vi.fn(),
+        retry: vi.fn(),
+      }
+
+      await handleQueue(createMessageBatch([msg1, msg2]), mockEnv)
+
+      // Total selects is 2 (1 webhook config + 1 delivery lookup, cached for second message)
+      expect(mockOrm.select).toHaveBeenCalledTimes(2)
+    })
   })
 })
+
 
 // ============================================================================
 // Test Helpers

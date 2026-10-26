@@ -6,18 +6,91 @@ const requestMembershipCache = new WeakMap<Request, Map<string, Promise<string |
 export type CachedFastPath = { actor: FastPathActor; tenantSlug: string | undefined }
 const requestFastPathCache = new WeakMap<Request, CachedFastPath>()
 
+type IsolateTenantCacheEntry = {
+  tenant?: TenantRow
+  expiresAt: number
+}
+
+const ISOLATE_TENANT_CACHE_MAX = 200
+const ISOLATE_TENANT_TTL_MS = 20_000 // 20s for active tenant rows
+const ISOLATE_NEGATIVE_TTL_MS = 5_000 // 5s for not found slugs to prevent D1 stampedes on bogus slugs
+
+const isolateTenantCache = new Map<string, IsolateTenantCacheEntry>()
+
+let isolateTenantCacheEnabled =
+  typeof process === 'undefined' || process.env.NODE_ENV !== 'test'
+
+export function setTenantIsolateCacheEnabled(enabled: boolean): void {
+  isolateTenantCacheEnabled = enabled
+}
+
+export function isTenantIsolateCacheEnabled(): boolean {
+  return isolateTenantCacheEnabled
+}
+
+export function getIsolateCachedTenant(slug: string): TenantRow | null | undefined {
+  if (!isolateTenantCacheEnabled) return undefined
+  const entry = isolateTenantCache.get(slug)
+  if (!entry) return undefined
+  if (Date.now() > entry.expiresAt) {
+    isolateTenantCache.delete(slug)
+    return undefined
+  }
+  // LRU promotion
+  isolateTenantCache.delete(slug)
+  isolateTenantCache.set(slug, entry)
+  return entry.tenant ?? null
+}
+
+export function setIsolateCachedTenant(slug: string, tenant: TenantRow | undefined): void {
+  if (!isolateTenantCacheEnabled) return
+  if (isolateTenantCache.size >= ISOLATE_TENANT_CACHE_MAX) {
+    const oldestKey = isolateTenantCache.keys().next().value
+    if (oldestKey !== undefined) isolateTenantCache.delete(oldestKey)
+  }
+  const ttl = tenant ? ISOLATE_TENANT_TTL_MS : ISOLATE_NEGATIVE_TTL_MS
+  isolateTenantCache.set(slug, {
+    tenant,
+    expiresAt: Date.now() + ttl,
+  })
+}
+
+export function clearTenantIsolateCache(slug?: string): void {
+  if (slug) {
+    isolateTenantCache.delete(slug)
+  } else {
+    isolateTenantCache.clear()
+  }
+}
+
 /**
- * Retrieves a cached tenant resolution promise for this Request lifecycle.
+ * Retrieves a cached tenant resolution promise for this Request lifecycle,
+ * checking the in-isolate bounded memory cache first to eliminate D1 lookups.
  */
 export function getCachedTenant(
   request: Request,
   slug: string
 ): Promise<TenantRow | undefined> | undefined {
-  return requestTenantCache.get(request)?.get(slug)
+  const reqCached = requestTenantCache.get(request)?.get(slug)
+  if (reqCached) return reqCached
+
+  const isolateCached = getIsolateCachedTenant(slug)
+  if (isolateCached !== undefined) {
+    const promise = Promise.resolve(isolateCached === null ? undefined : isolateCached)
+    let map = requestTenantCache.get(request)
+    if (!map) {
+      map = new Map()
+      requestTenantCache.set(request, map)
+    }
+    map.set(slug, promise)
+    return promise
+  }
+  return undefined
 }
 
 /**
- * Stores a tenant resolution promise for this Request lifecycle.
+ * Stores a tenant resolution promise for this Request lifecycle, and populates
+ * the in-isolate bounded LRU cache upon successful resolution.
  */
 export function setCachedTenant(
   request: Request,
@@ -30,6 +103,14 @@ export function setCachedTenant(
     requestTenantCache.set(request, map)
   }
   map.set(slug, promise)
+  promise.then(
+    (tenant) => {
+      setIsolateCachedTenant(slug, tenant)
+    },
+    () => {
+      // Don't cache rejected queries in isolate
+    }
+  )
 }
 
 /**

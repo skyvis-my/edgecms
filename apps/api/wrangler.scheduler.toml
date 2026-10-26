@@ -1,9 +1,17 @@
+# EdgeCMS Scheduler Worker (Optional Cron Sweeper)
+#
+# Primary scheduled publishing and unpublishing runs automatically via
+# Cloudflare Durable Object alarms (`PublishScheduler` in `apps/api/wrangler.toml`).
+# This separate worker is an optional standalone cron sweeper that periodically
+# executes `sweepScheduleIntents` to reconcile any orphaned or dropped intents.
+
 name = "edgecms-scheduler"
 main = "src/scheduler/worker.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
+account_id = "4d2ebaa1400c22bbc9d6ac132a982ace"
 
-# Cron Triggers
+# Cron Triggers (runs intent sweep every 1 minute)
 [triggers]
 crons = ["*/1 * * * *"]
 
@@ -11,9 +19,15 @@ crons = ["*/1 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "edgecms-db"
-database_id = "LOCAL_DATABASE_ID"
+database_id = "c428802d-3272-4cb0-a1f4-4b0a41cdae05"
 
 # KV Namespace (shared with CMS Worker)
 [[kv_namespaces]]
 binding = "CACHE"
-id = "LOCAL_KV_NAMESPACE_ID"
+id = "18e8d489286649ef9594510295ca55d4"
+
+# Durable Object binding for PublishScheduler intent reconciliation
+[[durable_objects.bindings]]
+name = "PUBLISH_SCHEDULER"
+class_name = "PublishScheduler"
+script_name = "edgecms-api"
