@@ -139,6 +139,61 @@ describe('engine webhook outbox (H1)', () => {
     const emittedData = firstCall[1] as { metadata: Record<string, unknown> }
     const rowMetadata = outboxEventId.metadata as Record<string, unknown>
     expect(emittedData.metadata.outboxEventId).toBe(rowMetadata.outboxEventId)
+    const emittedOptions = firstCall[2] as { eventId?: string } | undefined
+    expect(emittedOptions?.eventId).toBe(outboxBuilder.values.eventId as string)
+    expect(emittedOptions?.eventId).toBe(rowMetadata.outboxEventId as string)
+  })
+
+  it('attaches webhook event emission to executionCtx.waitUntil when available', async () => {
+    mockCreateEntry.mockResolvedValue({
+      success: true,
+      data: { id: 'e1' },
+      auditEntries: [],
+    })
+    const { db } = createBatchDb()
+    const waitUntilMock = vi.fn()
+    const ctx: CommandContext = {
+      db,
+      actor: { userId: 'user1', source: 'admin' },
+      executionCtx: { waitUntil: waitUntilMock } as unknown as ExecutionContext,
+    }
+
+    await executeCommand(ctx, {
+      type: 'createEntry',
+      payload: { collectionId: 'c1', data: {} },
+      actor: { userId: 'user1', source: 'admin' },
+      timestamp: new Date().toISOString(),
+    })
+
+    expect(waitUntilMock).toHaveBeenCalled()
+  })
+
+  it('synchronizes emitted event.id with outbox row eventId to prevent duplicate deliveries on outbox replay', async () => {
+    emitSpy.mockRestore()
+    let emittedEvent: any
+    eventBus.on('entry.created', (event) => {
+      emittedEvent = event
+    })
+
+    mockCreateEntry.mockResolvedValue({
+      success: true,
+      data: { id: 'e1' },
+      auditEntries: [],
+    })
+    const { db, builders } = createBatchDb()
+    const ctx: CommandContext = { db, actor: { userId: 'user1', source: 'admin' } }
+
+    await executeCommand(ctx, {
+      type: 'createEntry',
+      payload: { collectionId: 'c1', data: {} },
+      actor: { userId: 'user1', source: 'admin' },
+      timestamp: new Date().toISOString(),
+    })
+
+    const outboxBuilder = builders.find((b) => b.table === webhookOutbox)
+    expect(outboxBuilder).toBeDefined()
+    expect(emittedEvent).toBeDefined()
+    expect(emittedEvent.id).toBe(outboxBuilder?.values.eventId)
   })
 
   it('writes no outbox row when the handler fails', async () => {

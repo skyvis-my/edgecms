@@ -31,3 +31,13 @@ id = "LOCAL_KV_NAMESPACE_ID"
 name = "PUBLISH_SCHEDULER"
 class_name = "PublishScheduler"
 script_name = "edgecms-api"
+
+# R2 Bucket (shared with CMS Worker)
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "edgecms-media"
+
+# Webhook Delivery Queue (shared with CMS Worker for outbox relay)
+[[queues.producers]]
+queue = "edgecms-webhook-queue"
+binding = "WEBHOOK_QUEUE"

@@ -647,11 +647,15 @@ describe('executeCommand', () => {
         timestamp: new Date().toISOString(),
       })
 
-      expect(mockEventBusEmit).toHaveBeenCalledWith('entry.created', {
-        before: null,
-        after: { id: 'e1', collectionId: 'c1' },
-        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
-      })
+      expect(mockEventBusEmit).toHaveBeenCalledWith(
+        'entry.created',
+        {
+          before: null,
+          after: { id: 'e1', collectionId: 'c1' },
+          metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
+        },
+        { eventId: 'cmd-uuid' }
+      )
     })
 
     it('emits entry.updated event for successful updateEntry', async () => {
@@ -668,11 +672,15 @@ describe('executeCommand', () => {
         timestamp: new Date().toISOString(),
       })
 
-      expect(mockEventBusEmit).toHaveBeenCalledWith('entry.updated', {
-        before: null,
-        after: { id: 'e1', data: { title: 'Updated' } },
-        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
-      })
+      expect(mockEventBusEmit).toHaveBeenCalledWith(
+        'entry.updated',
+        {
+          before: null,
+          after: { id: 'e1', data: { title: 'Updated' } },
+          metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
+        },
+        { eventId: 'cmd-uuid' }
+      )
     })
 
     it('emits entry.deleted event for successful deleteEntry', async () => {
@@ -689,11 +697,15 @@ describe('executeCommand', () => {
         timestamp: new Date().toISOString(),
       })
 
-      expect(mockEventBusEmit).toHaveBeenCalledWith('entry.deleted', {
-        before: null,
-        after: { id: 'e1' },
-        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
-      })
+      expect(mockEventBusEmit).toHaveBeenCalledWith(
+        'entry.deleted',
+        {
+          before: null,
+          after: { id: 'e1' },
+          metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
+        },
+        { eventId: 'cmd-uuid' }
+      )
     })
 
     it('emits entry.published event for successful publishNow', async () => {
@@ -710,11 +722,15 @@ describe('executeCommand', () => {
         timestamp: new Date().toISOString(),
       })
 
-      expect(mockEventBusEmit).toHaveBeenCalledWith('entry.published', {
-        before: null,
-        after: { id: 'e1', status: 'published' },
-        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
-      })
+      expect(mockEventBusEmit).toHaveBeenCalledWith(
+        'entry.published',
+        {
+          before: null,
+          after: { id: 'e1', status: 'published' },
+          metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
+        },
+        { eventId: 'cmd-uuid' }
+      )
     })
 
     it('emits relation.linked event for successful linkRelation', async () => {
@@ -731,11 +747,15 @@ describe('executeCommand', () => {
         timestamp: new Date().toISOString(),
       })
 
-      expect(mockEventBusEmit).toHaveBeenCalledWith('relation.linked', {
-        before: null,
-        after: { sourceId: 'e1', targetId: 'e2' },
-        metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
-      })
+      expect(mockEventBusEmit).toHaveBeenCalledWith(
+        'relation.linked',
+        {
+          before: null,
+          after: { sourceId: 'e1', targetId: 'e2' },
+          metadata: { commandId: 'cmd-uuid', actor: { userId: 'user1', source: 'admin' }, syncChannel: 'global', outboxEventId: 'cmd-uuid' },
+        },
+        { eventId: 'cmd-uuid' }
+      )
     })
 
     it('does NOT throw if event emission fails', async () => {

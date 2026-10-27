@@ -93,12 +93,51 @@ export function isIfNoneMatch(headerValue: string | null | undefined, etag: stri
   const candidates = trimmed.split(',').map((c) => c.trim())
   const normalizedEtag = etag.replace(/^W\//, '').replace(/"/g, '')
   for (const candidate of candidates) {
+    if (!candidate) continue
+    if (candidate === '*' || candidate === 'W/"*"') return true
     const normalizedCandidate = candidate.replace(/^W\//, '').replace(/"/g, '')
     if (candidate === etag || normalizedCandidate === normalizedEtag) {
       return true
     }
   }
   return false
+}
+
+export function isIfRangeMatch(
+  ifRangeHeader: string | null | undefined,
+  etag: string | undefined
+): boolean {
+  if (!ifRangeHeader || !etag) return false
+  const trimmed = ifRangeHeader.trim()
+  // RFC 7233 §3.2: An entity-tag validator in If-Range MUST use strong comparison.
+  // Weak entity-tags cannot be used with If-Range.
+  if (trimmed.startsWith('W/') || etag.startsWith('W/')) return false
+  const cleanIfRange = trimmed.replace(/^"/, '').replace(/"$/, '')
+  const cleanEtag = etag.replace(/^"/, '').replace(/"$/, '')
+  return cleanIfRange === cleanEtag
+}
+
+export function parseRangeHeader(
+  rangeHeader: string,
+  total: number
+): { start: number; end: number } | null {
+  if (total <= 0) return null
+  const match = /^bytes\s*=\s*(\d*)\s*-\s*(\d*)$/.exec(rangeHeader.trim())
+  if (!match) return null
+  const [, startStr, endStr] = match
+  if (!startStr && !endStr) return null
+  if (!startStr) {
+    const suffix = Number.parseInt(endStr as string, 10)
+    if (!Number.isFinite(suffix) || suffix <= 0) return null
+    if (suffix >= total) return { start: 0, end: total - 1 }
+    return { start: total - suffix, end: total - 1 }
+  }
+  const start = Number.parseInt(startStr as string, 10)
+  if (!Number.isFinite(start) || start < 0 || start >= total) return null
+  if (!endStr) return { start, end: total - 1 }
+  const end = Number.parseInt(endStr as string, 10)
+  if (!Number.isFinite(end) || end < start) return null
+  return { start, end: Math.min(end, total - 1) }
 }
 
 function setPublicCacheHeaders(
@@ -177,6 +216,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
         transform,
         requestUrl: request.url,
         rangeHeader: request.headers.get('range'),
+        ifNoneMatch: request.headers.get('if-none-match'),
       })
       if (!fallback.success) {
         set.status = fallback.error.status
@@ -187,15 +227,94 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       return fallback.data
     }
 
+    const tenantScope = tenantCtx?.tenant.id || 'global'
+    const etag = (result.object as unknown as { httpEtag?: string; etag?: string }).httpEtag ||
+      (result.object as unknown as { httpEtag?: string; etag?: string }).etag
+    const ifNoneMatch = request.headers.get('if-none-match')
+    const rangeHeader = request.headers.get('range')
+
+    const assetHeaders: Record<string, string> = {
+      'Content-Type':
+        result.object.httpMetadata?.contentType ?? `image/${params.format}`,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'CDN-Cache-Control': 'public, max-age=31536000',
+      'Vary': 'Accept',
+      'x-edgecms-cache': 'hit',
+      'Accept-Ranges': 'bytes',
+      'Cache-Tag': `t:${tenantScope}:a:${params.assetId}`,
+    }
+    if (etag) {
+      assetHeaders.ETag = etag
+    }
+
+    if (etag && isIfNoneMatch(ifNoneMatch, etag)) {
+      return new Response(null, {
+        status: 304,
+        headers: {
+          'Cache-Control': 'public, max-age=31536000, immutable',
+          'CDN-Cache-Control': 'public, max-age=31536000',
+          'Vary': 'Accept',
+          'Accept-Ranges': 'bytes',
+          'Cache-Tag': `t:${tenantScope}:a:${params.assetId}`,
+          ETag: etag,
+        },
+      })
+    }
+
+    if (rangeHeader) {
+      const trimmedRange = rangeHeader.trim()
+      // RFC 7233 §3.1: An origin server MUST ignore a Range header field that contains a range unit it does not understand.
+      if (trimmedRange.startsWith('bytes=')) {
+        // RFC 7233 §3.2: If-Range header evaluation
+        const ifRange = request.headers.get('if-range')
+        const isIfRangeSatisfied = !ifRange || !etag || isIfRangeMatch(ifRange, etag)
+
+        if (isIfRangeSatisfied) {
+          // Check for multipart ranges (comma-separated): ignore if multipart per RFC 7233 §3.1
+          const byteRanges = trimmedRange.slice(6).split(',').map((s) => s.trim()).filter(Boolean)
+          if (byteRanges.length === 1) {
+            const total = (result.object as unknown as { size?: unknown }).size
+            if (typeof total === 'number' && Number.isFinite(total) && total >= 0) {
+              const range = parseRangeHeader(trimmedRange, total)
+              if (range) {
+                const ranged = await r2.get(result.variant.objectKey, {
+                  range: { offset: range.start, length: range.end - range.start + 1 },
+                })
+                const body = (ranged as unknown as { body?: unknown } | null)?.body
+                if (ranged && body !== undefined) {
+                  const rangedSize = (ranged as unknown as { size?: unknown }).size
+                  return new Response(ranged.body as unknown as typeof result.object.body, {
+                    status: 206,
+                    headers: {
+                      ...assetHeaders,
+                      'Content-Range': `bytes ${range.start}-${range.end}/${total}`,
+                      'Content-Length': String(
+                        typeof rangedSize === 'number' ? rangedSize : range.end - range.start + 1
+                      ),
+                    },
+                  })
+                }
+              } else {
+                return new Response(null, {
+                  status: 416,
+                  headers: {
+                    'Content-Range': `bytes */${total}`,
+                    'Accept-Ranges': 'bytes',
+                    'Cache-Control': 'public, max-age=31536000, immutable',
+                    'CDN-Cache-Control': 'public, max-age=31536000',
+                    'Cache-Tag': `t:${tenantScope}:a:${params.assetId}`,
+                    ...(etag ? { ETag: etag } : {}),
+                  },
+                })
+              }
+            }
+          }
+        }
+      }
+    }
+
     return new Response(result.object.body, {
-      headers: {
-        'Content-Type':
-          result.object.httpMetadata?.contentType ?? `image/${params.format}`,
-        'Cache-Control': 'public, max-age=31536000, immutable',
-        'CDN-Cache-Control': 'public, max-age=31536000',
-        'Vary': 'Accept',
-        'x-edgecms-cache': 'hit',
-      },
+      headers: assetHeaders,
     })
   })
   .get('/assets/:assetId/:variant', {
@@ -218,6 +337,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       requestUrl: request.url,
       isRaw: request.headers.get('x-edgecms-raw-image') === '1',
       rangeHeader: request.headers.get('range'),
+      ifNoneMatch: request.headers.get('if-none-match'),
     })
 
     if (!result.success) {
@@ -247,6 +367,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       requestUrl: request.url,
       isRaw: request.headers.get('x-edgecms-raw-image') === '1',
       rangeHeader: request.headers.get('range'),
+      ifNoneMatch: request.headers.get('if-none-match'),
     })
 
     if (!result.success) {

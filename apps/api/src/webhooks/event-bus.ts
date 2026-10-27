@@ -165,10 +165,11 @@ class EventBus {
     },
     options?: {
       mode?: 'async' | 'sync'
+      eventId?: string
     }
   ): Promise<void> {
     const event: WebhookEvent = {
-      id: crypto.randomUUID(),
+      id: options?.eventId ?? crypto.randomUUID(),
       event: eventType,
       timestamp: new Date().toISOString(),
       data,
@@ -179,15 +180,7 @@ class EventBus {
       return
     }
 
-    if (options?.mode === 'sync') {
-      await this.dispatchEvent(callbacks, event)
-      return
-    }
-
-    // Dispatch out-of-band so webhook listeners do not block request latency.
-    queueMicrotask(() => {
-      void this.dispatchEvent(callbacks, event)
-    })
+    return this.dispatchEvent(callbacks, event)
   }
 
   async emitSync(
@@ -196,9 +189,12 @@ class EventBus {
       before?: unknown
       after?: unknown
       metadata?: unknown
+    },
+    options?: {
+      eventId?: string
     }
   ): Promise<void> {
-    await this.emit(eventType, data, { mode: 'sync' })
+    await this.emit(eventType, data, { ...options, mode: 'sync' })
   }
 }
 

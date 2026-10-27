@@ -584,6 +584,147 @@ describe('publicController', () => {
     })
   })
 
+  it('GET /assets/:assetId emits Cache-Tag, ETag, and handles conditional 304 Not Modified', async () => {
+    assetsService.resolvePublicVariant.mockResolvedValue({
+      success: true,
+      data: { key: 'original/photo.jpg', contentType: 'image/jpeg' },
+    })
+    mockR2.get = vi.fn().mockResolvedValue({
+      body: new ReadableStream(),
+      httpEtag: '"asset-etag-abc"',
+      size: 1024,
+    } as unknown as R2ObjectBody)
+
+    // Full GET request
+    const response = await app.handle(
+      new Request('http://localhost/api/public/assets/photo-1')
+    )
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-tag')).toBe('t:global:a:photo-1')
+    expect(response.headers.get('etag')).toBe('"asset-etag-abc"')
+
+    // Conditional GET matching ETag
+    const notModifiedResponse = await app.handle(
+      new Request('http://localhost/api/public/assets/photo-1', {
+        headers: { 'if-none-match': '"asset-etag-abc"' },
+      })
+    )
+    expect(notModifiedResponse.status).toBe(304)
+    expect(notModifiedResponse.headers.get('etag')).toBe('"asset-etag-abc"')
+    expect(notModifiedResponse.headers.get('cache-tag')).toBe('t:global:a:photo-1')
+    expect(notModifiedResponse.headers.get('content-type')).toBeNull()
+    expect(notModifiedResponse.body).toBeNull()
+  })
+
+  it('GET /assets/:assetId serves 206 Partial Content for satisfiable byte range', async () => {
+    assetsService.resolvePublicVariant.mockResolvedValue({
+      success: true,
+      data: { key: 'original/video.mp4', contentType: 'video/mp4' },
+    })
+    const fullObj = {
+      body: new ReadableStream(),
+      size: 1000,
+      httpEtag: 'video-etag',
+    }
+    const rangedObj = {
+      body: new ReadableStream(),
+      size: 50,
+    }
+    mockR2.get = vi.fn().mockImplementation((key: string, opts?: { range?: { offset: number; length: number } }) => {
+      if (opts?.range) return Promise.resolve(rangedObj)
+      return Promise.resolve(fullObj)
+    })
+
+    const response = await app.handle(
+      new Request('http://localhost/api/public/assets/vid-1', {
+        headers: { range: 'bytes=0-49' },
+      })
+    )
+
+    expect(response.status).toBe(206)
+    expect(response.headers.get('content-range')).toBe('bytes 0-49/1000')
+    expect(response.headers.get('content-length')).toBe('50')
+    expect(response.headers.get('cache-tag')).toBe('t:global:a:vid-1')
+    expect(response.headers.get('content-type')).toBe('video/mp4')
+  })
+
+  it('GET /assets/:assetId returns 416 Range Not Satisfiable for unsatisfiable range', async () => {
+    assetsService.resolvePublicVariant.mockResolvedValue({
+      success: true,
+      data: { key: 'original/video.mp4', contentType: 'video/mp4' },
+    })
+    mockR2.get = vi.fn().mockResolvedValue({
+      body: new ReadableStream(),
+      size: 500,
+    } as unknown as R2ObjectBody)
+
+    const response = await app.handle(
+      new Request('http://localhost/api/public/assets/vid-1', {
+        headers: { range: 'bytes=1000-2000' },
+      })
+    )
+
+    expect(response.status).toBe(416)
+    expect(response.headers.get('content-range')).toBe('bytes */500')
+    expect(response.headers.get('cache-tag')).toBe('t:global:a:vid-1')
+    expect(response.headers.get('content-type')).toBeNull()
+    expect(response.body).toBeNull()
+  })
+
+  it('GET /assets/:assetId/:variant.:format handles 304 and 416 on pre-rendered variant fast path', async () => {
+    assetsService.getPublicVariant.mockResolvedValue({
+      object: {
+        body: new ReadableStream(),
+        httpMetadata: { contentType: 'image/webp' },
+        httpEtag: '"pre-rendered-etag"',
+        size: 800,
+      },
+      variant: {
+        objectKey: 'variants/a1/md.webp',
+      },
+    })
+
+    // 304 conditional revalidation
+    const conditionalRes = await app.handle(
+      new Request('http://localhost/api/public/assets/a1/md.webp', {
+        headers: { 'if-none-match': '"pre-rendered-etag"' },
+      })
+    )
+    expect(conditionalRes.status).toBe(304)
+    expect(conditionalRes.headers.get('cache-tag')).toBe('t:global:a:a1')
+    expect(conditionalRes.headers.get('etag')).toBe('"pre-rendered-etag"')
+    expect(conditionalRes.headers.get('content-type')).toBeNull()
+
+    // 416 unsatisfiable range
+    const rangeRes = await app.handle(
+      new Request('http://localhost/api/public/assets/a1/md.webp', {
+        headers: { range: 'bytes=900-1000' },
+      })
+    )
+    expect(rangeRes.status).toBe(416)
+    expect(rangeRes.headers.get('content-range')).toBe('bytes */800')
+    expect(rangeRes.headers.get('content-type')).toBeNull()
+
+    // Unknown range unit ignored (returns 200)
+    const unknownUnitRes = await app.handle(
+      new Request('http://localhost/api/public/assets/a1/md.webp', {
+        headers: { range: 'items=0-10' },
+      })
+    )
+    expect(unknownUnitRes.status).toBe(200)
+
+    // Mismatched If-Range ignored (returns 200)
+    const mismatchedIfRangeRes = await app.handle(
+      new Request('http://localhost/api/public/assets/a1/md.webp', {
+        headers: {
+          range: 'bytes=0-100',
+          'if-range': '"wrong-etag"',
+        },
+      })
+    )
+    expect(mismatchedIfRangeRes.status).toBe(200)
+  })
+
   it('POST /preview-token generates ephemeral preview token', async () => {
     const response = await app.handle(
       new Request('http://localhost/api/public/preview-token', {

@@ -652,11 +652,19 @@ async function handlePostExecution(
           }
         | undefined)
 
-      await eventBus.emit(derived.eventType, {
-        before: derived.before,
-        after: derived.after,
-        metadata: derived.metadata,
-      })
+      scheduleDeferredWork(
+        ctx,
+        eventBus.emit(
+          derived.eventType,
+          {
+            before: derived.before,
+            after: derived.after,
+            metadata: derived.metadata,
+          },
+          opts?.outboxEventId ? { eventId: opts.outboxEventId } : undefined
+        ),
+        'webhook_event_emission'
+      )
 
       if (ctx.env?.FRONTEND_REVALIDATE_URL && revalidateInfo) {
         scheduleDeferredWork(

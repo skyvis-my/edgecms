@@ -174,6 +174,33 @@ describe('EventBus', () => {
       expect(event1.id).not.toBe(event2.id)
     })
 
+    it('uses provided eventId in options when specified', async () => {
+      const listener = vi.fn()
+      eventBus.on('entry.created', listener)
+
+      const customEventId = 'custom-event-uuid-123'
+      await eventBus.emit(
+        'entry.created',
+        { after: { id: 'entry1' } },
+        { eventId: customEventId }
+      )
+
+      expect(listener).toHaveBeenCalledTimes(1)
+      const event = listener.mock.calls[0]?.[0] as WebhookEvent
+      expect(event.id).toBe(customEventId)
+    })
+
+    it('returns a dispatch promise that awaits listener completion', async () => {
+      let listenerCompleted = false
+      eventBus.on('entry.created', async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        listenerCompleted = true
+      })
+
+      await eventBus.emit('entry.created', { after: { id: 'entry1' } })
+      expect(listenerCompleted).toBe(true)
+    })
+
     it('includes an ISO 8601 timestamp', async () => {
       const listener = vi.fn()
 

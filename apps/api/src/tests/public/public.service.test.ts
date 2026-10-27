@@ -198,6 +198,346 @@ describe('publicService', () => {
         'tenant-1'
       )
     })
+
+    it('emits Cache-Tag with tenant scope or global fallback on asset responses', async () => {
+      mockAssetsService.resolvePublicVariant.mockResolvedValue({
+        success: true,
+        data: { key: 'assets/a1/variants/md.webp', contentType: 'image/webp' },
+      })
+      ;(r2 as unknown as { get: ReturnType<typeof mock> }).get.mockResolvedValue({
+        body: new ReadableStream(),
+        etag: 'test-etag-1',
+      })
+
+      // With tenantId
+      const tenantResult = await publicService.getAssetVariant({
+        db,
+        r2,
+        assetId: 'a1',
+        variantParam: 'md',
+        accept: null,
+        tenantId: 'tenant-123',
+      })
+      expect(tenantResult.success).toBe(true)
+      if (tenantResult.success) {
+        expect(tenantResult.data.headers.get('Cache-Tag')).toBe('t:tenant-123:a:a1')
+        expect(tenantResult.data.headers.get('ETag')).toBe('test-etag-1')
+      }
+
+      // Without tenantId (global fallback)
+      const globalResult = await publicService.getAssetVariant({
+        db,
+        r2,
+        assetId: 'a1',
+        variantParam: 'md',
+        accept: null,
+      })
+      expect(globalResult.success).toBe(true)
+      if (globalResult.success) {
+        expect(globalResult.data.headers.get('Cache-Tag')).toBe('t:global:a:a1')
+      }
+    })
+
+    it('returns HTTP 304 Not Modified when if-none-match matches etag or httpEtag', async () => {
+      mockAssetsService.resolvePublicVariant.mockResolvedValue({
+        success: true,
+        data: { key: 'assets/a1/variants/md.webp', contentType: 'image/webp' },
+      })
+      ;(r2 as unknown as { get: ReturnType<typeof mock> }).get.mockResolvedValue({
+        body: new ReadableStream(),
+        httpEtag: '"my-etag-123"',
+      })
+
+      // Matching via ifNoneMatch parameter
+      const result = await publicService.getAssetVariant({
+        db,
+        r2,
+        assetId: 'a1',
+        variantParam: 'md',
+        accept: null,
+        tenantId: 'tenant-1',
+        ifNoneMatch: '"my-etag-123"',
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.status).toBe(304)
+        expect(result.data.headers.get('ETag')).toBe('"my-etag-123"')
+        expect(result.data.headers.get('Cache-Control')).toBe('public, max-age=31536000, immutable')
+        expect(result.data.headers.get('Cache-Tag')).toBe('t:tenant-1:a:a1')
+        expect(result.data.headers.get('Content-Type')).toBeNull()
+        expect(result.data.body).toBeNull()
+      }
+
+      // Matching via weak ETag in request header
+      const weakMatchResult = await publicService.getAssetVariant({
+        db,
+        r2,
+        assetId: 'a1',
+        variantParam: 'md',
+        accept: null,
+        request: new Request('http://localhost', {
+          headers: { 'if-none-match': 'W/"my-etag-123"' },
+        }),
+      })
+
+      expect(weakMatchResult.success).toBe(true)
+      if (weakMatchResult.success) {
+        expect(weakMatchResult.data.status).toBe(304)
+        expect(weakMatchResult.data.headers.get('Content-Type')).toBeNull()
+        expect(weakMatchResult.data.body).toBeNull()
+      }
+    })
+
+    it('serves 206 Partial Content with correct byte slice for satisfiable range', async () => {
+      mockAssetsService.resolvePublicVariant.mockResolvedValue({
+        success: true,
+        data: { key: 'assets/a1/original/video.mp4', contentType: 'video/mp4' },
+      })
+      const fullObject = {
+        body: new ReadableStream(),
+        size: 1000,
+        httpEtag: 'video-etag',
+      }
+      const rangedObject = {
+        body: new ReadableStream(),
+        size: 100,
+      }
+      const getMock = (r2 as unknown as { get: ReturnType<typeof mock> }).get
+      getMock.mockImplementation((key: string, opts?: { range?: { offset: number; length: number } }) => {
+        if (opts?.range) {
+          return Promise.resolve(rangedObject)
+        }
+        return Promise.resolve(fullObject)
+      })
+
+      const result = await publicService.getAssetVariant({
+        db,
+        r2,
+        assetId: 'a1',
+        variantParam: 'original',
+        accept: null,
+        tenantId: 'tenant-x',
+        rangeHeader: 'bytes=0-99',
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.status).toBe(206)
+        expect(result.data.headers.get('Content-Range')).toBe('bytes 0-99/1000')
+        expect(result.data.headers.get('Content-Length')).toBe('100')
+        expect(result.data.headers.get('Accept-Ranges')).toBe('bytes')
+        expect(result.data.headers.get('Cache-Tag')).toBe('t:tenant-x:a:a1')
+        expect(result.data.headers.get('Content-Type')).toBe('video/mp4')
+        expect(getMock).toHaveBeenCalledWith('assets/a1/original/video.mp4', {
+          range: { offset: 0, length: 100 },
+        })
+      }
+    })
+
+    it('returns HTTP 416 Range Not Satisfiable when range is unsatisfiable (start >= total)', async () => {
+      mockAssetsService.resolvePublicVariant.mockResolvedValue({
+        success: true,
+        data: { key: 'assets/a1/original/video.mp4', contentType: 'video/mp4' },
+      })
+      ;(r2 as unknown as { get: ReturnType<typeof mock> }).get.mockResolvedValue({
+        body: new ReadableStream(),
+        size: 500,
+      })
+
+      const result = await publicService.getAssetVariant({
+        db,
+        r2,
+        assetId: 'a1',
+        variantParam: 'original',
+        accept: null,
+        rangeHeader: 'bytes=600-800',
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.status).toBe(416)
+        expect(result.data.headers.get('Content-Range')).toBe('bytes */500')
+        expect(result.data.headers.get('Accept-Ranges')).toBe('bytes')
+        expect(result.data.headers.get('Content-Type')).toBeNull()
+        expect(result.data.body).toBeNull()
+      }
+    })
+
+    it('returns HTTP 416 Range Not Satisfiable when range end is before start', async () => {
+      mockAssetsService.resolvePublicVariant.mockResolvedValue({
+        success: true,
+        data: { key: 'assets/a1/original/video.mp4', contentType: 'video/mp4' },
+      })
+      ;(r2 as unknown as { get: ReturnType<typeof mock> }).get.mockResolvedValue({
+        body: new ReadableStream(),
+        size: 500,
+      })
+
+      const result = await publicService.getAssetVariant({
+        db,
+        r2,
+        assetId: 'a1',
+        variantParam: 'original',
+        accept: null,
+        rangeHeader: 'bytes=300-200',
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.status).toBe(416)
+        expect(result.data.headers.get('Content-Range')).toBe('bytes */500')
+      }
+    })
+
+    it('returns HTTP 416 on 0-byte representation when Range header is sent', async () => {
+      mockAssetsService.resolvePublicVariant.mockResolvedValue({
+        success: true,
+        data: { key: 'assets/a1/original/empty.txt', contentType: 'text/plain' },
+      })
+      ;(r2 as unknown as { get: ReturnType<typeof mock> }).get.mockResolvedValue({
+        body: new ReadableStream(),
+        size: 0,
+      })
+
+      const result = await publicService.getAssetVariant({
+        db,
+        r2,
+        assetId: 'a1',
+        variantParam: 'original',
+        accept: null,
+        rangeHeader: 'bytes=0-0',
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.status).toBe(416)
+        expect(result.data.headers.get('Content-Range')).toBe('bytes */0')
+        expect(result.data.headers.get('Content-Type')).toBeNull()
+      }
+    })
+
+    it('ignores unknown range unit and serves 200 OK with full representation per RFC 7233 §3.1', async () => {
+      mockAssetsService.resolvePublicVariant.mockResolvedValue({
+        success: true,
+        data: { key: 'assets/a1/original/doc.pdf', contentType: 'application/pdf' },
+      })
+      ;(r2 as unknown as { get: ReturnType<typeof mock> }).get.mockResolvedValue({
+        body: new ReadableStream(),
+        size: 1000,
+      })
+
+      const result = await publicService.getAssetVariant({
+        db,
+        r2,
+        assetId: 'a1',
+        variantParam: 'original',
+        accept: null,
+        rangeHeader: 'items=0-10',
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.status).toBe(200)
+        expect(result.data.headers.get('Content-Range')).toBeNull()
+        expect(result.data.headers.get('Content-Type')).toBe('application/pdf')
+      }
+    })
+
+    it('ignores unsupported multipart byte range and serves 200 OK per RFC 7233 §3.1', async () => {
+      mockAssetsService.resolvePublicVariant.mockResolvedValue({
+        success: true,
+        data: { key: 'assets/a1/original/video.mp4', contentType: 'video/mp4' },
+      })
+      ;(r2 as unknown as { get: ReturnType<typeof mock> }).get.mockResolvedValue({
+        body: new ReadableStream(),
+        size: 1000,
+      })
+
+      const result = await publicService.getAssetVariant({
+        db,
+        r2,
+        assetId: 'a1',
+        variantParam: 'original',
+        accept: null,
+        rangeHeader: 'bytes=0-10, 20-30',
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.status).toBe(200)
+        expect(result.data.headers.get('Content-Range')).toBeNull()
+      }
+    })
+
+    it('ignores Range and returns 200 OK when If-Range validator does not match per RFC 7233 §3.2', async () => {
+      mockAssetsService.resolvePublicVariant.mockResolvedValue({
+        success: true,
+        data: { key: 'assets/a1/original/video.mp4', contentType: 'video/mp4' },
+      })
+      ;(r2 as unknown as { get: ReturnType<typeof mock> }).get.mockResolvedValue({
+        body: new ReadableStream(),
+        size: 1000,
+        httpEtag: '"new-etag"',
+      })
+
+      const result = await publicService.getAssetVariant({
+        db,
+        r2,
+        assetId: 'a1',
+        variantParam: 'original',
+        accept: null,
+        rangeHeader: 'bytes=0-99',
+        request: new Request('http://localhost', {
+          headers: { 'if-range': '"old-etag"' },
+        }),
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.status).toBe(200)
+        expect(result.data.headers.get('Content-Range')).toBeNull()
+      }
+    })
+
+    it('serves 206 Partial Content when If-Range validator matches per RFC 7233 §3.2', async () => {
+      mockAssetsService.resolvePublicVariant.mockResolvedValue({
+        success: true,
+        data: { key: 'assets/a1/original/video.mp4', contentType: 'video/mp4' },
+      })
+      const fullObject = {
+        body: new ReadableStream(),
+        size: 1000,
+        httpEtag: '"matching-etag"',
+      }
+      const rangedObject = {
+        body: new ReadableStream(),
+        size: 100,
+      }
+      const getMock = (r2 as unknown as { get: ReturnType<typeof mock> }).get
+      getMock.mockImplementation((key: string, opts?: { range?: { offset: number; length: number } }) => {
+        if (opts?.range) return Promise.resolve(rangedObject)
+        return Promise.resolve(fullObject)
+      })
+
+      const result = await publicService.getAssetVariant({
+        db,
+        r2,
+        assetId: 'a1',
+        variantParam: 'original',
+        accept: null,
+        rangeHeader: 'bytes=0-99',
+        request: new Request('http://localhost', {
+          headers: { 'if-range': '"matching-etag"' },
+        }),
+      })
+
+      expect(result.success).toBe(true)
+      if (result.success) {
+        expect(result.data.status).toBe(206)
+        expect(result.data.headers.get('Content-Range')).toBe('bytes 0-99/1000')
+      }
+    })
   })
 
   // ==========================================================================

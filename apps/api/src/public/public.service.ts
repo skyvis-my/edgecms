@@ -184,11 +184,12 @@ export type ImageTransformOptions = {
   format?: 'auto' | 'webp' | 'avif' | 'jpeg' | 'png' | 'json'
 }
 
-function parseRangeHeader(
+export function parseRangeHeader(
   rangeHeader: string,
   total: number
 ): { start: number; end: number } | null {
-  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim())
+  if (total <= 0) return null
+  const match = /^bytes\s*=\s*(\d*)\s*-\s*(\d*)$/.exec(rangeHeader.trim())
   if (!match) return null
   const [, startStr, endStr] = match
   if (!startStr && !endStr) return null
@@ -204,6 +205,37 @@ function parseRangeHeader(
   const end = Number.parseInt(endStr as string, 10)
   if (!Number.isFinite(end) || end < start) return null
   return { start, end: Math.min(end, total - 1) }
+}
+
+export function isIfNoneMatch(headerValue: string | null | undefined, etag: string): boolean {
+  if (!headerValue || !etag) return false
+  const trimmed = headerValue.trim()
+  if (trimmed === '*' || trimmed === 'W/"*"') return true
+  const candidates = trimmed.split(',').map((c) => c.trim())
+  const normalizedEtag = etag.replace(/^W\//, '').replace(/"/g, '')
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    if (candidate === '*' || candidate === 'W/"*"') return true
+    const normalizedCandidate = candidate.replace(/^W\//, '').replace(/"/g, '')
+    if (candidate === etag || normalizedCandidate === normalizedEtag) {
+      return true
+    }
+  }
+  return false
+}
+
+export function isIfRangeMatch(
+  ifRangeHeader: string | null | undefined,
+  etag: string | undefined
+): boolean {
+  if (!ifRangeHeader || !etag) return false
+  const trimmed = ifRangeHeader.trim()
+  // RFC 7233 §3.2: An entity-tag validator in If-Range MUST use strong comparison.
+  // Weak entity-tags cannot be used with If-Range.
+  if (trimmed.startsWith('W/') || etag.startsWith('W/')) return false
+  const cleanIfRange = trimmed.replace(/^"/, '').replace(/"$/, '')
+  const cleanEtag = etag.replace(/^"/, '').replace(/"$/, '')
+  return cleanIfRange === cleanEtag
 }
 
 type CollectionResolver = () => Promise<CollectionRow | null | undefined>
@@ -237,8 +269,23 @@ export const publicService = {
     requestUrl?: string
     isRaw?: boolean
     rangeHeader?: string | null
+    ifNoneMatch?: string | null
+    request?: Request
   }): Promise<PublicResult<Response>> {
-    const { db, r2, assetId, variantParam, accept, tenantId, transform, requestUrl, isRaw, rangeHeader } = params
+    const {
+      db,
+      r2,
+      assetId,
+      variantParam,
+      accept,
+      tenantId,
+      transform,
+      requestUrl,
+      isRaw,
+      rangeHeader,
+      ifNoneMatch,
+      request,
+    } = params
     const variant = resolveVariantParam(variantParam)
 
     const hasTransform = Boolean(
@@ -277,6 +324,32 @@ export const publicService = {
           edgeHeaders.set('x-edgecms-cache', 'hit')
           edgeHeaders.set('x-image-transform', 'cf-edge')
           edgeHeaders.set('Vary', 'Accept')
+          const tenantScope = tenantId || 'global'
+          edgeHeaders.set('Cache-Tag', `t:${tenantScope}:a:${assetId}`)
+
+          const edgeEtag = edgeHeaders.get('etag')
+          const effectiveIfNoneMatch = ifNoneMatch ?? request?.headers.get('if-none-match')
+          if (edgeEtag && isIfNoneMatch(effectiveIfNoneMatch, edgeEtag)) {
+            const revalidationHeaders = new Headers()
+            revalidationHeaders.set(
+              'Cache-Control',
+              edgeHeaders.get('cache-control') || 'public, max-age=31536000, immutable'
+            )
+            const cdnCacheControl = edgeHeaders.get('cdn-cache-control')
+            if (cdnCacheControl) revalidationHeaders.set('CDN-Cache-Control', cdnCacheControl)
+            revalidationHeaders.set('Vary', 'Accept')
+            revalidationHeaders.set('Accept-Ranges', 'bytes')
+            revalidationHeaders.set('Cache-Tag', `t:${tenantScope}:a:${assetId}`)
+            revalidationHeaders.set('ETag', edgeEtag)
+            return {
+              success: true,
+              data: new Response(null, {
+                status: 304,
+                headers: revalidationHeaders,
+              }),
+            }
+          }
+
           return {
             success: true,
             data: new Response(edgeRes.body, {
@@ -314,6 +387,7 @@ export const publicService = {
       return { success: false, error: { status: 404, message: 'Asset variant not found' } }
     }
 
+    const tenantScope = tenantId || 'global'
     const headers: Record<string, string> = {
       'Cache-Control': 'public, max-age=31536000, immutable',
       'CDN-Cache-Control': 'public, max-age=31536000',
@@ -325,37 +399,92 @@ export const publicService = {
       'x-edgecms-cache': 'hit',
       'x-image-transform': hasTransform ? 'fallback' : 'none',
       'Accept-Ranges': 'bytes',
+      'Cache-Tag': `t:${tenantScope}:a:${assetId}`,
     }
     if (hasTransform) {
       headers['x-image-transform-params'] = JSON.stringify(transform)
     }
 
+    const objectWithEtag = object as unknown as { httpEtag?: string; etag?: string }
+    const etag = objectWithEtag.httpEtag || objectWithEtag.etag
+    if (etag) {
+      headers.ETag = etag
+    }
+
+    const effectiveIfNoneMatch = ifNoneMatch ?? request?.headers.get('if-none-match')
+    if (etag && isIfNoneMatch(effectiveIfNoneMatch, etag)) {
+      return {
+        success: true,
+        data: new Response(null, {
+          status: 304,
+          headers: {
+            'Cache-Control': 'public, max-age=31536000, immutable',
+            'CDN-Cache-Control': 'public, max-age=31536000',
+            'Vary': 'Accept',
+            'Accept-Ranges': 'bytes',
+            'Cache-Tag': `t:${tenantScope}:a:${assetId}`,
+            ETag: etag,
+          },
+        }),
+      }
+    }
+
     // R2 Range requests: serve partial content with 206 when the client
     // sends `Range: bytes=start-end` and the object size is known.
     // Range + transform is not combined — transforms return full bodies above.
-    if (rangeHeader && !hasTransform) {
-      const total = (object as unknown as { size?: unknown }).size
-      if (typeof total === 'number' && Number.isFinite(total) && total > 0) {
-        const range = parseRangeHeader(rangeHeader, total)
-        if (range) {
-          const ranged = await r2.get(objectKey, {
-            range: { offset: range.start, length: range.end - range.start + 1 },
-          })
-          const body = (ranged as unknown as { body?: unknown } | null)?.body
-          if (ranged && body !== undefined) {
-            const rangedSize = (ranged as unknown as { size?: unknown }).size
-            return {
-              success: true,
-              data: new Response(ranged.body as unknown as typeof object.body, {
-                status: 206,
-                headers: {
-                  ...headers,
-                  'Content-Range': `bytes ${range.start}-${range.end}/${total}`,
-                  'Content-Length': String(
-                    typeof rangedSize === 'number' ? rangedSize : range.end - range.start + 1
-                  ),
-                },
-              }),
+    const effectiveRangeHeader = rangeHeader ?? request?.headers.get('range')
+    if (effectiveRangeHeader && !hasTransform) {
+      const trimmedRange = effectiveRangeHeader.trim()
+      // RFC 7233 §3.1: An origin server MUST ignore a Range header field that contains a range unit it does not understand.
+      if (trimmedRange.startsWith('bytes=')) {
+        // RFC 7233 §3.2: If-Range header evaluation
+        const ifRange = request?.headers.get('if-range')
+        const isIfRangeSatisfied = !ifRange || !etag || isIfRangeMatch(ifRange, etag)
+
+        if (isIfRangeSatisfied) {
+          // Check for multipart ranges (comma-separated): ignore if multipart per RFC 7233 §3.1
+          const byteRanges = trimmedRange.slice(6).split(',').map((s) => s.trim()).filter(Boolean)
+          if (byteRanges.length === 1) {
+            const total = (object as unknown as { size?: unknown }).size
+            if (typeof total === 'number' && Number.isFinite(total) && total >= 0) {
+              const range = parseRangeHeader(trimmedRange, total)
+              if (range) {
+                const ranged = await r2.get(objectKey, {
+                  range: { offset: range.start, length: range.end - range.start + 1 },
+                })
+                const body = (ranged as unknown as { body?: unknown } | null)?.body
+                if (ranged && body !== undefined) {
+                  const rangedSize = (ranged as unknown as { size?: unknown }).size
+                  return {
+                    success: true,
+                    data: new Response(ranged.body as unknown as typeof object.body, {
+                      status: 206,
+                      headers: {
+                        ...headers,
+                        'Content-Range': `bytes ${range.start}-${range.end}/${total}`,
+                        'Content-Length': String(
+                          typeof rangedSize === 'number' ? rangedSize : range.end - range.start + 1
+                        ),
+                      },
+                    }),
+                  }
+                }
+              } else {
+                return {
+                  success: true,
+                  data: new Response(null, {
+                    status: 416,
+                    headers: {
+                      'Content-Range': `bytes */${total}`,
+                      'Accept-Ranges': 'bytes',
+                      'Cache-Control': 'public, max-age=31536000, immutable',
+                      'CDN-Cache-Control': 'public, max-age=31536000',
+                      'Cache-Tag': `t:${tenantScope}:a:${assetId}`,
+                      ...(etag ? { ETag: etag } : {}),
+                    },
+                  }),
+                }
+              }
             }
           }
         }
