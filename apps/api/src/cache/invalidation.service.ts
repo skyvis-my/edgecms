@@ -1,4 +1,5 @@
 import type { Database } from '@/database/db'
+import { collectionsRepository } from '@/collections/collections.repository'
 import { entriesRepository } from '@/entries/entries.repository'
 import { logger } from '@/observability/logger'
 import { kvService } from './kv.service'
@@ -200,35 +201,90 @@ export async function extractCacheTagsFromCommand(
   tenantId?: string
 ): Promise<string[]> {
   const tags = new Set<string>()
+  const resolvedTenantId =
+    tenantId ?? (typeof payload.tenantId === 'string' ? payload.tenantId : undefined)
 
-  async function resolveCollectionId(): Promise<string | undefined> {
+  async function resolveCollectionInfo(): Promise<{ id?: string; slug?: string } | undefined> {
+    let collectionId: string | undefined
+    let collectionSlug: string | undefined
+
     if (payload.collectionId && typeof payload.collectionId === 'string') {
-      return payload.collectionId
+      collectionId = payload.collectionId
     }
-    if (payload.entryId && typeof payload.entryId === 'string') {
-      const entry = await entriesRepository.findById(db, payload.entryId, tenantId)
-      return entry?.collectionId
+    if (payload.collectionSlug && typeof payload.collectionSlug === 'string') {
+      collectionSlug = payload.collectionSlug
     }
-    if (Array.isArray(payload.entryIds) && payload.entryIds.length > 0) {
-      const firstEntryId = payload.entryIds[0]
-      if (typeof firstEntryId === 'string') {
-        const entry = await entriesRepository.findById(db, firstEntryId, tenantId)
-        return entry?.collectionId
+
+    if (!collectionId) {
+      if (payload.entryId && typeof payload.entryId === 'string') {
+        const entry = await entriesRepository.findById(db, payload.entryId, resolvedTenantId)
+        collectionId = entry?.collectionId
+      } else if (Array.isArray(payload.entryIds) && payload.entryIds.length > 0) {
+        const firstEntryId = payload.entryIds[0]
+        if (typeof firstEntryId === 'string') {
+          const entry = await entriesRepository.findById(db, firstEntryId, resolvedTenantId)
+          collectionId = entry?.collectionId
+        }
       }
     }
+
+    if (collectionId && !collectionSlug) {
+      try {
+        let col = await collectionsRepository.findById(db, collectionId, resolvedTenantId)
+        if (!col && resolvedTenantId) {
+          col = await collectionsRepository.findById(db, collectionId)
+        }
+        if (col?.slug) {
+          collectionSlug = col.slug
+        }
+      } catch {}
+    } else if (!collectionId && collectionSlug) {
+      try {
+        let col = await collectionsRepository.findBySlug(db, collectionSlug, resolvedTenantId)
+        if (!col && resolvedTenantId) {
+          col = await collectionsRepository.findBySlug(db, collectionSlug)
+        }
+        if (col?.id) {
+          collectionId = col.id
+        }
+      } catch {}
+    }
+
+    if (collectionId || collectionSlug) {
+      return { id: collectionId, slug: collectionSlug }
+    }
     return undefined
+  }
+
+  function addCollectionTags(col?: { id?: string; slug?: string }) {
+    if (!col) return
+    if (col.id) {
+      tags.add(`collection:${col.id}`)
+    }
+    if (col.slug) {
+      tags.add(`collection:${col.slug}`)
+    }
+    if (resolvedTenantId) {
+      if (col.id) {
+        tags.add(`t:${resolvedTenantId}:c:${col.id}`)
+      }
+      if (col.slug) {
+        tags.add(`t:${resolvedTenantId}:c:${col.slug}`)
+      }
+    }
   }
 
   switch (commandType) {
     case 'createEntry':
     case 'updateEntry':
     case 'deleteEntry': {
-      const collectionId = await resolveCollectionId()
-      if (collectionId) {
-        tags.add(`collection:${collectionId}`)
-      }
+      const col = await resolveCollectionInfo()
+      addCollectionTags(col)
       if (payload.entryId && typeof payload.entryId === 'string') {
         tags.add(`entry:${payload.entryId}`)
+        if (resolvedTenantId) {
+          tags.add(`t:${resolvedTenantId}:e:${payload.entryId}`)
+        }
       }
       break
     }
@@ -238,12 +294,13 @@ export async function extractCacheTagsFromCommand(
     case 'schedulePublish':
     case 'scheduleUnpublish':
     case 'cancelSchedule': {
-      const collectionId = await resolveCollectionId()
-      if (collectionId) {
-        tags.add(`collection:${collectionId}`)
-      }
+      const col = await resolveCollectionInfo()
+      addCollectionTags(col)
       if (payload.entryId && typeof payload.entryId === 'string') {
         tags.add(`entry:${payload.entryId}`)
+        if (resolvedTenantId) {
+          tags.add(`t:${resolvedTenantId}:e:${payload.entryId}`)
+        }
       }
       break
     }
@@ -268,17 +325,14 @@ export async function extractCacheTagsFromCommand(
         }
       }
 
-      const collectionId = await resolveCollectionId()
-      if (collectionId) {
-        tags.add(`collection:${collectionId}`)
-      }
+      const col = await resolveCollectionInfo()
+      addCollectionTags(col)
       break
     }
 
     case 'updateSingleton': {
-      if (payload.collectionId && typeof payload.collectionId === 'string') {
-        tags.add(`collection:${payload.collectionId}`)
-      }
+      const col = await resolveCollectionInfo()
+      addCollectionTags(col)
       break
     }
 

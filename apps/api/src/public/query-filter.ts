@@ -70,7 +70,9 @@ export function parsePublicFilters(
     }
 
     const field = match[1]!
-    const operatorStr = match[2] ?? 'eq'
+    let operatorStr = match[2] ?? 'eq'
+    if (operatorStr === 'ne') operatorStr = 'neq'
+    if (operatorStr === 'nin') operatorStr = 'not_in'
 
     if (!isValidOperator(operatorStr)) {
       errors.push(

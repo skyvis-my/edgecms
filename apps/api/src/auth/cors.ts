@@ -47,6 +47,7 @@ export function parseCorsAllowedOrigins(raw: string | undefined, defaults: strin
 
 export const CORS_ALLOWED_METHODS = 'GET,POST,PUT,PATCH,DELETE,OPTIONS'
 export const CORS_ALLOWED_HEADERS = 'Content-Type,Authorization,X-CSRF-Token'
+export const CORS_EXPOSED_HEADERS = 'x-d1-session'
 export const CORS_MAX_AGE_SECONDS = '86400'
 export const CORS_PREFLIGHT_CACHE_CONTROL = `public, max-age=${CORS_MAX_AGE_SECONDS}`
 
@@ -203,6 +204,7 @@ export function setCorsHeaders(headers: MutableHeaders, origin: string): void {
   headers['Access-Control-Allow-Credentials'] = 'true'
   headers['Access-Control-Allow-Methods'] = CORS_ALLOWED_METHODS
   headers['Access-Control-Allow-Headers'] = CORS_ALLOWED_HEADERS
+  headers['Access-Control-Expose-Headers'] = CORS_EXPOSED_HEADERS
   headers['Access-Control-Max-Age'] = CORS_MAX_AGE_SECONDS
   headers['Cache-Control'] = CORS_PREFLIGHT_CACHE_CONTROL
   headers.Vary = 'Origin,Access-Control-Request-Method,Access-Control-Request-Headers'

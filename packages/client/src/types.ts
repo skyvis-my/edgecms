@@ -7,12 +7,41 @@ export type EdgeCmsClientConfig = {
   fetch?: typeof globalThis.fetch | undefined
 }
 
+export type FilterOperator =
+  | 'eq'
+  | 'ne'
+  | 'neq'
+  | 'in'
+  | 'nin'
+  | 'not_in'
+  | 'contains'
+  | 'gt'
+  | 'gte'
+  | 'lt'
+  | 'lte'
+  | 'exists'
+
+export type FilterValue = string | number | boolean | null | undefined | (string | number)[]
+
+export type FilterFieldCondition =
+  | string
+  | number
+  | boolean
+  | null
+  | (string | number)[]
+  | {
+      [op in FilterOperator]?: FilterValue
+    }
+  | Record<string, FilterValue>
+
+export type CollectionFilter = Record<string, FilterFieldCondition | undefined>
+
 export type CollectionListOptions = {
   page?: number | undefined
   perPage?: number | undefined
   locale?: string | undefined
   sort?: string | undefined
-  filter?: Record<string, string | number | boolean> | undefined
+  filter?: CollectionFilter | undefined
   depth?: number | undefined
   previewToken?: string | undefined
 }

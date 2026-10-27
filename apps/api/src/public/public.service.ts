@@ -101,6 +101,27 @@ function dedupeSnapshotRequest(
 // concurrent misses. Revisit with a short (≤10s) TTL negative cache if 404
 // volume becomes a problem.
 
+export function buildPublicCacheTag(
+  collection: { id?: string; slug: string },
+  locale: string,
+  tenantId?: string,
+  idOrSlug?: string
+): string {
+  const tags: string[] = []
+  if (tenantId) {
+    if (collection.id) {
+      tags.push(`t:${tenantId}:c:${collection.id}`)
+    }
+    tags.push(`t:${tenantId}:c:${collection.slug}`)
+  }
+  tags.push(`collection:${collection.slug}`)
+  tags.push(`locale:${locale}`)
+  if (idOrSlug) {
+    tags.push(`entry:${idOrSlug}`)
+  }
+  return tags.join(',')
+}
+
 function buildCachedPublicResult(
   stored: unknown,
   cacheTag: string,
@@ -382,9 +403,15 @@ export const publicService = {
     const versionedKey = kvService.getVersionedKey(baseKey, version, tenantId)
 
     const snapshot = await kvService.getSnapshot(kv, versionedKey, tracker)
-    const cacheTag = `collection:${collectionSlug},locale:${locale}`
+    const effectiveTenantId = tenantId ?? (snapshot as { tenantId?: string } | null)?.tenantId
+    const snapshotCol = (snapshot as { collection?: { id?: string; slug: string } } | null)?.collection
+    const hitCacheTag = buildPublicCacheTag(
+      snapshotCol ?? { slug: collectionSlug },
+      locale,
+      effectiveTenantId
+    )
     if (snapshot) {
-      return buildCachedPublicResult(snapshot, cacheTag, tracker)
+      return buildCachedPublicResult(snapshot, hitCacheTag, tracker)
     }
 
     const collection = await loadCollectionForMiss(
@@ -397,6 +424,8 @@ export const publicService = {
     if (!collection) {
       return { success: false, error: { status: 404, message: 'Collection not found' } }
     }
+
+    const cacheTag = buildPublicCacheTag(collection, locale, tenantId)
 
     return dedupeSnapshotRequest(versionedKey, async () => {
       // Enforce the collection's searchFields allowlist on expensive shapes
@@ -428,7 +457,12 @@ export const publicService = {
 
       const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
-      const tags = snapshotService.generateCacheTags(collection.id, undefined, locale)
+      const tags = tenantId
+        ? snapshotService.generateCacheTags(collection.id, undefined, locale, {
+            tenantId,
+            collectionSlug: collection.slug,
+          })
+        : snapshotService.generateCacheTags(collection.id, undefined, locale)
       await kvService.putSnapshot(
         kv,
         versionedKey,
@@ -488,9 +522,16 @@ export const publicService = {
     const versionedKey = kvService.getVersionedKey(baseKey, version, tenantId)
 
     const snapshot = await kvService.getSnapshot(kv, versionedKey, tracker)
-    const cacheTag = `collection:${collectionSlug},locale:${locale},entry:${idOrSlug}`
+    const effectiveTenantId = tenantId ?? (snapshot as { tenantId?: string } | null)?.tenantId
+    const snapshotCol = (snapshot as { collection?: { id?: string; slug: string } } | null)?.collection
+    const hitCacheTag = buildPublicCacheTag(
+      snapshotCol ?? { slug: collectionSlug },
+      locale,
+      effectiveTenantId,
+      idOrSlug
+    )
     if (snapshot) {
-      return buildCachedPublicResult(snapshot, cacheTag, tracker)
+      return buildCachedPublicResult(snapshot, hitCacheTag, tracker)
     }
 
     const collection = await loadCollectionForMiss(
@@ -503,6 +544,8 @@ export const publicService = {
     if (!collection) {
       return { success: false, error: { status: 404, message: 'Collection not found' } }
     }
+
+    const cacheTag = buildPublicCacheTag(collection, locale, tenantId, idOrSlug)
 
     return dedupeSnapshotRequest(versionedKey, async () => {
       const generatedSnapshot = await snapshotService.generateEntrySnapshot(
@@ -527,11 +570,18 @@ export const publicService = {
 
       const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
-      const tags = snapshotService.generateCacheTags(
-        collection.id,
-        generatedSnapshot.entry.id,
-        locale
-      )
+      const tags = tenantId
+        ? snapshotService.generateCacheTags(
+            collection.id,
+            generatedSnapshot.entry.id,
+            locale,
+            { tenantId, collectionSlug: collection.slug }
+          )
+        : snapshotService.generateCacheTags(
+            collection.id,
+            generatedSnapshot.entry.id,
+            locale
+          )
       await kvService.putSnapshot(
         kv,
         versionedKey,
@@ -586,9 +636,15 @@ export const publicService = {
     const versionedKey = kvService.getVersionedKey(baseKey, version, tenantId)
 
     const snapshot = await kvService.getSnapshot(kv, versionedKey, tracker)
-    const cacheTag = `collection:${collectionSlug},locale:${locale}`
+    const effectiveTenantId = tenantId ?? (snapshot as { tenantId?: string } | null)?.tenantId
+    const snapshotCol = (snapshot as { collection?: { id?: string; slug: string } } | null)?.collection
+    const hitCacheTag = buildPublicCacheTag(
+      snapshotCol ?? { slug: collectionSlug },
+      locale,
+      effectiveTenantId
+    )
     if (snapshot) {
-      return buildCachedPublicResult(snapshot, cacheTag, tracker)
+      return buildCachedPublicResult(snapshot, hitCacheTag, tracker)
     }
 
     const collection = await loadCollectionForMiss(
@@ -605,6 +661,8 @@ export const publicService = {
     if (!collection.singleton) {
       return { success: false, error: { status: 400, message: 'Collection is not a singleton' } }
     }
+
+    const cacheTag = buildPublicCacheTag(collection, locale, tenantId)
 
     return dedupeSnapshotRequest(versionedKey, async () => {
       const entry = await publicRepository.findFirstVisibleEntryForCollection(db, collection.id)
@@ -630,7 +688,12 @@ export const publicService = {
 
       const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
-      const tags = snapshotService.generateCacheTags(collection.id, entry.id, locale)
+      const tags = tenantId
+        ? snapshotService.generateCacheTags(collection.id, entry.id, locale, {
+            tenantId,
+            collectionSlug: collection.slug,
+          })
+        : snapshotService.generateCacheTags(collection.id, entry.id, locale)
       await kvService.putSnapshot(
         kv,
         versionedKey,

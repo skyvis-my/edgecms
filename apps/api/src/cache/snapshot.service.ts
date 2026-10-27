@@ -377,11 +377,30 @@ export const snapshotService = {
    * @param locale - Locale code (optional, for locale-specific snapshots)
    * @returns Array of cache tag strings
    */
-  generateCacheTags(collectionId: string, entryId?: string, locale?: string): string[] {
+  generateCacheTags(
+    collectionId: string,
+    entryId?: string,
+    locale?: string,
+    options?: { tenantId?: string; collectionSlug?: string }
+  ): string[] {
     const tags = [`collection:${collectionId}`]
+
+    if (options?.collectionSlug) {
+      tags.push(`collection:${options.collectionSlug}`)
+    }
+
+    if (options?.tenantId) {
+      tags.push(`t:${options.tenantId}:c:${collectionId}`)
+      if (options?.collectionSlug) {
+        tags.push(`t:${options.tenantId}:c:${options.collectionSlug}`)
+      }
+    }
 
     if (entryId) {
       tags.push(`entry:${entryId}`)
+      if (options?.tenantId) {
+        tags.push(`t:${options.tenantId}:e:${entryId}`)
+      }
     }
 
     if (locale) {

@@ -279,7 +279,10 @@ describe('publicController', () => {
       },
       expect.objectContaining({ id: 'c1', slug: 'posts' })
     )
-    expect(response.headers.get('cache-tag')).toBe('collection:posts,locale:fr,entry:entry-1')
+    const cacheTagHeader = response.headers.get('cache-tag')
+    expect(cacheTagHeader).toContain('t:tenant-a:c:c1')
+    expect(cacheTagHeader).toContain('t:tenant-a:c:posts')
+    expect(cacheTagHeader).toContain('collection:posts,locale:fr,entry:entry-1')
   })
 
   it('GET /:collectionSlug handles list snapshot miss by storing snapshot and tags', async () => {

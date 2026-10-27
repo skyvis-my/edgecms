@@ -21,6 +21,7 @@ import {
   sendDraftPreviewUpdate,
 } from '@edgecms/client'
 import {
+  AlertTriangle,
   Calendar,
   Eye,
 } from 'lucide-react'
@@ -78,11 +79,7 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
 
   // Track latest known version to avoid 409 conflicts between background autosave and manual save
   const currentVersionRef = useRef(entry?.version ?? 1)
-  useEffect(() => {
-    if (entry?.version != null) {
-      currentVersionRef.current = Math.max(currentVersionRef.current, entry.version)
-    }
-  }, [entry?.version])
+  const [hasConflict, setHasConflict] = useState(false)
 
   // Track active locale for editing
   const [activeLocale, setActiveLocale] = useState(collection.defaultLocale)
@@ -139,7 +136,28 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
   })
 
   const { control, handleSubmit, watch, setValue, getValues, formState } = form
-  const { errors, isSubmitting } = formState
+  const { errors, isSubmitting, isDirty } = formState
+
+  const prevEntryIdRef = useRef(entry?.id)
+  useEffect(() => {
+    if (entry?.id !== prevEntryIdRef.current) {
+      prevEntryIdRef.current = entry?.id
+      currentVersionRef.current = entry?.version ?? 1
+      setHasConflict(false)
+      return
+    }
+
+    if (entry?.version != null) {
+      if (entry.version > currentVersionRef.current) {
+        if (isDirty) {
+          setHasConflict(true)
+        } else {
+          currentVersionRef.current = entry.version
+          setHasConflict(false)
+        }
+      }
+    }
+  }, [entry?.id, entry?.version, isDirty])
 
   // Live Draft Preview & Real-Time PostMessage Streaming State
   const tenantSlug = useTenantStore((s) => s.tenantSlug) || 'default'
@@ -350,10 +368,30 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
     }
   }
 
+  const handleDiscardAndReload = useCallback(() => {
+    if (!entry) return
+    currentVersionRef.current = entry.version
+    form.reset({
+      slug: entry.slug,
+      status: entry.status,
+      data: (entry.data as Record<string, unknown>) ?? {},
+    })
+    setHasConflict(false)
+    toast.info('Local changes discarded and server version reloaded')
+  }, [entry, form])
+
+  const handleForceOverwrite = useCallback(async () => {
+    if (!entry) return
+    currentVersionRef.current = entry.version
+    setHasConflict(false)
+    await handleSubmit(onSubmit)()
+  }, [entry, handleSubmit, onSubmit])
+
   const autosaveStateRef = useRef({
     isDirty: formState.isDirty,
     isSubmitting,
     isAutosaving,
+    hasConflict,
     entry,
     form,
   })
@@ -362,6 +400,7 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
       isDirty: formState.isDirty,
       isSubmitting,
       isAutosaving,
+      hasConflict,
       entry,
       form,
     }
@@ -375,10 +414,11 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
         isDirty,
         isSubmitting: submitting,
         isAutosaving: saving,
+        hasConflict: inConflict,
         entry: curEntry,
         form: curForm,
       } = autosaveStateRef.current
-      if (isDirty && !submitting && !saving && curEntry) {
+      if (isDirty && !submitting && !saving && !inConflict && curEntry) {
         const values = curForm.getValues()
         try {
           setIsAutosaving(true)
@@ -547,7 +587,7 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
                 {publishMutation.isPending ? 'Publishing...' : 'Publish'}
               </Button>
             )}
-            <Button type='submit' disabled={isSubmitting} size='sm' className='h-8 px-3'>
+            <Button type='submit' disabled={isSubmitting || hasConflict} size='sm' className='h-8 px-3'>
               {isSubmitting ? 'Saving...' : 'Save'}
             </Button>
           </div>
@@ -586,6 +626,44 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
           isUnpublishPending={scheduleUnpublishMutation.isPending}
           isCancelPending={cancelScheduleMutation.isPending}
         />
+      )}
+      {hasConflict && (
+        <div
+          data-testid='version-conflict-banner'
+          className='flex flex-col gap-3 rounded-md border border-amber-500/50 bg-amber-50 p-4 text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/30 dark:text-amber-200'
+          role='alert'
+        >
+          <div className='flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'>
+            <div className='flex items-center gap-2'>
+              <AlertTriangle className='size-5 shrink-0 text-amber-600 dark:text-amber-400' />
+              <p className='text-sm font-medium'>
+                A newer version of this entry exists on the server. Please review remote changes before saving, or choose to overwrite.
+              </p>
+            </div>
+            <div className='flex items-center gap-2 shrink-0'>
+              <Button
+                type='button'
+                variant='outline'
+                size='sm'
+                onClick={handleDiscardAndReload}
+                disabled={isSubmitting}
+                data-testid='conflict-discard-button'
+              >
+                Discard Local Changes
+              </Button>
+              <Button
+                type='button'
+                variant='destructive'
+                size='sm'
+                onClick={handleForceOverwrite}
+                disabled={isSubmitting}
+                data-testid='conflict-overwrite-button'
+              >
+                Force Overwrite
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
       {autosaveConflictWarning && (
         <p className='rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900'>

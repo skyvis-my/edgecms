@@ -29,10 +29,31 @@ export const withTenantBindings = new Elysia({ name: 'with-tenant-bindings' })
       ctx.request?.headers?.get?.('x-d1-session') ??
       ctx.request?.headers?.get?.('x-session-bookmark') ??
       undefined
+
+    let effectiveDb = workerEnv.DB
+    if (
+      workerEnv?.DB &&
+      typeof (workerEnv.DB as unknown as { withSession?: (s?: string) => D1Database }).withSession ===
+        'function'
+    ) {
+      try {
+        effectiveDb = sessionBookmark
+          ? (workerEnv.DB as unknown as { withSession: (s: string) => D1Database }).withSession(
+              sessionBookmark
+            )
+          : (workerEnv.DB as unknown as { withSession: () => D1Database }).withSession()
+      } catch {
+        effectiveDb = workerEnv.DB
+      }
+    }
+
+    const effectiveWorkerEnv =
+      effectiveDb !== workerEnv?.DB ? { ...workerEnv, DB: effectiveDb } : workerEnv
+
     const { db, kv, r2 } = resolveTenantBindings(
       tenantCtx,
-      workerEnv,
+      effectiveWorkerEnv,
       sessionBookmark ? { sessionBookmark } : undefined
     )
-    return { workerEnv, tenantCtx, db, kv, r2 }
+    return { workerEnv: effectiveWorkerEnv, tenantCtx, db, kv, r2 }
   })

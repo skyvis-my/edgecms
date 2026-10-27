@@ -405,4 +405,247 @@ describe('EntryForm layout', () => {
       vi.useRealTimers()
     }
   })
+
+  it('detects version conflict when form is dirty and newer version arrives from server', async () => {
+    const baseEntry = {
+      id: 'entry-1',
+      collectionId: 'collection-1',
+      slug: 'entry-1',
+      status: 'draft' as const,
+      version: 2,
+      data: { title: 'Server title v2' },
+      createdAt: '2026-01-10T00:00:00.000Z',
+      updatedAt: '2026-01-11T00:00:00.000Z',
+    }
+
+    const collection = {
+      id: 'collection-1',
+      name: 'Articles',
+      slug: 'articles',
+      singleton: false,
+      defaultLocale: 'en',
+      supportedLocales: ['en'],
+      fields: [{ name: 'title', type: 'text' as const, required: true, localizable: false }],
+    }
+
+    const { rerender, getByTestId, getByRole, getByText, queryByTestId } = render(
+      <EntryForm mode='edit' entry={baseEntry} collection={collection} />,
+      { wrapper: createWrapper() }
+    )
+
+    // User edits the form making it dirty
+    fireEvent.change(getByTestId('field-title'), { target: { value: 'Local dirty title' } })
+
+    // No conflict initially
+    expect(queryByTestId('version-conflict-banner')).toBeNull()
+
+    // Server refetch brings in version 3 while form is dirty
+    rerender(
+      <EntryForm
+        mode='edit'
+        entry={{
+          ...baseEntry,
+          version: 3,
+          data: { title: 'Server title v3 from collaborator' },
+        }}
+        collection={collection}
+      />
+    )
+
+    // Conflict banner must now be visible
+    expect(getByTestId('version-conflict-banner')).toBeInTheDocument()
+    expect(
+      getByText(/A newer version of this entry exists on the server/)
+    ).toBeInTheDocument()
+
+    // Normal save button is disabled to prevent accidental blind overwrite
+    expect(getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it('allows discarding local dirty changes to reload remote server version on conflict', async () => {
+    const baseEntry = {
+      id: 'entry-1',
+      collectionId: 'collection-1',
+      slug: 'entry-1',
+      status: 'draft' as const,
+      version: 2,
+      data: { title: 'Server title v2' },
+      createdAt: '2026-01-10T00:00:00.000Z',
+      updatedAt: '2026-01-11T00:00:00.000Z',
+    }
+
+    const collection = {
+      id: 'collection-1',
+      name: 'Articles',
+      slug: 'articles',
+      singleton: false,
+      defaultLocale: 'en',
+      supportedLocales: ['en'],
+      fields: [{ name: 'title', type: 'text' as const, required: true, localizable: false }],
+    }
+
+    const { rerender, getByTestId, getByRole, queryByTestId } = render(
+      <EntryForm mode='edit' entry={baseEntry} collection={collection} />,
+      { wrapper: createWrapper() }
+    )
+
+    // Dirty the form
+    fireEvent.change(getByTestId('field-title'), { target: { value: 'Local dirty edit' } })
+
+    // Newer remote version arrives
+    rerender(
+      <EntryForm
+        mode='edit'
+        entry={{
+          ...baseEntry,
+          version: 3,
+          data: { title: 'Server title v3 from collaborator' },
+        }}
+        collection={collection}
+      />
+    )
+
+    expect(getByTestId('version-conflict-banner')).toBeInTheDocument()
+
+    // Click Discard Local Changes
+    fireEvent.click(getByTestId('conflict-discard-button'))
+
+    // Banner dismissed and field reset to server version
+    expect(queryByTestId('version-conflict-banner')).toBeNull()
+    expect((getByTestId('field-title') as HTMLInputElement).value).toBe(
+      'Server title v3 from collaborator'
+    )
+    expect(getByRole('button', { name: 'Save' })).not.toBeDisabled()
+  })
+
+  it('allows force overwriting the server version when in conflict state', async () => {
+    mockUpdateEntryMutateAsync.mockResolvedValueOnce({
+      id: 'entry-1',
+      version: 4,
+      slug: 'entry-1',
+      status: 'draft',
+      data: { title: 'Force overwrite title' },
+    })
+
+    const baseEntry = {
+      id: 'entry-1',
+      collectionId: 'collection-1',
+      slug: 'entry-1',
+      status: 'draft' as const,
+      version: 2,
+      data: { title: 'Server title v2' },
+      createdAt: '2026-01-10T00:00:00.000Z',
+      updatedAt: '2026-01-11T00:00:00.000Z',
+    }
+
+    const collection = {
+      id: 'collection-1',
+      name: 'Articles',
+      slug: 'articles',
+      singleton: false,
+      defaultLocale: 'en',
+      supportedLocales: ['en'],
+      fields: [{ name: 'title', type: 'text' as const, required: true, localizable: false }],
+    }
+
+    const { rerender, getByTestId, queryByTestId } = render(
+      <EntryForm mode='edit' entry={baseEntry} collection={collection} />,
+      { wrapper: createWrapper() }
+    )
+
+    // User makes edits
+    fireEvent.change(getByTestId('field-title'), { target: { value: 'Force overwrite title' } })
+
+    // Remote v3 arrives
+    rerender(
+      <EntryForm
+        mode='edit'
+        entry={{
+          ...baseEntry,
+          version: 3,
+          data: { title: 'Server title v3 from collaborator' },
+        }}
+        collection={collection}
+      />
+    )
+
+    expect(getByTestId('version-conflict-banner')).toBeInTheDocument()
+
+    // User chooses Force Overwrite
+    fireEvent.click(getByTestId('conflict-overwrite-button'))
+
+    await waitFor(() => {
+      // Must submit with optimisticVersion: 3 (the remote version being overwritten)
+      expect(mockUpdateEntryMutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'entry-1',
+          optimisticVersion: 3,
+          input: expect.objectContaining({
+            data: expect.objectContaining({
+              title: 'Force overwrite title',
+            }),
+          }),
+        })
+      )
+    })
+
+    expect(queryByTestId('version-conflict-banner')).toBeNull()
+  })
+
+  it('silently accepts newer remote version without conflict when form is clean', async () => {
+    const baseEntry = {
+      id: 'entry-1',
+      collectionId: 'collection-1',
+      slug: 'entry-1',
+      status: 'draft' as const,
+      version: 2,
+      data: { title: 'Server title v2' },
+      createdAt: '2026-01-10T00:00:00.000Z',
+      updatedAt: '2026-01-11T00:00:00.000Z',
+    }
+
+    const collection = {
+      id: 'collection-1',
+      name: 'Articles',
+      slug: 'articles',
+      singleton: false,
+      defaultLocale: 'en',
+      supportedLocales: ['en'],
+      fields: [{ name: 'title', type: 'text' as const, required: true, localizable: false }],
+    }
+
+    const { rerender, queryByTestId, getByRole, getByTestId } = render(
+      <EntryForm mode='edit' entry={baseEntry} collection={collection} />,
+      { wrapper: createWrapper() }
+    )
+
+    // Form is not dirty! Server pushes version 3
+    rerender(
+      <EntryForm
+        mode='edit'
+        entry={{
+          ...baseEntry,
+          version: 3,
+          data: { title: 'Server title v3' },
+        }}
+        collection={collection}
+      />
+    )
+
+    // No conflict banner should be shown
+    expect(queryByTestId('version-conflict-banner')).toBeNull()
+
+    // Subsequent user edit and save should use version 3
+    fireEvent.change(getByTestId('field-title'), { target: { value: 'New edit after clean sync' } })
+    fireEvent.click(getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      expect(mockUpdateEntryMutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'entry-1',
+          optimisticVersion: 3,
+        })
+      )
+    })
+  })
 })

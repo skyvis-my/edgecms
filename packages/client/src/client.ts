@@ -9,6 +9,67 @@ import type {
   PreviewTokenResponse,
 } from './types'
 
+const TOP_LEVEL_FILTER_FIELDS = new Set(['slug', 'createdAt', 'updatedAt', 'status'])
+
+/**
+ * Builds URLSearchParams for collection list queries, properly serializing structured filters.
+ */
+export function buildQueryParams(
+  options?: CollectionListOptions,
+  defaultLocale?: string
+): URLSearchParams {
+  const queryParams = new URLSearchParams()
+  if (!options && !defaultLocale) return queryParams
+
+  const locale = options?.locale || defaultLocale
+  if (locale) queryParams.set('locale', locale)
+  if (options?.page) queryParams.set('page', String(options.page))
+  if (options?.perPage) queryParams.set('perPage', String(options.perPage))
+  if (options?.sort) queryParams.set('sort', options.sort)
+  if (options?.depth !== undefined) queryParams.set('depth', String(options.depth))
+  if (options?.previewToken) queryParams.set('previewToken', options.previewToken)
+
+  if (options?.filter) {
+    for (const [key, value] of Object.entries(options.filter)) {
+      if (value === undefined || value === null) continue
+
+      // If the key is already a full filter expression (e.g. "filter[data.field][eq]")
+      if (key.startsWith('filter[')) {
+        const serialized = Array.isArray(value) ? value.join(',') : String(value)
+        queryParams.set(key, serialized)
+        continue
+      }
+
+      // Determine field path:
+      // Preserves 'data.*' or allowed top-level fields (slug, createdAt, updatedAt, status).
+      // Custom fields default to 'data.<field>'.
+      const fieldPath =
+        key.startsWith('data.') || TOP_LEVEL_FILTER_FIELDS.has(key)
+          ? key
+          : `data.${key}`
+
+      // Check if value is a nested operator object (e.g. { eq: 'foo', gt: 10, in: ['a', 'b'] })
+      if (typeof value === 'object' && !Array.isArray(value)) {
+        for (const [op, opValue] of Object.entries(value)) {
+          if (opValue === undefined || opValue === null) continue
+          const serializedValue = Array.isArray(opValue)
+            ? opValue.join(',')
+            : String(opValue)
+          queryParams.set(`filter[${fieldPath}][${op}]`, serializedValue)
+        }
+      } else {
+        // Plain scalar or array value: defaults to [eq] operator
+        const serializedValue = Array.isArray(value)
+          ? value.join(',')
+          : String(value)
+        queryParams.set(`filter[${fieldPath}][eq]`, serializedValue)
+      }
+    }
+  }
+
+  return queryParams
+}
+
 export class EdgeCmsClient {
   readonly baseUrl: string
   readonly tenantSlug: string
@@ -48,21 +109,7 @@ export class EdgeCmsClient {
 
     return {
       async list(options?: CollectionListOptions): Promise<PaginatedListResponse<T>> {
-        const queryParams = new URLSearchParams()
-        const locale = options?.locale || defaultLocale
-        if (locale) queryParams.set('locale', locale)
-        if (options?.page) queryParams.set('page', String(options.page))
-        if (options?.perPage) queryParams.set('perPage', String(options.perPage))
-        if (options?.sort) queryParams.set('sort', options.sort)
-        if (options?.depth) queryParams.set('depth', String(options.depth))
-        if (options?.previewToken) queryParams.set('previewToken', options.previewToken)
-
-        if (options?.filter) {
-          for (const [k, v] of Object.entries(options.filter)) {
-            queryParams.set(k, String(v))
-          }
-        }
-
+        const queryParams = buildQueryParams(options, defaultLocale)
         const qs = queryParams.toString() ? `?${queryParams.toString()}` : ''
         const url = `${baseUrl}/api/tenants/${tenantSlug}/public/${slug}${qs}`
         const res = await doFetch(url, {

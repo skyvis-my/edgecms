@@ -27,8 +27,8 @@ export type SendPreviewOptions = {
  * Sends a live draft update from the host window (e.g. EdgeCMS Admin) to a target preview iframe window.
  */
 export function sendDraftPreviewUpdate<T = unknown>(
-  targetWindow: Window,
-  payload: T,
+  targetWindow?: Window | null,
+  payload?: T,
   options?: SendPreviewOptions
 ): void {
   if (!targetWindow || typeof targetWindow.postMessage !== 'function') return
@@ -36,7 +36,7 @@ export function sendDraftPreviewUpdate<T = unknown>(
   const message: PreviewMessagePayload<T> = {
     type: EDGECMS_PREVIEW_MESSAGE_TYPE,
     token: options?.token,
-    payload,
+    payload: payload as T,
   }
 
   targetWindow.postMessage(message, options?.targetOrigin || '*')
@@ -46,16 +46,18 @@ export function sendDraftPreviewUpdate<T = unknown>(
  * Sends a ready notification from the preview iframe to the host window.
  */
 export function sendPreviewReadyNotification(
-  targetWindow: Window = window.parent,
+  targetWindow?: Window,
   targetOrigin: string = '*'
 ): void {
-  if (!targetWindow || targetWindow === window || typeof targetWindow.postMessage !== 'function') return
+  const target = targetWindow ?? (typeof window !== 'undefined' ? window.parent : undefined)
+  if (!target || typeof target.postMessage !== 'function') return
+  if (typeof window !== 'undefined' && target === window) return
 
   const message: ReadyMessagePayload = {
     type: EDGECMS_PREVIEW_READY_TYPE,
   }
 
-  targetWindow.postMessage(message, targetOrigin)
+  target.postMessage(message, targetOrigin)
 }
 
 /**

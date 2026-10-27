@@ -84,6 +84,7 @@ export {
   applyApiSecurityHeaders,
   buildHstsHeader,
   classifyCorsSurface,
+  CORS_EXPOSED_HEADERS,
   getParsedOrigins,
   isGraphQLEndpoint,
   isLocalHttpOrigin,
@@ -204,6 +205,24 @@ export const createApp = (options: CreateAppOptions = {}) => {
         .use(securityPlugin)
         .use(observabilityPlugin)
         .use(auditTrailPlugin)
+        .onAfterHandle('global', (ctx) => {
+          const db = (ctx as { db?: any }).db
+          const bookmark =
+            typeof db?.$client?.getBookmark === 'function'
+              ? db.$client.getBookmark()
+              : typeof (db as any)?.getBookmark === 'function'
+                ? (db as any).getBookmark()
+                : undefined
+          if (bookmark && typeof bookmark === 'string') {
+            ;(ctx.set.headers as Record<string, string>)['x-d1-session'] = bookmark
+            const res = (ctx as { response?: unknown }).response
+            if (res instanceof Response) {
+              try {
+                res.headers.set('x-d1-session', bookmark)
+              } catch {}
+            }
+          }
+        })
         .use(
           openapi({
             path: '/api/docs',

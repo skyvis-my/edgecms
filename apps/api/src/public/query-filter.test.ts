@@ -75,6 +75,18 @@ describe('parsePublicFilters', () => {
     ])
   })
 
+  it('normalizes ne and nin aliases to neq and not_in', () => {
+    const result = parsePublicFilters({
+      'filter[data.category][ne]': 'archived',
+      'filter[data.tags][nin]': 'spam,junk',
+    })
+    expect(result.errors).toEqual([])
+    expect(result.filters).toEqual([
+      { field: 'data.category', operator: 'neq', value: 'archived' },
+      { field: 'data.tags', operator: 'not_in', value: ['spam', 'junk'] },
+    ])
+  })
+
   it('rejects unsupported operators', () => {
     const result = parsePublicFilters({ 'filter[data.x][nope]': 'val' })
     expect(result.filters).toEqual([])

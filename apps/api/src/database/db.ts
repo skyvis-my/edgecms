@@ -18,12 +18,14 @@ import { drizzle } from 'drizzle-orm/d1'
  */
 export interface CreateDbOptions {
   sessionBookmark?: string
+  sessionToken?: string
 }
 
 export function createDb(d1: D1Database, options?: CreateDbOptions) {
   let targetD1 = d1
-  if (options?.sessionBookmark && typeof (d1 as unknown as { withSession?: (s: string) => D1Database }).withSession === 'function') {
-    targetD1 = (d1 as unknown as { withSession: (s: string) => D1Database }).withSession(options.sessionBookmark)
+  const bookmark = options?.sessionBookmark ?? options?.sessionToken
+  if (bookmark && typeof (d1 as unknown as { withSession?: (s: string) => D1Database }).withSession === 'function') {
+    targetD1 = (d1 as unknown as { withSession: (s: string) => D1Database }).withSession(bookmark)
   }
   return drizzle(targetD1)
 }

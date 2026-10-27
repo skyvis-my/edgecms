@@ -14,6 +14,7 @@ import { DefaultField } from './default-field'
 import { EmailField } from './email-field'
 import { MarkdownField } from './markdown-field'
 import { UrlField } from './url-field'
+import { FieldRenderer } from '../field-renderer'
 import type { FieldDefinition } from '@/features/collections/api/collections-api'
 
 const baseField: FieldDefinition = {
@@ -316,6 +317,99 @@ describe('Field Renderers', () => {
       expect(input).toHaveValue('1234')
       fireEvent.change(input, { target: { value: 'custom' } })
       expect(onChange).toHaveBeenCalledWith('custom')
+    })
+
+    it('renders textarea fallback for object values instead of [object Object]', () => {
+      const onChange = mock()
+      const objectValue = { pluginKey: 'active', settings: { retries: 3 } }
+      render(
+        <DefaultField
+          fieldId='def-obj'
+          name='CustomPlugin'
+          currentValue={objectValue}
+          onChange={onChange}
+          field={{ ...baseField, type: 'custom-plugin' as any }}
+        />
+      )
+
+      expect(screen.queryByPlaceholderText('Enter CustomPlugin')).toBeNull()
+      const textarea = screen.getByPlaceholderText('Enter valid JSON for CustomPlugin')
+      expect(textarea).toHaveValue(JSON.stringify(objectValue, null, 2))
+      expect((textarea as HTMLTextAreaElement).value).not.toContain('[object Object]')
+
+      // Editing with valid JSON calls onChange with parsed object
+      fireEvent.change(textarea, { target: { value: JSON.stringify({ pluginKey: 'disabled' }) } })
+      expect(onChange).toHaveBeenCalledWith({ pluginKey: 'disabled' })
+    })
+
+    it('shows parse error and preserves state when invalid JSON is entered in object field', () => {
+      const onChange = mock()
+      const objectValue = { valid: true }
+      render(
+        <DefaultField
+          fieldId='def-obj-err'
+          name='CustomPlugin'
+          currentValue={objectValue}
+          onChange={onChange}
+          field={{ ...baseField, type: 'custom-plugin' as any }}
+        />
+      )
+
+      const textarea = screen.getByPlaceholderText('Enter valid JSON for CustomPlugin')
+      fireEvent.change(textarea, { target: { value: '{ invalid json' } })
+      expect(screen.getByText('Invalid JSON format')).toBeInTheDocument()
+      expect(onChange).not.toHaveBeenCalled()
+    })
+
+    it('calls onChange(null) when object field is cleared', () => {
+      const onChange = mock()
+      render(
+        <DefaultField
+          fieldId='def-obj-clear'
+          name='CustomPlugin'
+          currentValue={{ enabled: true }}
+          onChange={onChange}
+          field={{ ...baseField, type: 'custom-plugin' as any }}
+        />
+      )
+
+      const textarea = screen.getByPlaceholderText('Enter valid JSON for CustomPlugin')
+      fireEvent.change(textarea, { target: { value: '   ' } })
+      expect(onChange).toHaveBeenCalledWith(null)
+    })
+  })
+
+  describe('FieldRenderer with custom or unknown field types', () => {
+    it('prevents custom field data corruption by rendering safe JSON textarea for object values', () => {
+      const onChange = mock()
+      const complexObject = {
+        theme: 'midnight',
+        plugins: ['seo', 'analytics'],
+        metadata: { version: '1.2.0' },
+      }
+
+      render(
+        <FieldRenderer
+          field={{
+            name: 'customConfig',
+            type: 'custom_plugin_matrix' as any,
+            required: false,
+            localizable: false,
+          }}
+          value={complexObject}
+          onChange={onChange}
+        />
+      )
+
+      // Must not render a regular text input with [object Object]
+      const input = screen.queryByPlaceholderText('Enter customConfig')
+      expect(input).toBeNull()
+
+      // Must render safe JSON textarea
+      const textarea = screen.getByPlaceholderText('Enter valid JSON for customConfig')
+      expect(textarea).toBeInTheDocument()
+      expect(textarea).toHaveValue(JSON.stringify(complexObject, null, 2))
+      expect(textarea.textContent).not.toContain('[object Object]')
     })
   })
 

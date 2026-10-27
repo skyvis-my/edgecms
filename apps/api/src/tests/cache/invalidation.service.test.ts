@@ -30,7 +30,14 @@ vi.mock('@/entries/entries.repository', () => ({
     findById: vi.fn(),
   },
 }))
+vi.mock('@/collections/collections.repository', () => ({
+  collectionsRepository: {
+    findById: vi.fn(),
+    findBySlug: vi.fn(),
+  },
+}))
 
+import { collectionsRepository } from '@/collections/collections.repository'
 import { entriesRepository } from '@/entries/entries.repository'
 import { kvService } from '../../cache/kv.service'
 import { snapshotService } from '../../cache/snapshot.service'
@@ -38,6 +45,7 @@ import { snapshotService } from '../../cache/snapshot.service'
 const mockKvService = asMockedObj(kvService)
 const mockSnapshotService = asMockedObj(snapshotService)
 const mockEntriesRepository = asMockedObj(entriesRepository)
+const mockCollectionsRepository = asMockedObj(collectionsRepository)
 
 describe('invalidation.service', () => {
   const db = {} as Database
@@ -162,6 +170,22 @@ describe('invalidation.service', () => {
       expect(mockEntriesRepository.findById).toHaveBeenCalledWith(db, 'e1', 'tenant-1')
       expect(tags).toContain('entry:e1')
       expect(tags).toContain('collection:c1')
+      expect(tags).toContain('t:tenant-1:c:c1')
+    })
+
+    it('extracts dual-indexed tenant collection tags (id and slug) for mutations', async () => {
+      mockCollectionsRepository.findById.mockResolvedValueOnce({ id: 'c1', slug: 'articles' })
+      const tags = await extractCacheTagsFromCommand(
+        db,
+        'updateEntry',
+        { collectionId: 'c1', entryId: 'e1' },
+        'tenant-1'
+      )
+      expect(tags).toContain('collection:c1')
+      expect(tags).toContain('collection:articles')
+      expect(tags).toContain('t:tenant-1:c:c1')
+      expect(tags).toContain('t:tenant-1:c:articles')
+      expect(tags).toContain('entry:e1')
     })
 
     it('uses tenant scope when resolving bulk update collection tags', async () => {
