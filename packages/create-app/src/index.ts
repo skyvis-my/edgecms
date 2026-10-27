@@ -1,5 +1,5 @@
-#!/usr/bin/env bun
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs'
+#!/usr/bin/env node
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -160,13 +160,35 @@ Next steps:
 `
 }
 
-if (import.meta.main) {
+export function runCli(argv = process.argv.slice(2)): void {
   try {
-    const output = runCreateApp(Bun.argv.slice(2))
+    const output = runCreateApp(argv)
     process.stdout.write(output)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     process.stderr.write(`${message}\n`)
     process.exit(1)
   }
+}
+
+export function isMainModule(): boolean {
+  if (typeof import.meta.main === 'boolean' && import.meta.main) {
+    return true
+  }
+  if (typeof process === 'undefined' || !process.argv || !process.argv[1]) {
+    return false
+  }
+  try {
+    const scriptPath = realpathSync(resolve(process.argv[1]))
+    const currentPath = realpathSync(fileURLToPath(import.meta.url))
+    return process.platform === 'win32'
+      ? scriptPath.toLowerCase() === currentPath.toLowerCase()
+      : scriptPath === currentPath
+  } catch {
+    return false
+  }
+}
+
+if (isMainModule()) {
+  runCli()
 }

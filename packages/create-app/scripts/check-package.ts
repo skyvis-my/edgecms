@@ -19,7 +19,11 @@ if (result.status !== 0) {
   throw new Error(`npm pack --dry-run failed:\n${result.stderr || result.stdout}`)
 }
 
-const [pack] = JSON.parse(result.stdout) as PackResult[]
+const jsonIndex = result.stdout.indexOf('[')
+if (jsonIndex === -1) {
+  throw new Error(`Invalid npm pack output:\n${result.stdout}`)
+}
+const [pack] = JSON.parse(result.stdout.slice(jsonIndex)) as PackResult[]
 const files = pack.files?.map((file) => file.path).sort() ?? []
 const starterFiles = files.filter((file) => file.startsWith('templates/starter/'))
 const testFiles = files.filter((file) => file.includes('.test.'))
@@ -34,8 +38,8 @@ if (testFiles.length) {
 
 for (const requiredFile of [
   'README.md',
-  'src/index.ts',
-  'scripts/prepare-pack.ts',
+  'dist/index.js',
+  'dist/index.d.ts',
   'templates/starter/README.md',
   'templates/starter/scripts/smoke.ts',
 ]) {

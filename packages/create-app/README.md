@@ -1,9 +1,9 @@
 # create-edgecms-app
 
-Private workspace CLI for generating an EdgeCMS starter app from the local template.
+CLI scaffolding tool for generating an EdgeCMS starter app.
 
 ```bash
-bun packages/create-app/src/index.ts my-edgecms-app
+npx create-edgecms-app my-edgecms-app
 ```
 
 ## Usage

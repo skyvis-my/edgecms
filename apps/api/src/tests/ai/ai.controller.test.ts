@@ -148,6 +148,21 @@ describe('aiController', () => {
       expect(body.success).toBe(true)
     })
 
+    it('returns PREVIEW_RECEIPT_REQUIRED when executing without previewReceipt', async () => {
+      const response = await app.handle(
+        new Request('http://localhost/api/admin/ai/command', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ prompt: 'do work' }),
+        })
+      )
+
+      expect(response.status).toBe(400)
+      const body = (await response.json()) as AiCommandResponseBody
+      expect(body.success).toBe(false)
+      expect(body.error?.code).toBe('PREVIEW_RECEIPT_REQUIRED')
+    })
+
     it('executes commands and stops on first failed result', async () => {
       mockExecuteGeneratedCommands.mockResolvedValue({
         commands: [
@@ -175,7 +190,7 @@ describe('aiController', () => {
         new Request('http://localhost/api/admin/ai/command', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ prompt: 'do work' }),
+          body: JSON.stringify({ prompt: 'do work', previewReceipt: 'receipt-failed' }),
         })
       )
 
@@ -192,7 +207,7 @@ describe('aiController', () => {
         new Request('http://localhost/api/admin/ai/command', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ prompt: 'fail' }),
+          body: JSON.stringify({ prompt: 'fail', dryRun: true }),
         })
       )
 

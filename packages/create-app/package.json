@@ -1,21 +1,25 @@
 {
   "name": "create-edgecms-app",
   "version": "0.2.0",
+  "description": "CLI scaffolding tool to create and bootstrap EdgeCMS starter applications.",
   "license": "MIT",
-  "private": true,
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
-    "create-edgecms-app": "./src/index.ts"
+    "create-edgecms-app": "./dist/index.js"
   },
   "files": [
     "README.md",
-    "scripts/prepare-pack.ts",
-    "src/index.ts",
+    "dist",
     "templates/starter"
   ],
   "scripts": {
+    "clean": "rm -rf dist",
+    "build": "bun scripts/build.ts",
     "check:package": "bun scripts/check-package.ts",
-    "prepack": "bun scripts/prepare-pack.ts",
+    "prepack": "bun scripts/prepare-pack.ts && bun scripts/build.ts",
+    "pretest": "bun scripts/build.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

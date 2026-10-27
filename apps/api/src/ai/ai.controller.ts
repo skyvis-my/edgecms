@@ -70,6 +70,14 @@ export const aiController = new Elysia({ prefix: '/api/admin/ai' })
       return createErrorEnvelope('INVALID_INPUT', 'Either prompt or previewReceipt is required')
     }
 
+    if (!body.dryRun && !previewReceipt) {
+      set.status = 400
+      return createErrorEnvelope(
+        'PREVIEW_RECEIPT_REQUIRED',
+        'Execution of AI commands requires a previewReceipt from a prior dryRun'
+      )
+    }
+
     const runtime = getHostRuntime(elysiaCtx.request)
     const hostScope = { source: elysiaCtx, tenant: tenantCtx?.tenant, actorId: user.id }
     const aiHooks = createAiHostHooks(runtime, hostScope)
@@ -84,6 +92,7 @@ export const aiController = new Elysia({ prefix: '/api/admin/ai' })
         prompt: body.prompt,
         previewReceipt: body.previewReceipt,
         dryRun: body.dryRun,
+        enforcePreviewReceipt: true,
         userId: user.id,
         db,
         kv,

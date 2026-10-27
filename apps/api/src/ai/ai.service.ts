@@ -329,6 +329,7 @@ export async function executeGeneratedCommands(options: {
     entryId?: string
   }
   dryRun?: boolean
+  enforcePreviewReceipt?: boolean
   userId: string
   env: Env
   db: Database
@@ -338,7 +339,11 @@ export async function executeGeneratedCommands(options: {
   /** HS-05/HS-06 hooks applied to each executed command. */
   commandHooks?: CommandHostHooks
 }): Promise<ExecuteGeneratedCommandsResult> {
-  const { prompt, previewReceipt, context, dryRun, userId, env, db, kv, metadata, hookContext } = options
+  const { prompt, previewReceipt, context, dryRun, enforcePreviewReceipt, userId, env, db, kv, metadata, hookContext } = options
+
+  if (enforcePreviewReceipt && !dryRun && !previewReceipt) {
+    throw new Error('Execution of AI commands requires a previewReceipt from a prior dryRun')
+  }
 
   // When previewReceipt is provided for execution, verify the immutable receipt
   // and execute the exact reviewed commands without re-prompting the LLM.

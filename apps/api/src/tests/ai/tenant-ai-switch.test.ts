@@ -178,7 +178,7 @@ describe('AI paths with the switch off', () => {
   })
 
   it('serves the same routes once the switch is on', async () => {
-    expect((await call('on', 'POST', '/api/admin/ai/command', { prompt: 'x' })).status).toBe(200)
+    expect((await call('on', 'POST', '/api/admin/ai/command', { prompt: 'x', dryRun: true })).status).toBe(200)
     expect(mockExecuteGeneratedCommands).toHaveBeenCalledTimes(1)
     expect(
       (await call('on', 'POST', '/api/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/list' })).status
@@ -219,7 +219,7 @@ describe('tenant AI settings endpoint', () => {
     expect(events.map((e) => [e.action, e.actorId])).toEqual([['settings.ai_enabled', 'owner']])
     expect(events[0]!.metadata).toMatchObject({ previous: false })
 
-    expect((await call('off', 'POST', '/api/admin/ai/command', { prompt: 'x' })).status).toBe(200)
+    expect((await call('off', 'POST', '/api/admin/ai/command', { prompt: 'x', dryRun: true })).status).toBe(200)
   })
 
   it('does not treat an unverified SUPER_ADMIN_EMAILS address as super-admin', async () => {

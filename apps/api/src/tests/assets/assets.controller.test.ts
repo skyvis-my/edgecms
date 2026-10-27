@@ -164,7 +164,7 @@ describe('assetsController', () => {
       expect.objectContaining({
         filename: 'marketing/hero.jpg',
         mimeType: 'image/jpeg',
-        contentBase64: expect.any(String),
+        contentBytes: expect.any(Uint8Array),
       }),
       undefined,
       expect.objectContaining({

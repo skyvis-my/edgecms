@@ -68,10 +68,6 @@ function classifyUploadServiceError(error: unknown): {
   }
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString('base64')
-}
-
 function parseOptionalNumber(value: string | null | undefined): number | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()

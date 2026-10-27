@@ -1,23 +1,36 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { afterEach, describe, expect, it } from 'bun:test'
+import { afterEach, beforeAll, describe, expect, it } from 'bun:test'
 import {
   copyTemplate,
   getTemplateDir,
+  isMainModule,
   parseArgs,
   runCreateApp,
   validateStarterEnvExample,
 } from './index'
 
 const tempDirs: string[] = []
+const packageDir = join(import.meta.dir, '..')
+const distBin = join(packageDir, 'dist', 'index.js')
 
 function makeTempDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'edgecms-create-app-'))
   tempDirs.push(dir)
   return dir
 }
+
+beforeAll(() => {
+  if (!existsSync(distBin)) {
+    const buildScript = join(packageDir, 'scripts', 'build.ts')
+    const res = spawnSync('bun', [buildScript], { cwd: packageDir, encoding: 'utf8' })
+    if (res.status !== 0) {
+      throw new Error(`Failed to build dist before test suite:\n${res.stderr || res.stdout}`)
+    }
+  }
+})
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -387,4 +400,47 @@ function formatProcessFailureMessage(params: {
       ).toBe(0)
     }
   }, 30_000)
+
+  it('reports isMainModule as false when imported as a library', () => {
+    expect(isMainModule()).toBe(false)
+  })
+
+  it('runs the compiled Node executable cleanly under standard Node.js runtime', () => {
+    const packageDir = join(import.meta.dir, '..')
+    const distBin = join(packageDir, 'dist', 'index.js')
+
+    const distContent = readFileSync(distBin, 'utf8')
+    expect(distContent.startsWith('#!/usr/bin/env node')).toBe(true)
+
+    // Verify --help works under Node.js
+    const helpResult = spawnSync('node', [distBin, '--help'], { encoding: 'utf8' })
+    expect(helpResult.status).toBe(0)
+    expect(helpResult.stdout).toContain('create-edgecms-app <target-dir>')
+
+    // Verify starter generation works under Node.js
+    const cwd = makeTempDir()
+    const runResult = spawnSync('node', [distBin, 'node-starter'], {
+      cwd,
+      encoding: 'utf8',
+    })
+    expect(runResult.status).toBe(0)
+    expect(runResult.stdout).toContain('Created EdgeCMS starter app')
+    expect(readFileSync(join(cwd, 'node-starter', '.env.example'), 'utf8')).toContain('EDGE_CMS_URL')
+    expect(readFileSync(join(cwd, 'node-starter', 'package.json'), 'utf8')).toContain('edgecms-starter')
+
+    // Verify symlink execution under Node.js (simulates npx / global bin wrapper)
+    const symlinkBin = join(cwd, 'create-edgecms-app-link')
+    symlinkSync(distBin, symlinkBin)
+    const symlinkResult = spawnSync('node', [symlinkBin, '--help'], { encoding: 'utf8' })
+    expect(symlinkResult.status).toBe(0)
+    expect(symlinkResult.stdout).toContain('create-edgecms-app <target-dir>')
+
+    // Verify error reporting under Node.js
+    const errorResult = spawnSync('node', [distBin, '--template', 'unknown-tmpl', 'err-target'], {
+      cwd,
+      encoding: 'utf8',
+    })
+    expect(errorResult.status).toBe(1)
+    expect(errorResult.stderr).toContain('Unknown template "unknown-tmpl"')
+  })
 })

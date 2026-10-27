@@ -219,6 +219,128 @@ describe('pushPendingCommands', () => {
     )
   })
 
+  it('coalesces updateEntry commands with optimisticVersion preserving initial version', async () => {
+    mockCommandQueueItems.push(
+      {
+        id: 12,
+        envelope: {
+          type: 'updateEntry',
+          payload: { entryId: 'entry-1', data: { title: 'First Edit' } },
+          optimisticVersion: 1,
+          timestamp: '2026-01-15T10:00:00.000Z',
+        },
+        status: 'pending',
+        createdAt: '2026-01-15T10:00:00.000Z',
+      },
+      {
+        id: 13,
+        envelope: {
+          type: 'updateEntry',
+          payload: { entryId: 'entry-1', data: { subtitle: 'Second Edit' } },
+          optimisticVersion: 2,
+          timestamp: '2026-01-15T10:00:01.000Z',
+        },
+        status: 'pending',
+        createdAt: '2026-01-15T10:00:01.000Z',
+      }
+    )
+
+    mockedEdenPostForTenant.mockResolvedValueOnce({
+      results: [{ index: 0, status: 'success', data: { id: 'entry-1' } }],
+    })
+
+    const result = await pushPendingCommands()
+
+    expect(result.synced).toBe(2)
+    expect(mockedEdenPostForTenant).toHaveBeenCalledWith(
+      '/admin/sync/push',
+      {
+        commands: [
+          {
+            type: 'updateEntry',
+            payload: {
+              entryId: 'entry-1',
+              data: { title: 'First Edit', subtitle: 'Second Edit' },
+            },
+            optimisticVersion: 1,
+            timestamp: '2026-01-15T10:00:01.000Z',
+          },
+        ],
+      },
+      null
+    )
+  })
+
+  it('coalesces non-consecutive updateEntry commands for the same entry', async () => {
+    mockCommandQueueItems.push(
+      {
+        id: 21,
+        envelope: {
+          type: 'updateEntry',
+          payload: { entryId: 'entry-1', data: { title: 'A' } },
+          timestamp: '2026-01-15T10:00:00.000Z',
+        },
+        status: 'pending',
+        createdAt: '2026-01-15T10:00:00.000Z',
+      },
+      {
+        id: 22,
+        envelope: {
+          type: 'updateEntry',
+          payload: { entryId: 'entry-2', data: { title: 'Other' } },
+          timestamp: '2026-01-15T10:00:01.000Z',
+        },
+        status: 'pending',
+        createdAt: '2026-01-15T10:00:01.000Z',
+      },
+      {
+        id: 23,
+        envelope: {
+          type: 'updateEntry',
+          payload: { entryId: 'entry-1', data: { description: 'B' } },
+          timestamp: '2026-01-15T10:00:02.000Z',
+        },
+        status: 'pending',
+        createdAt: '2026-01-15T10:00:02.000Z',
+      }
+    )
+
+    mockedEdenPostForTenant.mockResolvedValueOnce({
+      results: [
+        { index: 0, status: 'success', data: { id: 'entry-1' } },
+        { index: 1, status: 'success', data: { id: 'entry-2' } },
+      ],
+    })
+
+    const result = await pushPendingCommands()
+
+    expect(result.synced).toBe(3)
+    expect(mockedEdenPostForTenant).toHaveBeenCalledWith(
+      '/admin/sync/push',
+      {
+        commands: [
+          {
+            type: 'updateEntry',
+            payload: {
+              entryId: 'entry-1',
+              data: { title: 'A', description: 'B' },
+            },
+            timestamp: '2026-01-15T10:00:02.000Z',
+          },
+          {
+            type: 'updateEntry',
+            payload: {
+              entryId: 'entry-2',
+              data: { title: 'Other' },
+            },
+            timestamp: '2026-01-15T10:00:01.000Z',
+          },
+        ],
+      },
+      null
+    )
+  })
+
   it('handles failed results correctly', async () => {
     mockCommandQueueItems.push({
       id: 3,

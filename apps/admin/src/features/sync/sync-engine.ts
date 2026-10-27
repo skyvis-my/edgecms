@@ -92,7 +92,6 @@ function normalizePushError(error: unknown): string | undefined {
 
 function canMergeUpdateCommands(previous: CommandEnvelope, next: CommandEnvelope): boolean {
   if (previous.type !== 'updateEntry' || next.type !== 'updateEntry') return false
-  if (previous.optimisticVersion !== undefined || next.optimisticVersion !== undefined) return false
   if (previous.dryRun || next.dryRun) return false
   if (previous.transactionId || next.transactionId) return false
   if (!isRecord(previous.payload) || !isRecord(next.payload)) return false
@@ -123,11 +122,17 @@ function mergeUpdateCommands(previous: CommandEnvelope, next: CommandEnvelope): 
     }
   }
 
-  return {
+  const merged: CommandEnvelope = {
     ...previous,
     payload: mergedPayload,
     timestamp: next.timestamp,
   }
+
+  if (previous.optimisticVersion !== undefined || next.optimisticVersion !== undefined) {
+    merged.optimisticVersion = previous.optimisticVersion ?? next.optimisticVersion
+  }
+
+  return merged
 }
 
 function compactQueuedCommands(
@@ -138,12 +143,39 @@ function compactQueuedCommands(
   for (const item of pendingItems) {
     if (item.id === undefined) continue
     const command = item.envelope as CommandEnvelope
-    const last = compacted[compacted.length - 1]
 
-    if (last && canMergeUpdateCommands(last.command, command)) {
-      last.command = mergeUpdateCommands(last.command, command)
-      last.queueItemIds.push(item.id)
-      continue
+    if (
+      command.type === 'updateEntry' &&
+      isRecord(command.payload) &&
+      typeof command.payload.entryId === 'string' &&
+      !command.dryRun &&
+      !command.transactionId
+    ) {
+      const targetEntryId = command.payload.entryId
+      let mergeTargetIndex = -1
+      for (let i = compacted.length - 1; i >= 0; i--) {
+        const prev = compacted[i]
+        if (prev.command.transactionId || prev.command.dryRun) {
+          break
+        }
+        const prevEntryId =
+          isRecord(prev.command.payload) && typeof prev.command.payload.entryId === 'string'
+            ? prev.command.payload.entryId
+            : null
+        if (prevEntryId === targetEntryId) {
+          if (canMergeUpdateCommands(prev.command, command)) {
+            mergeTargetIndex = i
+          }
+          break
+        }
+      }
+
+      if (mergeTargetIndex >= 0) {
+        const target = compacted[mergeTargetIndex]
+        target.command = mergeUpdateCommands(target.command, command)
+        target.queueItemIds.push(item.id)
+        continue
+      }
     }
 
     compacted.push({
