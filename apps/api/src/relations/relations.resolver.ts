@@ -41,7 +41,8 @@ export const relationsResolver = {
     depth = 1,
     maxDepth = 3,
     visited: Set<string> = new Set(),
-    tenantId?: string
+    tenantId?: string,
+    publishedOnly = false
   ): Promise<PopulatedEntry> {
     // Prevent circular references
     if (visited.has(entry.id)) {
@@ -72,7 +73,7 @@ export const relationsResolver = {
       if (fieldRelations.length > 0) relationsByField.set(fieldName, fieldRelations)
     }
     const allTargetIds = [...new Set([...relationsByField.values()].flat().map((r) => r.targetEntryId))]
-    const targetEntries = await this.batchFetchEntries(db, allTargetIds, tenantId)
+    const targetEntries = await this.batchFetchEntries(db, allTargetIds, tenantId, publishedOnly)
 
     // Create a map for quick lookup
     const targetEntriesMap = new Map(targetEntries.map((e) => [e.id, e]))
@@ -99,7 +100,8 @@ export const relationsResolver = {
                 depth + 1,
                 maxDepth,
                 newVisited,
-                tenantId
+                tenantId,
+                publishedOnly
               )
             }
             return targetEntry as PopulatedEntry
@@ -130,12 +132,14 @@ export const relationsResolver = {
   async batchFetchEntries(
     db: Database,
     entryIds: string[],
-    tenantId?: string
+    tenantId?: string,
+    publishedOnly = false
   ): Promise<EntryRow[]> {
     if (entryIds.length === 0) {
       return []
     }
-    return entriesRepository.findByIds(db, entryIds, tenantId)
+    const rows = await entriesRepository.findByIds(db, entryIds, tenantId)
+    return publishedOnly ? rows.filter((r) => r.status === 'published') : rows
   },
 
   /**
@@ -149,7 +153,8 @@ export const relationsResolver = {
     depth = 1,
     maxDepth = 2,
     visited = new Set<string>(),
-    tenantId?: string
+    tenantId?: string,
+    publishedOnly = false
   ): Promise<PopulatedEntry[]> {
     if (entriesList.length === 0) return []
     if (depth > maxDepth) return entriesList as PopulatedEntry[]
@@ -183,7 +188,8 @@ export const relationsResolver = {
     const targetEntries = await this.batchFetchEntries(
       db,
       Array.from(targetEntryIdSet),
-      tenantId
+      tenantId,
+      publishedOnly
     )
     const targetEntriesMap = new Map<string, EntryRow>(targetEntries.map((e) => [e.id, e]))
 
@@ -203,7 +209,8 @@ export const relationsResolver = {
           depth + 1,
           maxDepth,
           nextVisited,
-          tenantId
+          tenantId,
+          publishedOnly
         )
         const resultMap = new Map<string, PopulatedEntry>(
           targetEntriesMap as Map<string, PopulatedEntry>

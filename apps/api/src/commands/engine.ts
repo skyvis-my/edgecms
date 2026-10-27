@@ -1097,6 +1097,7 @@ async function handleTransaction(
     // so individual commands do not prematurely consume the transaction receipt
     const enrichedEnvelope: CommandEnvelope = {
       ...subEnvelope,
+      dryRun: envelope.dryRun ? true : subEnvelope.dryRun,
       transactionId,
       previewReceipt: undefined,
     }
@@ -1110,7 +1111,11 @@ async function handleTransaction(
     }
   }
 
-  const status = allSucceeded ? 'success' : 'failed'
+  const status = allSucceeded
+    ? envelope.dryRun
+      ? 'dry_run'
+      : 'success'
+    : 'failed'
 
   // Record the transaction itself as a processed command
   // (compensating action note: sub-command effects persist; see saga comment above)
@@ -1119,12 +1124,12 @@ async function handleTransaction(
       ctx.db,
       transactionId,
       envelope,
-      status as 'success' | 'failed',
+      status as 'success' | 'failed' | 'dry_run',
       tenantScope,
       {
         subResults: subResults as unknown as Record<string, unknown>[],
         totalCommands: payload.commands.length,
-        completedCommands: subResults.filter((r) => r.status === 'success').length,
+        completedCommands: subResults.filter((r) => r.status === 'success' || r.status === 'dry_run').length,
         failedCommands: subResults.filter((r) => r.status === 'failed').length,
       }
     )
@@ -1139,19 +1144,19 @@ async function handleTransaction(
     })
   }
 
-  // Consume transaction preview receipt upon overall success
-  if (allSucceeded) {
+  // Consume transaction preview receipt upon overall success (non-dryRun)
+  if (allSucceeded && !envelope.dryRun) {
     await consumeReceiptSafely(envelope.previewReceipt, ctx.kv, receiptScope(ctx))
   }
 
   return finalize({
     commandId: transactionId,
     type: 'transaction',
-    status: status as 'success' | 'failed',
+    status: status as 'success' | 'failed' | 'dry_run',
     data: {
       subResults: subResults as unknown as Record<string, unknown>[],
       totalCommands: payload.commands.length,
-      completedCommands: subResults.filter((r) => r.status === 'success').length,
+      completedCommands: subResults.filter((r) => r.status === 'success' || r.status === 'dry_run').length,
       failedCommands: subResults.filter((r) => r.status === 'failed').length,
     },
     error: allSucceeded

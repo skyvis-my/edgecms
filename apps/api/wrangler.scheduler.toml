@@ -9,7 +9,7 @@ name = "edgecms-scheduler"
 main = "src/scheduler/worker.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
-account_id = "4d2ebaa1400c22bbc9d6ac132a982ace"
+account_id = "LOCAL_ACCOUNT_ID"
 
 # Cron Triggers (runs intent sweep every 1 minute)
 [triggers]
@@ -19,12 +19,12 @@ crons = ["*/1 * * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "edgecms-db"
-database_id = "c428802d-3272-4cb0-a1f4-4b0a41cdae05"
+database_id = "LOCAL_DATABASE_ID"
 
 # KV Namespace (shared with CMS Worker)
 [[kv_namespaces]]
 binding = "CACHE"
-id = "18e8d489286649ef9594510295ca55d4"
+id = "LOCAL_KV_NAMESPACE_ID"
 
 # Durable Object binding for PublishScheduler intent reconciliation
 [[durable_objects.bindings]]

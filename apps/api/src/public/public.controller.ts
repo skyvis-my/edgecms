@@ -193,6 +193,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
           result.object.httpMetadata?.contentType ?? `image/${params.format}`,
         'Cache-Control': 'public, max-age=31536000, immutable',
         'CDN-Cache-Control': 'public, max-age=31536000',
+        'Vary': 'Accept',
         'x-edgecms-cache': 'hit',
       },
     })

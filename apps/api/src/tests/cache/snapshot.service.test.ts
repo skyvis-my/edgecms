@@ -243,7 +243,8 @@ describe('snapshotService', () => {
         1,
         3,
         new Set(),
-        undefined
+        undefined,
+        true
       )
     })
 

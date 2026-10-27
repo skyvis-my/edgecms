@@ -9,6 +9,12 @@ export type AuthorizationSubject =
   | 'GlobalAdminUsers'
   | 'TenantAdminUsers'
   | 'TenantAdminAudit'
+  | 'GlobalAdminRoles'
+  | 'TenantAdminRoles'
+  | 'GlobalAdminWebhooks'
+  | 'TenantAdminWebhooks'
+  | 'GlobalAdminAssetsHardDelete'
+  | 'TenantAdminAssetsHardDelete'
   | 'collection:*'
   | 'collection'
   | 'entry'
@@ -86,10 +92,73 @@ function isTenantAdminAuditPath(pathname: string, method: string): boolean {
   return /^\/api\/tenants\/[^/]+\/api\/admin\/audit(?:\/|$)/.test(pathname)
 }
 
+function isRolesMutationPath(pathname: string, method: string): boolean {
+  if (SAFE_METHODS.has(method)) return false
+  return (
+    pathname.startsWith('/api/admin/roles') ||
+    /^\/api\/tenants\/[^/]+\/api\/admin\/roles(?:\/|$)/.test(pathname)
+  )
+}
+
+function isWebhooksMutationPath(pathname: string, method: string): boolean {
+  if (SAFE_METHODS.has(method)) return false
+  return (
+    pathname.startsWith('/api/admin/webhooks') ||
+    /^\/api\/tenants\/[^/]+\/api\/admin\/webhooks(?:\/|$)/.test(pathname)
+  )
+}
+
+function isAssetHardDeletePath(pathname: string, method: string): boolean {
+  if (method === 'DELETE') {
+    return (
+      /\/api\/admin\/assets\/[^/]+\/permanent(?:\/|$)/.test(pathname) ||
+      /^\/api\/tenants\/[^/]+\/api\/admin\/assets\/[^/]+\/permanent(?:\/|$)/.test(pathname)
+    )
+  }
+  if (method === 'POST') {
+    return (
+      pathname === '/api/admin/assets/gc' ||
+      pathname === '/api/admin/assets/gc/' ||
+      /^\/api\/tenants\/[^/]+\/api\/admin\/assets\/gc(?:\/|$)/.test(pathname)
+    )
+  }
+  return false
+}
+
 function resolveRequirement(
   pathname: string,
   method: string
 ): AuthorizationRequirement | undefined {
+  if (isAssetHardDeletePath(pathname, method)) {
+    const isTenant = isTenantScopedPath(pathname)
+    return {
+      action: 'manage',
+      subject: isTenant ? 'TenantAdminAssetsHardDelete' : 'GlobalAdminAssetsHardDelete',
+      unauthenticatedMessage: 'Authentication required',
+      forbiddenMessage: isTenant ? 'Tenant owner or admin access required' : 'Admin access required',
+    }
+  }
+
+  if (isRolesMutationPath(pathname, method)) {
+    const isTenant = isTenantScopedPath(pathname)
+    return {
+      action: 'manage',
+      subject: isTenant ? 'TenantAdminRoles' : 'GlobalAdminRoles',
+      unauthenticatedMessage: 'Authentication required',
+      forbiddenMessage: isTenant ? 'Tenant owner or admin access required' : 'Admin access required',
+    }
+  }
+
+  if (isWebhooksMutationPath(pathname, method)) {
+    const isTenant = isTenantScopedPath(pathname)
+    return {
+      action: 'manage',
+      subject: isTenant ? 'TenantAdminWebhooks' : 'GlobalAdminWebhooks',
+      unauthenticatedMessage: 'Authentication required',
+      forbiddenMessage: isTenant ? 'Tenant owner or admin access required' : 'Admin access required',
+    }
+  }
+
   if (isTenantAdminAuditPath(pathname, method)) {
     return {
       action: 'read',
@@ -166,6 +235,9 @@ export function createAuthorizationAbility(
     can('mutate', 'GlobalAdminApi')
     can('read', 'GlobalAdminApi')
     can('read', 'GlobalAdminUsers')
+    can('manage', 'GlobalAdminRoles')
+    can('manage', 'GlobalAdminWebhooks')
+    can('manage', 'GlobalAdminAssetsHardDelete')
   }
 
   if (principal.actorRole === 'editor') {
@@ -175,20 +247,24 @@ export function createAuthorizationAbility(
 
   if (
     principal.tenantRole === 'owner' ||
-    principal.tenantRole === 'admin' ||
-    principal.tenantRole === 'editor'
+    principal.tenantRole === 'admin'
   ) {
+    can('mutate', 'TenantAdminApi')
+    can('read', 'TenantAdminApi')
+    can('read', 'TenantAdminUsers')
+    can('read', 'TenantAdminAudit')
+    can('manage', 'TenantAdminRoles')
+    can('manage', 'TenantAdminWebhooks')
+    can('manage', 'TenantAdminAssetsHardDelete')
+  }
+
+  if (principal.tenantRole === 'editor') {
     can('mutate', 'TenantAdminApi')
     can('read', 'TenantAdminApi')
   }
 
   if (principal.tenantRole === 'member') {
     can('read', 'TenantAdminApi')
-  }
-
-  if (principal.tenantRole === 'owner' || principal.tenantRole === 'admin') {
-    can('read', 'TenantAdminUsers')
-    can('read', 'TenantAdminAudit')
   }
 
   // Apply custom permissions from database
@@ -210,6 +286,14 @@ function mapDbSubjectToAuthorizationSubject(dbSubject: string): AuthorizationSub
   // Direct mapping for API subjects
   if (dbSubject === 'TenantAdminApi') return 'TenantAdminApi'
   if (dbSubject === 'GlobalAdminApi') return 'GlobalAdminApi'
+  if (dbSubject === 'TenantAdminRoles') return 'TenantAdminRoles'
+  if (dbSubject === 'GlobalAdminRoles') return 'GlobalAdminRoles'
+  if (dbSubject === 'TenantAdminWebhooks' || dbSubject === 'webhooks:*' || dbSubject.startsWith('webhooks:')) {
+    return 'TenantAdminWebhooks'
+  }
+  if (dbSubject === 'GlobalAdminWebhooks') return 'GlobalAdminWebhooks'
+  if (dbSubject === 'TenantAdminAssetsHardDelete') return 'TenantAdminAssetsHardDelete'
+  if (dbSubject === 'GlobalAdminAssetsHardDelete') return 'GlobalAdminAssetsHardDelete'
   if (dbSubject === '*:*' || dbSubject.startsWith('collection:*')) return 'collection:*'
   if (dbSubject.startsWith('collection:')) return 'collection'
   if (dbSubject.startsWith('entry:')) return 'entry'

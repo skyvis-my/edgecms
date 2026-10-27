@@ -117,9 +117,9 @@ function parseUploadBody(body: unknown): UploadAssetInput {
   if (
     typeof payload.filename !== 'string' ||
     typeof payload.mimeType !== 'string' ||
-    typeof payload.contentBase64 !== 'string'
+    (typeof payload.contentBase64 !== 'string' && !(payload.contentBytes instanceof Uint8Array))
   ) {
-    throw new Error('Upload payload requires filename, mimeType, and contentBase64')
+    throw new Error('Upload payload requires filename, mimeType, and contentBase64 or contentBytes')
   }
   return payload as UploadAssetInput
 }
@@ -167,7 +167,7 @@ async function normalizeUploadInput(ctx: {
   return {
     filename,
     mimeType,
-    contentBase64: bytesToBase64(bytes),
+    contentBytes: bytes,
     width:
       typeof widthValue === 'number'
         ? widthValue
@@ -303,7 +303,7 @@ export const assetsController = new Elysia({ prefix: '/api/admin/assets' })
             tenantId: tenantCtx?.tenant.id ?? 'global',
             filename: uploadInput.filename,
             mimeType: uploadInput.mimeType,
-            sizeBase64Length: uploadInput.contentBase64.length,
+            sizeBase64Length: uploadInput.contentBase64?.length ?? uploadInput.contentBytes?.byteLength ?? 0,
           })
           ctx.set.status = uploadError.status
           return {

@@ -19,7 +19,8 @@ import { indexAssetVector, removeAssetVectors, searchAssetVectorIds } from './ve
 export interface UploadAssetInput {
   filename: string
   mimeType: string
-  contentBase64: string
+  contentBase64?: string
+  contentBytes?: Uint8Array
   width?: number
   height?: number
   blurhash?: string
@@ -29,6 +30,7 @@ export interface UploadAssetInput {
     width?: number
     height?: number
     contentBase64?: string
+    contentBytes?: Uint8Array
   }>
 }
 
@@ -112,11 +114,18 @@ export const assetsService = {
       throw new Error(buildUploadTypeBlockedMessage(mimeType))
     }
 
-    if (estimateDecodedSize(input.contentBase64) > maxUploadBytes) {
+    const estimatedSize = input.contentBytes
+      ? input.contentBytes.byteLength
+      : estimateDecodedSize(input.contentBase64 ?? '')
+    if (estimatedSize > maxUploadBytes) {
       throw new Error(buildUploadTooLargeMessage(maxUploadBytes))
     }
 
-    const originalBytes = bytesFromBase64(input.contentBase64)
+    const originalBytes =
+      input.contentBytes ?? (input.contentBase64 ? bytesFromBase64(input.contentBase64) : new Uint8Array(0))
+    if (originalBytes.byteLength === 0 && !input.contentBytes && !input.contentBase64) {
+      throw new Error('Upload payload requires asset content')
+    }
     if (originalBytes.byteLength > maxUploadBytes) {
       throw new Error(buildUploadTooLargeMessage(maxUploadBytes))
     }
@@ -186,9 +195,10 @@ export const assetsService = {
     }> = []
 
     for (const variant of input.variants ?? []) {
-      if (!isImage || !variant.contentBase64) continue
+      const variantBytes =
+        variant.contentBytes ?? (variant.contentBase64 ? bytesFromBase64(variant.contentBase64) : null)
+      if (!isImage || !variantBytes) continue
       const objectKey = buildVariantKey(tenantScope, assetId, variant.variant, variant.format)
-      const variantBytes = bytesFromBase64(variant.contentBase64)
       const width = variant.width ?? null
       const height = variant.height ?? null
 

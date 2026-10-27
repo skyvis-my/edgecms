@@ -255,6 +255,7 @@ export const publicService = {
           const edgeHeaders = new Headers(edgeRes.headers)
           edgeHeaders.set('x-edgecms-cache', 'hit')
           edgeHeaders.set('x-image-transform', 'cf-edge')
+          edgeHeaders.set('Vary', 'Accept')
           return {
             success: true,
             data: new Response(edgeRes.body, {
@@ -295,6 +296,7 @@ export const publicService = {
     const headers: Record<string, string> = {
       'Cache-Control': 'public, max-age=31536000, immutable',
       'CDN-Cache-Control': 'public, max-age=31536000',
+      'Vary': 'Accept',
       'Content-Type':
         transform?.format && transform.format !== 'auto'
           ? `image/${transform.format}`

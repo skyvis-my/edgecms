@@ -93,11 +93,12 @@ async function populateSingleEntry(
       1,
       maxDepth,
       new Set(),
-      tenantId
+      tenantId,
+      true
     )
     return populated ?? entry
   }
-  return relationsResolver.populate(db, entry, fieldNames, 1, maxDepth, new Set(), tenantId)
+  return relationsResolver.populate(db, entry, fieldNames, 1, maxDepth, new Set(), tenantId, true)
 }
 
 function isEntryVisibleAtRequestTime(
@@ -202,11 +203,12 @@ export const snapshotService = {
             1,
             1,
             new Set(),
-            tenantId
+            tenantId,
+            true
           )
         : await Promise.all(
             visibleEntries.map((entry) =>
-              relationsResolver.populate(db, entry, [], 1, 1, new Set(), tenantId)
+              relationsResolver.populate(db, entry, [], 1, 1, new Set(), tenantId, true)
             )
           )
 

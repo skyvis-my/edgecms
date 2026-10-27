@@ -15,18 +15,29 @@ export function estimateDecodedSize(base64: string): number {
 export function estimateUploadBytes(input: {
   filename: string
   mimeType: string
-  contentBase64: string
-  variants?: Array<{ contentBase64?: string }>
+  contentBase64?: string
+  contentBytes?: Uint8Array
+  variants?: Array<{ contentBase64?: string; contentBytes?: Uint8Array }>
 }): number {
   const isImage = resolveAssetMimeType(input.filename, input.mimeType).startsWith('image/')
   const variantBytes = isImage
     ? (input.variants ?? []).reduce(
         (sum, variant) =>
-          sum + (variant.contentBase64 ? estimateDecodedSize(variant.contentBase64) : 0),
+          sum +
+          (variant.contentBytes
+            ? variant.contentBytes.byteLength
+            : variant.contentBase64
+              ? estimateDecodedSize(variant.contentBase64)
+              : 0),
         0
       )
     : 0
-  return estimateDecodedSize(input.contentBase64) + variantBytes
+  const mainBytes = input.contentBytes
+    ? input.contentBytes.byteLength
+    : input.contentBase64
+      ? estimateDecodedSize(input.contentBase64)
+      : 0
+  return mainBytes + variantBytes
 }
 
 /** Stored bytes of an asset row: original plus variants (HS-05 `media_bytes`). */

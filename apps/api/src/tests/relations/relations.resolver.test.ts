@@ -219,6 +219,38 @@ describe('relationsResolver', () => {
       const result = await relationsResolver.batchFetchEntries(db, ['e1', 'missing'])
       expect(result).toHaveLength(1)
     })
+
+    it('filters out non-published entries when publishedOnly is true', async () => {
+      mockEntriesRepo.findByIds.mockResolvedValueOnce([
+        makeEntry({ id: 'e1', status: 'published' }),
+        makeEntry({ id: 'e2', status: 'draft' }),
+        makeEntry({ id: 'e3', status: 'archived' }),
+      ])
+
+      const result = await relationsResolver.batchFetchEntries(db, ['e1', 'e2', 'e3'], undefined, true)
+      expect(result).toHaveLength(1)
+      expect(result[0]?.id).toBe('e1')
+    })
+  })
+
+  describe('populate with publishedOnly', () => {
+    it('omits draft target entries when publishedOnly is true', async () => {
+      const entry = makeEntry({ id: 'e1', data: { author: null } })
+      const draftTarget = makeEntry({ id: 'e2', status: 'draft', data: { name: 'Draft Author' } })
+
+      mockRelRepo.findBySourceEntry.mockResolvedValue([
+        makeRelation({
+          sourceEntryId: 'e1',
+          targetEntryId: 'e2',
+          fieldName: 'author',
+          relationType: 'one-to-one',
+        }),
+      ])
+      mockEntriesRepo.findByIds.mockResolvedValue([draftTarget])
+
+      const result = await relationsResolver.populate(db, entry, ['author'], 1, 2, new Set(), undefined, true)
+      expect(result.data.author).toBeNull()
+    })
   })
 })
 

@@ -130,6 +130,90 @@ describe('authorizeApiRequest', () => {
     expect(decision).toEqual({ allowed: true })
   })
 
+  it('forbids editor role from mutating roles, webhooks, or hard deleting assets', () => {
+    const editorPrincipal = {
+      actorId: 'user-1',
+      actorRole: 'editor' as const,
+      tenantRole: 'editor' as const,
+    }
+
+    // Role mutation
+    const rolesDecision = authorizeApiRequest({
+      pathname: '/api/admin/roles',
+      method: 'POST',
+      principal: editorPrincipal,
+    })
+    expect(rolesDecision.allowed).toBe(false)
+    if (!rolesDecision.allowed) {
+      expect(rolesDecision.code).toBe('FORBIDDEN')
+    }
+
+    // Tenant role mutation
+    const tenantRolesDecision = authorizeApiRequest({
+      pathname: '/api/tenants/acme/api/admin/roles/role-1',
+      method: 'DELETE',
+      principal: editorPrincipal,
+    })
+    expect(tenantRolesDecision.allowed).toBe(false)
+
+    // Webhooks mutation
+    const webhooksDecision = authorizeApiRequest({
+      pathname: '/api/admin/webhooks',
+      method: 'POST',
+      principal: editorPrincipal,
+    })
+    expect(webhooksDecision.allowed).toBe(false)
+
+    // Tenant webhooks mutation
+    const tenantWebhooksDecision = authorizeApiRequest({
+      pathname: '/api/tenants/acme/api/admin/webhooks/wh-1',
+      method: 'PUT',
+      principal: editorPrincipal,
+    })
+    expect(tenantWebhooksDecision.allowed).toBe(false)
+
+    // Asset permanent deletion
+    const permanentDeleteDecision = authorizeApiRequest({
+      pathname: '/api/admin/assets/asset-1/permanent',
+      method: 'DELETE',
+      principal: editorPrincipal,
+    })
+    expect(permanentDeleteDecision.allowed).toBe(false)
+
+    // Asset GC
+    const gcDecision = authorizeApiRequest({
+      pathname: '/api/admin/assets/gc',
+      method: 'POST',
+      principal: editorPrincipal,
+    })
+    expect(gcDecision.allowed).toBe(false)
+  })
+
+  it('allows admin role to mutate roles, webhooks, and hard delete assets', () => {
+    const adminPrincipal = {
+      actorId: 'user-admin',
+      actorRole: 'admin' as const,
+    }
+
+    expect(authorizeApiRequest({
+      pathname: '/api/admin/roles',
+      method: 'POST',
+      principal: adminPrincipal,
+    })).toEqual({ allowed: true })
+
+    expect(authorizeApiRequest({
+      pathname: '/api/admin/webhooks',
+      method: 'POST',
+      principal: adminPrincipal,
+    })).toEqual({ allowed: true })
+
+    expect(authorizeApiRequest({
+      pathname: '/api/admin/assets/asset-1/permanent',
+      method: 'DELETE',
+      principal: adminPrincipal,
+    })).toEqual({ allowed: true })
+  })
+
   it('returns unauthorized for global admin user listing when actor is missing', () => {
     const decision = authorizeApiRequest({
       pathname: '/api/admin/users',
