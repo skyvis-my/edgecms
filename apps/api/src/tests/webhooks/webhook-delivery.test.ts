@@ -3,7 +3,10 @@ import { describe, expect, it, vi } from 'bun:test'
 const {
   deliverWithRetry,
   signPayload,
+  signTimestampedPayload,
+  verifyWebhookSignature,
   calculateBackoffDelay,
+  calculateJitteredBackoffDelay,
 } = await import(`../../webhooks/webhook-delivery.service?bypass=${Date.now()}`)
 
 describe('webhook delivery service', () => {
@@ -471,6 +474,80 @@ describe('webhook delivery service', () => {
       expect(hexPart).toHaveLength(64)
       // Ensure it is valid hex
       expect(hexPart).toMatch(/^[a-f0-9]+$/)
+    })
+  })
+
+  describe('signTimestampedPayload and verifyWebhookSignature', () => {
+    it('generates timestamped signatures and verifies successfully within tolerance', async () => {
+      const payload = { event: 'entry.published', id: 'e1' }
+      const secret = 'webhook-secret-xyz'
+      const fixedTime = 1700000000
+
+      const { headers, timestamp, signature } = await signTimestampedPayload(secret, payload, fixedTime)
+
+      expect(timestamp).toBe(fixedTime)
+      expect(headers['x-edgecms-signature-v1']).toBe(`t=${fixedTime},v1=${signature}`)
+      expect(headers['x-edgecms-timestamp']).toBe(String(fixedTime))
+
+      // Verification succeeds at exact time
+      const verifyOk = await verifyWebhookSignature(
+        headers['x-edgecms-signature-v1'],
+        secret,
+        payload,
+        300,
+        fixedTime + 60
+      )
+      expect(verifyOk.valid).toBe(true)
+
+      // Verification fails if payload changed
+      const verifyTampered = await verifyWebhookSignature(
+        headers['x-edgecms-signature-v1'],
+        secret,
+        { ...payload, id: 'tampered' },
+        300,
+        fixedTime + 60
+      )
+      expect(verifyTampered.valid).toBe(false)
+      expect(verifyTampered.reason).toBe('Signature mismatch')
+
+      // Verification fails if secret incorrect
+      const verifyWrongSecret = await verifyWebhookSignature(
+        headers['x-edgecms-signature-v1'],
+        'wrong-secret',
+        payload,
+        300,
+        fixedTime + 60
+      )
+      expect(verifyWrongSecret.valid).toBe(false)
+
+      // Verification fails if outside tolerance window (> 300s)
+      const verifyExpired = await verifyWebhookSignature(
+        headers['x-edgecms-signature-v1'],
+        secret,
+        payload,
+        300,
+        fixedTime + 301
+      )
+      expect(verifyExpired.valid).toBe(false)
+      expect(verifyExpired.reason).toBe('Timestamp outside tolerance window')
+    })
+
+    it('rejects malformed signature headers', async () => {
+      const res = await verifyWebhookSignature('invalid-format', 'secret', {})
+      expect(res.valid).toBe(false)
+      expect(res.reason).toBe('Invalid signature format (expected t=...,v1=...)')
+    })
+  })
+
+  describe('calculateJitteredBackoffDelay', () => {
+    it('returns delay within expected bounds and adds jitter', () => {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const delay = calculateJitteredBackoffDelay(attempt, 10, 300)
+        const minBound = 5 // baseSeconds / 2
+        const maxBound = Math.min(300, 10 * 2 ** (attempt - 1))
+        expect(delay).toBeGreaterThanOrEqual(minBound)
+        expect(delay).toBeLessThanOrEqual(maxBound)
+      }
     })
   })
 })

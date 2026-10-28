@@ -312,6 +312,38 @@ export const assetsController = new Elysia({ prefix: '/api/admin/assets' })
           }
         }
       })
+      .post('/direct-upload-intent', {
+        auth: true,
+        body: t.Object({
+          filename: t.String(),
+          mimeType: t.String(),
+          size: t.Number(),
+        }),
+      }, async ({ body, tenantCtx }) => {
+        const intent = await assetsService.createDirectUploadIntent(
+          body,
+          tenantCtx?.tenant.id
+        )
+        return { success: true as const, data: intent }
+      })
+      .post('/direct-upload-complete', {
+        auth: true,
+        body: t.Object({
+          assetId: t.String(),
+          filename: t.String(),
+          mimeType: t.String(),
+          size: t.Number(),
+          objectKey: t.String(),
+        }),
+      }, async ({ db, body, set, tenantCtx }) => {
+        const asset = await assetsService.confirmDirectUpload(
+          db,
+          body,
+          tenantCtx?.tenant.id
+        )
+        set.status = 201
+        return { success: true as const, data: asset }
+      })
       .get('/', { auth: true }, async ({ db, set, tenantCtx }) => {
         if (!tenantCtx?.tenant) {
           set.status = 400

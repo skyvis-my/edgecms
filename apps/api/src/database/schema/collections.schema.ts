@@ -26,6 +26,8 @@ export const collections = sqliteTable(
         required: boolean
         localizable: boolean
         options?: Record<string, unknown>
+        renamedFrom?: string
+        defaultValue?: unknown
       }>
     >(),
     defaultLocale: text('defaultLocale').notNull().default('en'),

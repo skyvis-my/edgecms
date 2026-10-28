@@ -1,8 +1,10 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { collectionsRepository } from '@/collections/collections.repository'
 import { commandsRepository } from '@/commands/commands.repository'
 import { scheduleDeferredWork } from '@/commands/deferred-work'
 import type { Database } from '@/database/db'
 import { entries, entryVersions } from '@/database/schema'
+import { projectEntryDataWithSchema } from '@/entries/schema-projection'
 import { logger } from '@/observability/logger'
 import type { EntryRow, EntryVersionRow } from '@/entries/entries.repository'
 import type { ServiceResult } from '@/shared/types/result'
@@ -306,6 +308,19 @@ export const versioningService = {
 
     const now = new Date().toISOString()
     const newVersionNumber = entry.version + 1
+
+    let restoredData = (targetVersion.data || {}) as Record<string, unknown>
+    if (entry.collectionId) {
+      try {
+        const collection = await collectionsRepository.findById(db, entry.collectionId)
+        if (collection?.fields && Array.isArray(collection.fields)) {
+          restoredData = projectEntryDataWithSchema(restoredData, collection.fields)
+        }
+      } catch {
+        // Fall back to original targetVersion.data if collection lookup is unavailable
+      }
+    }
+
     // Prefer atomic batch (entry update + version row) on real D1; mocks without
     // batch use the sequential path below with revert on failure.
     const hasBatch = typeof (db as unknown as { batch?: unknown }).batch === 'function'
@@ -313,7 +328,7 @@ export const versioningService = {
       try {
         const updateBuilder = db
           .update(entries)
-          .set({ data: targetVersion.data || {}, version: newVersionNumber, updatedAt: now })
+          .set({ data: restoredData, version: newVersionNumber, updatedAt: now })
           .where(and(eq(entries.id, entryId), eq(entries.version, entry.version)))
           .returning()
         const versionId = crypto.randomUUID()
@@ -323,7 +338,7 @@ export const versioningService = {
             id: versionId,
             entryId,
             version: newVersionNumber,
-            data: targetVersion.data || {},
+            data: restoredData,
             createdBy: userId ?? null,
             createdAt: now,
           })
@@ -375,13 +390,13 @@ export const versioningService = {
       typeof versioningRepository.updateWithExpectedVersion === 'function'
         ? () =>
             versioningRepository.updateWithExpectedVersion(db, entryId, entry.version, {
-              data: targetVersion.data || {},
+              data: restoredData,
               version: newVersionNumber,
               updatedAt: now,
             })
         : () =>
             versioningRepository.updateEntry(db, entryId, {
-              data: targetVersion.data || {},
+              data: restoredData,
               version: newVersionNumber,
               updatedAt: now,
             })
@@ -402,7 +417,7 @@ export const versioningService = {
         id: crypto.randomUUID(),
         entryId,
         version: newVersionNumber,
-        data: targetVersion.data || {},
+        data: restoredData,
         createdBy: userId ?? null,
         createdAt: now,
       })

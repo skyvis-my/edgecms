@@ -142,7 +142,7 @@
       "name": "create-edgecms-app",
       "version": "0.2.0",
       "bin": {
-        "create-edgecms-app": "./src/index.ts",
+        "create-edgecms-app": "./dist/index.js",
       },
       "devDependencies": {
         "typescript": "^5.9.3",

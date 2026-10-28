@@ -5,7 +5,7 @@ import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
 import { assets } from '@/database/schema/assets.schema'
 import { r2GcRepository, sweepR2GcOutbox } from './r2-gc.repository'
-import { type AssetWithVariants, assetsRepository } from './assets.repository'
+import { type AssetRow, type AssetWithVariants, assetsRepository } from './assets.repository'
 import {
   DEFAULT_ASSET_ALLOWED_MIME_TYPES,
   isAllowedAssetMimeType,
@@ -260,6 +260,70 @@ export const assetsService = {
     }
 
     return createdAsset
+  },
+
+  async createDirectUploadIntent(
+    input: {
+      filename: string
+      mimeType: string
+      size: number
+    },
+    tenantId?: string
+  ): Promise<{
+    assetId: string
+    objectKey: string
+    uploadUrl: string
+    expiresAt: string
+    headers: Record<string, string>
+  }> {
+    const tenantScope = tenantId ?? 'global'
+    const assetId = crypto.randomUUID()
+    const ext = input.filename.includes('.') ? input.filename.split('.').pop() : 'bin'
+    const objectKey = `${tenantScope}/${assetId}/original.${ext}`
+    const expiresAt = new Date(Date.now() + 3600 * 1000).toISOString()
+    const uploadUrl = `/api/admin/assets/direct-upload/${assetId}`
+
+    return {
+      assetId,
+      objectKey,
+      uploadUrl,
+      expiresAt,
+      headers: {
+        'Content-Type': input.mimeType,
+        'x-amz-meta-tenant': tenantScope,
+        'x-amz-meta-asset-id': assetId,
+      },
+    }
+  },
+
+  async confirmDirectUpload(
+    db: Database,
+    input: {
+      assetId: string
+      filename: string
+      mimeType: string
+      size: number
+      objectKey: string
+    },
+    tenantId?: string
+  ): Promise<AssetRow> {
+    const tenantScope = tenantId ?? 'global'
+    const now = new Date().toISOString()
+    const asset = await assetsRepository.createAsset(db, {
+      id: input.assetId,
+      tenantId: tenantScope,
+      filename: input.filename,
+      mimeType: input.mimeType,
+      size: input.size,
+      width: null,
+      height: null,
+      blurhash: null,
+      createdBy: null,
+      originalKey: input.objectKey,
+      createdAt: now,
+      updatedAt: now,
+    })
+    return asset
   },
 
   async list(db: Database, tenantId?: string) {

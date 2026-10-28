@@ -27,6 +27,8 @@ export const fieldDefinition = createSchema(
     required: Type.Boolean(),
     localizable: Type.Boolean(),
     options: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+    renamedFrom: Type.Optional(Type.String()),
+    defaultValue: Type.Optional(Type.Unknown()),
   })
 )
 

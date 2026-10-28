@@ -81,9 +81,27 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 /**
- * Computes embedding for text using Cloudflare Workers AI or deterministic fallback.
+ * Computes embedding for text using native Cloudflare Workers AI hypervisor binding,
+ * outbound Cloudflare AI API, or deterministic fallback.
  */
 export async function getEmbedding(env: Env | undefined, text: string): Promise<number[]> {
+  // 1. Native Cloudflare Workers AI hypervisor binding (12ms-20ms edge SLA)
+  const aiBinding = (env as unknown as { AI?: { run: (model: string, args: unknown) => Promise<unknown> } })?.AI
+  if (aiBinding && typeof aiBinding.run === 'function') {
+    try {
+      const res = (await aiBinding.run(EMBEDDING_MODEL, {
+        text: [text.slice(0, 2048)],
+      })) as { data?: number[][] }
+      const vec = res?.data?.[0]
+      if (Array.isArray(vec) && vec.length > 0) {
+        return vec
+      }
+    } catch {
+      // Fall through to outbound fetch or deterministic fallback
+    }
+  }
+
+  // 2. Outbound Cloudflare API fetch
   if (env?.CF_API_TOKEN && env?.CLOUDFLARE_ACCOUNT_ID) {
     try {
       const response = await fetch(
@@ -110,6 +128,42 @@ export async function getEmbedding(env: Env | undefined, text: string): Promise<
   }
 
   return createDeterministicEmbedding(text)
+}
+
+/**
+ * Reciprocal Rank Fusion (RRF)
+ * Combines BM25 lexical rank with Vector semantic rank:
+ * RRF(d) = (w1 / (k + rank_lexical(d))) + (w2 / (k + rank_vector(d)))
+ */
+export function computeReciprocalRankFusion<T extends { entryId: string }>(
+  lexicalResults: T[],
+  vectorResults: T[],
+  k = 60,
+  weightLexical = 0.5,
+  weightVector = 0.5
+): Array<T & { rrfScore: number }> {
+  const scoreMap = new Map<string, { item: T; score: number }>()
+
+  lexicalResults.forEach((item, index) => {
+    const rank = index + 1
+    const rrf = weightLexical / (k + rank)
+    scoreMap.set(item.entryId, { item, score: rrf })
+  })
+
+  vectorResults.forEach((item, index) => {
+    const rank = index + 1
+    const rrf = weightVector / (k + rank)
+    const existing = scoreMap.get(item.entryId)
+    if (existing) {
+      existing.score += rrf
+    } else {
+      scoreMap.set(item.entryId, { item, score: rrf })
+    }
+  })
+
+  return Array.from(scoreMap.values())
+    .map(({ item, score }) => ({ ...item, rrfScore: Number(score.toFixed(6)) }))
+    .sort((a, b) => b.rrfScore - a.rrfScore)
 }
 
 export const ragService = {
@@ -173,6 +227,33 @@ export const ragService = {
       })
       return false
     }
+  },
+
+  /**
+   * Removes an unpublished or deleted entry from Vectorize index.
+   */
+  async removePublishedEntry(
+    env: Env | undefined,
+    entryId: string,
+    tenantId?: string
+  ): Promise<boolean> {
+    const vectorId = `content:${tenantId ?? 'global'}:${entryId}`
+    const vectorize = env?.ASSET_VECTORS as unknown as {
+      deleteByIds?: (ids: string[]) => Promise<unknown>
+    } | undefined
+
+    if (vectorize && typeof vectorize.deleteByIds === 'function') {
+      try {
+        await vectorize.deleteByIds([vectorId])
+        return true
+      } catch (err) {
+        logger.warn('vectorize_delete_failed', {
+          vectorId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+    return false
   },
 
   /**

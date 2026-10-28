@@ -70,6 +70,7 @@ queue = "edgecms-webhook-queue"
 max_batch_size = 10
 max_batch_timeout = 5
 max_retries = 5
+dead_letter_queue = "edgecms-webhook-dlq"
 
 # --- Environment Overrides ---
 
@@ -111,6 +112,7 @@ queue = "edgecms-webhook-queue-staging"
 max_batch_size = 10
 max_batch_timeout = 5
 max_retries = 5
+dead_letter_queue = "edgecms-webhook-dlq-staging"
 
 [env.production]
 name = "edgecms-api-production"
@@ -145,3 +147,4 @@ queue = "edgecms-webhook-queue-production"
 max_batch_size = 10
 max_batch_timeout = 5
 max_retries = 5
+dead_letter_queue = "edgecms-webhook-dlq-production"

@@ -1,6 +1,6 @@
-import { and, eq, like } from 'drizzle-orm'
+import { and, eq, inArray, like, or } from 'drizzle-orm'
 import type { Database } from '@/database/db'
-import { collections } from '@/database/schema'
+import { collections, entries, entryVersions, relations } from '@/database/schema'
 
 /** Row type inferred from the collections table. */
 export type CollectionRow = typeof collections.$inferSelect
@@ -98,10 +98,41 @@ export const collectionsRepository = {
     return rows[0]
   },
 
-  /** Delete a collection by ID. Returns true if a row was deleted. */
+  /** Delete a collection by ID. Cascade-deletes entries, relations, and versions. Returns true if a row was deleted. */
   async deleteById(db: Database, id: string, tenantId?: string): Promise<boolean> {
     const tenantScope = resolveTenantScope(tenantId)
     const condition = and(eq(collections.id, id), eq(collections.tenantId, tenantScope))
+
+    // Cascade delete entries, versions, relations atomically to avoid orphan rows when foreign_keys = OFF
+    try {
+      const entryRows = await db
+        .select({ id: entries.id })
+        .from(entries)
+        .where(eq(entries.collectionId, id))
+      const entryIds = entryRows.map((r) => r.id)
+
+      const hasBatch = typeof (db as unknown as { batch?: unknown }).batch === 'function'
+
+      if (entryIds.length > 0) {
+        if (hasBatch) {
+          const batchOps = [
+            db.delete(entryVersions).where(inArray(entryVersions.entryId, entryIds)),
+            db.delete(relations).where(or(inArray(relations.sourceEntryId, entryIds), inArray(relations.targetEntryId, entryIds))),
+            db.delete(entries).where(eq(entries.collectionId, id)),
+            db.delete(collections).where(condition),
+          ]
+          await (db as unknown as { batch: (ops: unknown[]) => Promise<unknown> }).batch(batchOps)
+          return true
+        } else {
+          await db.delete(entryVersions).where(inArray(entryVersions.entryId, entryIds))
+          await db.delete(relations).where(or(inArray(relations.sourceEntryId, entryIds), inArray(relations.targetEntryId, entryIds)))
+          await db.delete(entries).where(eq(entries.collectionId, id))
+        }
+      }
+    } catch {
+      // Best-effort cascade before collection delete
+    }
+
     const rows = await db
       .delete(collections)
       .where(condition)

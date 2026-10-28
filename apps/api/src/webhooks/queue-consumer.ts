@@ -21,7 +21,7 @@ import {
   validateWebhookDestination,
 } from './webhook-destination-policy'
 import { isUniqueConstraintViolation } from './outbox.repository'
-import { calculateBackoffDelay, signPayload } from './webhook-delivery.service'
+import { calculateBackoffDelay, calculateJitteredBackoffDelay, signPayload } from './webhook-delivery.service'
 
 const QUEUE_MAX_RETRIES = 5
 const MIN_WEBHOOK_TIMEOUT_SECONDS = 5
