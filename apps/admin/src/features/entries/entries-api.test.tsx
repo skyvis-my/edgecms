@@ -142,6 +142,7 @@ describe('entries api hooks', () => {
       }),
     )
 
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: entriesKeys.list('c1') })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: entriesKeys.lists() })
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: entriesKeys.detail('e1') })
   })

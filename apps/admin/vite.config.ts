@@ -80,9 +80,6 @@ export default defineConfig({
           if (packageName.startsWith('@tanstack/')) return 'tanstack-vendor'
           if (packageName.startsWith('@radix-ui/')) return 'radix-vendor'
           if (packageName.startsWith('@floating-ui/')) return 'floating-vendor'
-          if (packageName === 'recharts' || packageName.startsWith('d3')) {
-            return 'charts-vendor'
-          }
           if (packageName.startsWith('prosemirror-') || packageName.startsWith('@tiptap/')) {
             return 'editor-vendor'
           }

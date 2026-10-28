@@ -21,7 +21,7 @@ import {
   validateWebhookDestination,
 } from './webhook-destination-policy'
 import { isUniqueConstraintViolation } from './outbox.repository'
-import { calculateBackoffDelay, calculateJitteredBackoffDelay, signPayload } from './webhook-delivery.service'
+import { calculateJitteredBackoffDelay, signPayload } from './webhook-delivery.service'
 
 const QUEUE_MAX_RETRIES = 5
 const MIN_WEBHOOK_TIMEOUT_SECONDS = 5
@@ -285,6 +285,42 @@ export async function handleQueue(
     }
   }
 
+  // Prefetch existing deliveries in bulk to avoid individual findExistingDelivery SELECT queries
+  const uniqueEventIds = Array.from(
+    new Set(batch.messages.map((m) => m.body.eventPayload?.id).filter(Boolean))
+  )
+  if (uniqueEventIds.length > 1) {
+    try {
+      const chain = orm
+        .select()
+        .from(webhookDeliveries)
+        .where(inArray(webhookDeliveries.eventId, uniqueEventIds)) as unknown as {
+        all?: () => Promise<DeliveryRow[]>
+      } & PromiseLike<DeliveryRow[]>
+      const rows = typeof chain.all === 'function' ? await chain.all() : await chain
+      const foundKeys = new Set<string>()
+      for (const row of rows) {
+        if (row && row.webhookId && row.eventId) {
+          const key = `${row.webhookId}:${row.eventId}`
+          deliveryCache.set(key, Promise.resolve(row))
+          foundKeys.add(key)
+        }
+      }
+      for (const msg of batch.messages) {
+        const eventId = msg.body.eventPayload?.id
+        const webhookId = msg.body.webhookId
+        if (eventId && webhookId) {
+          const key = `${webhookId}:${eventId}`
+          if (!foundKeys.has(key)) {
+            deliveryCache.set(key, Promise.resolve(undefined))
+          }
+        }
+      }
+    } catch {
+      // Best-effort prefetch; getExistingDelivery will fall back on demand
+    }
+  }
+
   const getExistingDelivery = (
     eventId: string,
     webhookId: string
@@ -401,7 +437,7 @@ export async function handleQueue(
         // Delivery failed
         if (currentAttempt < effectiveMessage.maxRetries) {
           // Retry with exponential backoff
-          const delaySeconds = calculateBackoffDelay(currentAttempt)
+          const delaySeconds = calculateJitteredBackoffDelay(currentAttempt)
           const nextRetryAt = new Date(Date.now() + delaySeconds * 1000).toISOString()
 
           // Record the failed attempt

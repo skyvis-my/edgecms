@@ -14,10 +14,14 @@ import { publicRepository } from './public.repository'
 const DEFAULT_BROWSER_TTL = 60
 const DEFAULT_CDN_TTL = 300
 
+import { generateWeakETag } from './etag'
+export { generateWeakETag }
+
 type EmbeddedSnapshotTtls = {
   dynamicTTL: number
   browserTTL: number
   cdnTTL: number
+  etag?: string
 }
 
 function toHeaderTtls(dynamicTTL: number): { browserTTL: number; cdnTTL: number } {
@@ -27,7 +31,11 @@ function toHeaderTtls(dynamicTTL: number): { browserTTL: number; cdnTTL: number 
   }
 }
 
-function readEmbeddedHeaderTtls(stored: unknown): { browserTTL: number; cdnTTL: number } {
+function readEmbeddedHeaderTtls(stored: unknown): {
+  browserTTL: number
+  cdnTTL: number
+  etag?: string
+} {
   const cache =
     typeof stored === 'object' && stored !== null
       ? (stored as { cache?: unknown }).cache
@@ -41,6 +49,7 @@ function readEmbeddedHeaderTtls(stored: unknown): { browserTTL: number; cdnTTL: 
     return {
       browserTTL: (cache as EmbeddedSnapshotTtls).browserTTL,
       cdnTTL: (cache as EmbeddedSnapshotTtls).cdnTTL,
+      etag: (cache as EmbeddedSnapshotTtls).etag,
     }
   }
   return { browserTTL: DEFAULT_BROWSER_TTL, cdnTTL: DEFAULT_CDN_TTL }
@@ -67,6 +76,8 @@ export type PublicCacheMeta = {
   browserTTL: number
   cdnTTL: number
   debugHeaders: Record<string, string>
+  etag?: string
+  rawJson?: string
 }
 
 type PublicError = {
@@ -132,15 +143,38 @@ function buildCachedPublicResult(
   }
   // Reuse the TTLs embedded at write time so hit/miss Cache-Control headers
   // agree — no D1 recompute on the hot path.
-  const { browserTTL, cdnTTL } = readEmbeddedHeaderTtls(stored)
+  const { browserTTL, cdnTTL, etag: embeddedEtag } = readEmbeddedHeaderTtls(stored)
+  const storedObj =
+    typeof stored === 'object' && stored !== null ? (stored as Record<string, unknown>) : null
+  const payload = stripEmbeddedTtls(stored)
+  let rawJson = (storedObj?.__cleanRawJson as string) || undefined
+  if (!rawJson) {
+    try {
+      rawJson = JSON.stringify(payload)
+      if (storedObj) {
+        Object.defineProperty(storedObj, '__cleanRawJson', {
+          value: rawJson,
+          writable: true,
+          configurable: true,
+          enumerable: false,
+        })
+      }
+    } catch {
+      rawJson = undefined
+    }
+  }
+  const etag = embeddedEtag || (storedObj?.__etag as string) || undefined
+
   return {
     success: true,
     data: {
-      payload: stripEmbeddedTtls(stored),
+      payload,
       cache: {
         cacheTag,
         browserTTL,
         cdnTTL,
+        etag: etag ?? generateWeakETag(cacheTag, payload),
+        rawJson,
         debugHeaders: tracker.toHeaders(),
       },
     },
@@ -586,16 +620,28 @@ export const publicService = {
 
       const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
+      const etag = generateWeakETag(cacheTag, generatedSnapshot)
+      const rawJson = JSON.stringify(generatedSnapshot)
       const tags = tenantId
         ? snapshotService.generateCacheTags(collection.id, undefined, locale, {
             tenantId,
             collectionSlug: collection.slug,
           })
         : snapshotService.generateCacheTags(collection.id, undefined, locale)
+      const embedded = withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL, etag })
+      try {
+        Object.defineProperties(embedded, {
+          __cleanRawJson: { value: rawJson, writable: true, configurable: true, enumerable: false },
+          __rawJson: { value: rawJson, writable: true, configurable: true, enumerable: false },
+          __etag: { value: etag, writable: true, configurable: true, enumerable: false },
+        })
+      } catch {
+        // ignore
+      }
       await kvService.putSnapshot(
         kv,
         versionedKey,
-        withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL }),
+        embedded,
         dynamicTTL
       )
       scheduleDeferredWork(
@@ -612,6 +658,8 @@ export const publicService = {
             cacheTag,
             browserTTL,
             cdnTTL,
+            etag,
+            rawJson,
             debugHeaders: tracker.toHeaders(),
           },
         },
@@ -699,6 +747,8 @@ export const publicService = {
 
       const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
+      const etag = generateWeakETag(cacheTag, generatedSnapshot)
+      const rawJson = JSON.stringify(generatedSnapshot)
       const tags = tenantId
         ? snapshotService.generateCacheTags(
             collection.id,
@@ -711,10 +761,20 @@ export const publicService = {
             generatedSnapshot.entry.id,
             locale
           )
+      const embedded = withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL, etag })
+      try {
+        Object.defineProperties(embedded, {
+          __cleanRawJson: { value: rawJson, writable: true, configurable: true, enumerable: false },
+          __rawJson: { value: rawJson, writable: true, configurable: true, enumerable: false },
+          __etag: { value: etag, writable: true, configurable: true, enumerable: false },
+        })
+      } catch {
+        // ignore
+      }
       await kvService.putSnapshot(
         kv,
         versionedKey,
-        withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL }),
+        embedded,
         dynamicTTL
       )
       scheduleDeferredWork(
@@ -731,6 +791,8 @@ export const publicService = {
             cacheTag,
             browserTTL,
             cdnTTL,
+            etag,
+            rawJson,
             debugHeaders: tracker.toHeaders(),
           },
         },
@@ -817,16 +879,28 @@ export const publicService = {
 
       const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
+      const etag = generateWeakETag(cacheTag, generatedSnapshot)
+      const rawJson = JSON.stringify(generatedSnapshot)
       const tags = tenantId
         ? snapshotService.generateCacheTags(collection.id, entry.id, locale, {
             tenantId,
             collectionSlug: collection.slug,
           })
         : snapshotService.generateCacheTags(collection.id, entry.id, locale)
+      const embedded = withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL, etag })
+      try {
+        Object.defineProperties(embedded, {
+          __cleanRawJson: { value: rawJson, writable: true, configurable: true, enumerable: false },
+          __rawJson: { value: rawJson, writable: true, configurable: true, enumerable: false },
+          __etag: { value: etag, writable: true, configurable: true, enumerable: false },
+        })
+      } catch {
+        // ignore
+      }
       await kvService.putSnapshot(
         kv,
         versionedKey,
-        withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL }),
+        embedded,
         dynamicTTL
       )
       scheduleDeferredWork(
@@ -843,6 +917,8 @@ export const publicService = {
             cacheTag,
             browserTTL,
             cdnTTL,
+            etag,
+            rawJson,
             debugHeaders: tracker.toHeaders(),
           },
         },

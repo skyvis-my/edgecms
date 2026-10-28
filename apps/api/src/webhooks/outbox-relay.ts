@@ -24,7 +24,13 @@ import type { WebhookQueueMessage } from './queue-producer'
  * the producer passes (event) => buildMessagesForEvent(db, event).
  */
 
-export type ResolveOutboxMessages = (event: WebhookEvent) => Promise<WebhookQueueMessage[]>
+import { eq } from 'drizzle-orm'
+import { webhooks } from '@/database/schema/webhooks.schema'
+
+export type ResolveOutboxMessages = (
+  event: WebhookEvent,
+  cachedWebhooks?: unknown[]
+) => Promise<WebhookQueueMessage[]>
 
 const RELAY_SEND_BATCH_SIZE = 100
 const RELAY_RETRY_DELAY_MS = 60_000
@@ -73,11 +79,26 @@ export async function relayOutbox(
   }
   if (claimed.length === 0) return { relayed: 0, pending: 0 }
 
+  let enabledWebhooks: unknown[] | undefined
+  if (resolveMessages) {
+    try {
+      const chain = db
+        .select()
+        .from(webhooks)
+        .where(eq(webhooks.enabled, true)) as unknown as {
+        all?: () => Promise<unknown[]>
+      } & PromiseLike<unknown[]>
+      enabledWebhooks = typeof chain.all === 'function' ? await chain.all() : await chain
+    } catch {
+      // Best-effort prefetch; resolveMessages can fall back to querying if needed
+    }
+  }
+
   let relayed = 0
   for (const row of claimed) {
     const event = toWebhookEvent(row)
     try {
-      const messages = resolveMessages ? await resolveMessages(event) : []
+      const messages = resolveMessages ? await resolveMessages(event, enabledWebhooks) : []
       for (let i = 0; i < messages.length; i += RELAY_SEND_BATCH_SIZE) {
         const chunk = messages.slice(i, i + RELAY_SEND_BATCH_SIZE)
         await queue.sendBatch(chunk.map((body) => ({ body })))

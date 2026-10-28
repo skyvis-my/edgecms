@@ -18,14 +18,16 @@ import { edenGet, edenPost } from '@/lib/eden-client'
 export const entriesKeys = {
   all: ['entries'] as const,
   lists: () => [...entriesKeys.all, 'list'] as const,
-  list: (params: {
+  list: (params?: string | {
     collectionId?: string
     collectionSlug?: string
     status?: string
     page?: number
     perPage?: number
-  }) =>
-    [...entriesKeys.lists(), params] as const,
+  }) => {
+    const filter = typeof params === 'string' ? { collectionId: params } : (params ?? {})
+    return [...entriesKeys.lists(), filter] as const
+  },
   details: () => [...entriesKeys.all, 'detail'] as const,
   detail: (id: string) => [...entriesKeys.details(), id] as const,
   byIdentifier: (identifier: string, collectionId?: string) =>
@@ -234,8 +236,12 @@ export function useCreateEntry() {
       const result = await executeCommand.mutateAsync(command)
       return result.data as Entry
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+    onSuccess: (_data, variables) => {
+      if (variables?.collectionId) {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.list(variables.collectionId) })
+      } else {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+      }
     },
   })
 }
@@ -268,8 +274,13 @@ export function useUpdateEntry() {
       const result = await executeCommand.mutateAsync(command)
       return result.data as Entry
     },
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+    onSuccess: (data, variables) => {
+      const collectionId = (variables as { collectionId?: string })?.collectionId ?? data?.collectionId
+      if (collectionId) {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.list(collectionId) })
+      } else {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+      }
       queryClient.invalidateQueries({ queryKey: entriesKeys.detail(variables.id) })
     },
   })
@@ -283,12 +294,18 @@ export function useDeleteEntry() {
   const executeCommand = useExecuteCommand()
 
   return useMutation({
-    mutationFn: async (id: string) => {
+    mutationFn: async (input: string | { id: string; collectionId?: string }) => {
+      const id = typeof input === 'string' ? input : input.id
       const command = buildDeleteEntryCommand(id)
       await executeCommand.mutateAsync(command)
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+    onSuccess: (_data, variables) => {
+      const collectionId = typeof variables === 'object' ? variables?.collectionId : undefined
+      if (collectionId) {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.list(collectionId) })
+      } else {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+      }
     },
   })
 }
@@ -303,8 +320,12 @@ export function useDuplicateEntry() {
     mutationFn: async (entryId: string): Promise<Entry> => {
       return edenPost<Entry>(`/admin/entries/${entryId}/duplicate`)
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+    onSuccess: (data) => {
+      if (data?.collectionId) {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.list(data.collectionId) })
+      } else {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+      }
     },
   })
 }
@@ -322,8 +343,12 @@ export function usePublishEntry() {
       const result = await executeCommand.mutateAsync(command)
       return result.data as Entry
     },
-    onSuccess: (_data, id) => {
-      queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+    onSuccess: (data, id) => {
+      if (data?.collectionId) {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.list(data.collectionId) })
+      } else {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+      }
       queryClient.invalidateQueries({ queryKey: entriesKeys.detail(id) })
     },
   })
@@ -342,8 +367,12 @@ export function useUnpublishEntry() {
       const result = await executeCommand.mutateAsync(command)
       return result.data as Entry
     },
-    onSuccess: (_data, id) => {
-      queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+    onSuccess: (data, id) => {
+      if (data?.collectionId) {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.list(data.collectionId) })
+      } else {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+      }
       queryClient.invalidateQueries({ queryKey: entriesKeys.detail(id) })
     },
   })
@@ -362,8 +391,12 @@ export function useSchedulePublish() {
       const result = await executeCommand.mutateAsync(command)
       return result.data as Entry
     },
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+    onSuccess: (data, variables) => {
+      if (data?.collectionId) {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.list(data.collectionId) })
+      } else {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+      }
       queryClient.invalidateQueries({ queryKey: entriesKeys.detail(variables.id) })
     },
   })
@@ -382,8 +415,12 @@ export function useScheduleUnpublish() {
       const result = await executeCommand.mutateAsync(command)
       return result.data as Entry
     },
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+    onSuccess: (data, variables) => {
+      if (data?.collectionId) {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.list(data.collectionId) })
+      } else {
+        queryClient.invalidateQueries({ queryKey: entriesKeys.lists() })
+      }
       queryClient.invalidateQueries({ queryKey: entriesKeys.detail(variables.id) })
     },
   })

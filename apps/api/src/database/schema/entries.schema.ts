@@ -33,6 +33,7 @@ export const entries = sqliteTable(
   },
   (table) => [
     uniqueIndex('entries_collection_slug_unique').on(table.collectionId, table.slug),
+    index('entries_collection_created_at_idx').on(table.collectionId, table.createdAt),
     index('entries_collection_published_idx')
       .on(table.collectionId, table.createdAt)
       .where(sql`${table.status} = 'published'`),

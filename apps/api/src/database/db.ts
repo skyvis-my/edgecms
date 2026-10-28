@@ -21,13 +21,23 @@ export interface CreateDbOptions {
   sessionToken?: string
 }
 
+const dbClientCache = new WeakMap<object, ReturnType<typeof drizzle>>()
+
 export function createDb(d1: D1Database, options?: CreateDbOptions) {
-  let targetD1 = d1
   const bookmark = options?.sessionBookmark ?? options?.sessionToken
+  if (!bookmark && typeof d1 === 'object' && d1 !== null) {
+    const cached = dbClientCache.get(d1)
+    if (cached) return cached
+  }
+  let targetD1 = d1
   if (bookmark && typeof (d1 as unknown as { withSession?: (s: string) => D1Database }).withSession === 'function') {
     targetD1 = (d1 as unknown as { withSession: (s: string) => D1Database }).withSession(bookmark)
   }
-  return drizzle(targetD1)
+  const db = drizzle(targetD1)
+  if (!bookmark && typeof d1 === 'object' && d1 !== null) {
+    dbClientCache.set(d1, db)
+  }
+  return db
 }
 
 /** The Drizzle D1 instance type, for use in repositories and service layers. */

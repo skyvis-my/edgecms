@@ -116,12 +116,18 @@ export class EdgeCmsClient {
         const qs = queryParams.toString() ? `?${queryParams.toString()}` : ''
         const url = `${baseUrl}/api/tenants/${tenantSlug}/public/${slug}${qs}`
         const res = await doFetch(url, {
+          ...options?.fetchOptions,
           method: 'GET',
           headers: {
             ...headers,
             ...(options?.previewToken ? { 'x-edgecms-preview-token': options.previewToken } : {}),
+            ...options?.fetchOptions?.headers,
           },
         })
+
+        if (res.status === 304) {
+          return null as unknown as PaginatedListResponse<T>
+        }
 
         if (!res.ok) {
           throw new Error(`EdgeCMS list request failed (${res.status}): ${await res.text()}`)
@@ -145,12 +151,18 @@ export class EdgeCmsClient {
         const qs = queryParams.toString() ? `?${queryParams.toString()}` : ''
         const url = `${baseUrl}/api/tenants/${tenantSlug}/public/${slug}/${encodeURIComponent(entrySlugOrId)}${qs}`
         const res = await doFetch(url, {
+          ...options?.fetchOptions,
           method: 'GET',
           headers: {
             ...headers,
             ...(options?.previewToken ? { 'x-edgecms-preview-token': options.previewToken } : {}),
+            ...options?.fetchOptions?.headers,
           },
         })
+
+        if (res.status === 304) {
+          return null as unknown as T
+        }
 
         if (!res.ok) {
           throw new Error(`EdgeCMS get request failed (${res.status}): ${await res.text()}`)
@@ -168,12 +180,18 @@ export class EdgeCmsClient {
         const qs = queryParams.toString() ? `?${queryParams.toString()}` : ''
         const url = `${baseUrl}/api/tenants/${tenantSlug}/public/singleton/${slug}${qs}`
         const res = await doFetch(url, {
+          ...options?.fetchOptions,
           method: 'GET',
           headers: {
             ...headers,
             ...(options?.previewToken ? { 'x-edgecms-preview-token': options.previewToken } : {}),
+            ...options?.fetchOptions?.headers,
           },
         })
+
+        if (res.status === 304) {
+          return null as unknown as T
+        }
 
         if (!res.ok) {
           throw new Error(`EdgeCMS getSingleton request failed (${res.status}): ${await res.text()}`)
@@ -223,9 +241,16 @@ export class EdgeCmsClient {
 
     const url = `${this.baseUrl}/api/tenants/${this.tenantSlug}/public/search?${queryParams.toString()}`
     const res = await this.fetch(url, {
+      ...options.fetchOptions,
       method: 'GET',
-      headers: this.headers,
+      headers: {
+        ...this.headers,
+        ...options.fetchOptions?.headers,
+      },
     })
+    if (res.status === 304) {
+      return null as unknown as SearchResponse
+    }
     if (!res.ok) {
       throw new Error(`EdgeCMS search failed (${res.status}): ${await res.text()}`)
     }

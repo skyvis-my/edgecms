@@ -30,8 +30,9 @@ const queryClient = new QueryClient({
 
         return !(error instanceof ApiClientError && [401, 403].includes(error.status ?? 0))
       },
-      refetchOnWindowFocus: import.meta.env.PROD,
-      staleTime: 10 * 1000, // 10s
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
+      gcTime: 30 * 60 * 1000,
     },
     mutations: {
       onError: (error) => {

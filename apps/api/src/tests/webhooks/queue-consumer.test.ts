@@ -837,10 +837,15 @@ describe('handleQueue', () => {
         retry: vi.fn(),
       }
       await handleQueue(createMessageBatch([mockMessage1]), mockEnv)
-      expect(mockMessage1.retry).toHaveBeenCalledWith({ delaySeconds: 10 })
+      expect(mockMessage1.retry).toHaveBeenCalledWith(
+        expect.objectContaining({ delaySeconds: expect.any(Number) })
+      )
+      const d1 = (mockMessage1.retry.mock.calls[0]![0] as { delaySeconds: number }).delaySeconds
+      expect(d1).toBeGreaterThanOrEqual(5)
+      expect(d1).toBeLessThanOrEqual(10)
       expect(mockMessage1.ack).not.toHaveBeenCalled()
 
-      // attempt = 2 (msg.attempts = 1), currentAttempt = 2, delay = 10 * 3^1 = 30s
+      // attempt = 2 (msg.attempts = 1), currentAttempt = 2, jittered between 5 and 20s
       const mockMessage2 = {
         id: 'msg-retry-2',
         timestamp: new Date(),
@@ -850,9 +855,14 @@ describe('handleQueue', () => {
         retry: vi.fn(),
       }
       await handleQueue(createMessageBatch([mockMessage2]), mockEnv)
-      expect(mockMessage2.retry).toHaveBeenCalledWith({ delaySeconds: 30 })
+      expect(mockMessage2.retry).toHaveBeenCalledWith(
+        expect.objectContaining({ delaySeconds: expect.any(Number) })
+      )
+      const d2 = (mockMessage2.retry.mock.calls[0]![0] as { delaySeconds: number }).delaySeconds
+      expect(d2).toBeGreaterThanOrEqual(5)
+      expect(d2).toBeLessThanOrEqual(20)
 
-      // attempt = 3 (msg.attempts = 2), currentAttempt = 3, delay = 10 * 3^2 = 90s
+      // attempt = 3 (msg.attempts = 2), currentAttempt = 3, jittered between 5 and 40s
       const mockMessage3 = {
         id: 'msg-retry-3',
         timestamp: new Date(),
@@ -862,7 +872,12 @@ describe('handleQueue', () => {
         retry: vi.fn(),
       }
       await handleQueue(createMessageBatch([mockMessage3]), mockEnv)
-      expect(mockMessage3.retry).toHaveBeenCalledWith({ delaySeconds: 90 })
+      expect(mockMessage3.retry).toHaveBeenCalledWith(
+        expect.objectContaining({ delaySeconds: expect.any(Number) })
+      )
+      const d3 = (mockMessage3.retry.mock.calls[0]![0] as { delaySeconds: number }).delaySeconds
+      expect(d3).toBeGreaterThanOrEqual(5)
+      expect(d3).toBeLessThanOrEqual(40)
     })
 
     it('exhausts retries and commits dead-letter terminal failure with msg.ack() when attempts >= maxRetries', async () => {
@@ -1070,8 +1085,13 @@ describe('handleQueue', () => {
       expect(msgSuccess.ack).toHaveBeenCalledTimes(1)
       expect(msgSuccess.retry).not.toHaveBeenCalled()
 
-      // msgRetry: retry with backoff -> retry({ delaySeconds: 30 })
-      expect(msgRetry.retry).toHaveBeenCalledWith({ delaySeconds: 30 })
+      // msgRetry: retry with backoff -> retry({ delaySeconds })
+      expect(msgRetry.retry).toHaveBeenCalledWith(
+        expect.objectContaining({ delaySeconds: expect.any(Number) })
+      )
+      const mixedDelay = (msgRetry.retry.mock.calls[0]![0] as { delaySeconds: number }).delaySeconds
+      expect(mixedDelay).toBeGreaterThanOrEqual(5)
+      expect(mixedDelay).toBeLessThanOrEqual(20)
       expect(msgRetry.ack).not.toHaveBeenCalled()
 
       // msgDeadLetter: max retries reached -> ack
@@ -1130,9 +1150,9 @@ describe('handleQueue', () => {
 
       expect(msg1.ack).toHaveBeenCalledTimes(1)
       expect(msg2.ack).toHaveBeenCalledTimes(1)
-      // Webhook config is looked up once (deduped across the batch)
-      // Total selects = 1 webhook + 2 delivery checks = 3 (instead of 4 without webhook dedup)
-      expect(mockOrm.select).toHaveBeenCalledTimes(3)
+      // Webhook config is looked up once, and deliveries are prefetched in bulk across the batch
+      // Total selects = 1 webhook + 1 delivery prefetch = 2 (instead of 4 without batch dedup)
+      expect(mockOrm.select).toHaveBeenCalledTimes(2)
     })
 
     it('deduplicates both webhook and idempotency queries when messages share event and webhook', async () => {

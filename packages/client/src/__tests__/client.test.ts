@@ -331,3 +331,59 @@ describe('@edgecms/client SSR Safety', () => {
   })
 })
 
+describe('@edgecms/client HTTP 304 and fetchOptions', () => {
+  it('handles HTTP 304 Not Modified without throwing res.ok error', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      status: 304,
+      ok: false,
+      text: async () => '',
+    })
+
+    const client = createEdgeCmsClient({
+      baseUrl: 'https://cms.example.com',
+      tenantSlug: 'acme',
+      fetch: mockFetch as unknown as typeof globalThis.fetch,
+    })
+
+    const listRes = await client.collection('posts').list()
+    expect(listRes).toBeNull()
+
+    const getRes = await client.collection('posts').get('post-1')
+    expect(getRes).toBeNull()
+
+    const singletonRes = await client.collection('settings').getSingleton()
+    expect(singletonRes).toBeNull()
+
+    const searchRes = await client.search({ query: 'hello' })
+    expect(searchRes).toBeNull()
+  })
+
+  it('forwards custom fetchOptions including next and cache', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      status: 200,
+      ok: true,
+      json: async () => ({ data: [], meta: { total: 0, page: 1, perPage: 20 } }),
+    })
+
+    const client = createEdgeCmsClient({
+      baseUrl: 'https://cms.example.com',
+      tenantSlug: 'acme',
+      fetch: mockFetch as unknown as typeof globalThis.fetch,
+    })
+
+    await client.collection('posts').list({
+      fetchOptions: {
+        cache: 'no-store',
+        next: { revalidate: 60, tags: ['posts'] },
+        headers: { 'X-Custom-Header': 'custom-value' },
+      },
+    })
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    const [, init] = mockFetch.mock.calls[0] as [string, Record<string, unknown>]
+    expect(init.cache).toBe('no-store')
+    expect(init.next).toEqual({ revalidate: 60, tags: ['posts'] })
+    expect((init.headers as Record<string, string>)['X-Custom-Header']).toBe('custom-value')
+  })
+})
+

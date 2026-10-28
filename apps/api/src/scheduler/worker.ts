@@ -50,7 +50,10 @@ export default {
         const outboxResult = await relayOutbox(
           db as any,
           env.WEBHOOK_QUEUE as any,
-          (event) => buildMessagesForEvent(db as any, event)
+          (event, cached) =>
+            cached !== undefined
+              ? buildMessagesForEvent(db as any, event, cached as any)
+              : buildMessagesForEvent(db as any, event)
         )
         logger.info('scheduler_outbox_relay_completed', {
           relayed: outboxResult.relayed,

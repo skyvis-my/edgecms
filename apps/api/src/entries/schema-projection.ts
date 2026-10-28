@@ -14,7 +14,7 @@ export function projectEntryDataWithSchema(
     defaultValue?: unknown
   }>
 ): Record<string, unknown> {
-  const projected = { ...(rawRecord ?? {}) }
+  const projected = { ...rawRecord }
   for (const field of fields) {
     if (projected[field.name] === undefined) {
       if (field.renamedFrom && projected[field.renamedFrom] !== undefined) {

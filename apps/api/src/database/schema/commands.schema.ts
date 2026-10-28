@@ -23,7 +23,10 @@ export const processedCommands = sqliteTable('processed_commands', {
   tenantScope: text('tenantScope'),
   /** ISO 8601 timestamp of when the command was executed. */
   executedAt: text('executedAt').notNull(),
-})
+},
+(table) => [
+  index('processed_commands_tenant_executed_at_idx').on(table.tenantScope, table.executedAt),
+])
 
 /**
  * Audit log table — granular record of entity-level changes.
@@ -54,5 +57,6 @@ export const auditLog = sqliteTable(
   (table) => [
     index('audit_log_entity_idx').on(table.entityType, table.entityId),
     index('audit_log_commandId_idx').on(table.commandId),
+    index('audit_log_timestamp_idx').on(table.timestamp),
   ]
 )

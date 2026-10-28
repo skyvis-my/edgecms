@@ -45,45 +45,70 @@ function setPublicMissCache(headers: CacheHeaders) {
   headers['x-edgecms-cache'] = 'miss'
 }
 
-export function generateWeakETag(tag: string, payload: unknown): string {
-  let marker = ''
-  if (payload && typeof payload === 'object') {
-    const record = payload as Record<string, unknown>
-    if (typeof record.generatedAt === 'string') {
-      marker = record.generatedAt
-    } else if (record.entry && typeof record.entry === 'object') {
-      const entry = record.entry as Record<string, unknown>
-      marker = `${String(entry.id ?? '')}:${String(entry.updatedAt ?? entry.version ?? '')}`
-    } else if (Array.isArray(record.entries)) {
-      const itemKeys = record.entries
-        .slice(0, 25)
-        .map((e) => {
-          if (e && typeof e === 'object') {
-            const rec = e as Record<string, unknown>
-            return `${rec.id ?? ''}:${rec.updatedAt ?? rec.version ?? ''}`
-          }
-          return String(e ?? '')
-        })
-        .join(',')
-      marker = `${record.total ?? record.entries.length}:${itemKeys}`
-    } else {
-      try {
-        marker = JSON.stringify(record)
-      } catch {
-        marker = ''
+import { generateWeakETag } from './etag'
+export { generateWeakETag }
+
+function respondWithSnapshot(
+  set: { status?: number | string; headers: CacheHeaders },
+  cache: {
+    cacheTag: string
+    browserTTL: number
+    cdnTTL: number
+    debugHeaders?: Record<string, string>
+    etag?: string
+    rawJson?: string
+  },
+  payload: unknown,
+  ifNoneMatch: string | null
+): Response | unknown {
+  const cacheTag = cache.cacheTag
+  const etag = cache.etag ?? generateWeakETag(cacheTag, payload)
+  if (isIfNoneMatch(ifNoneMatch, etag)) {
+    setPublicCacheHeaders(
+      set.headers,
+      cacheTag,
+      cache.browserTTL,
+      cache.cdnTTL,
+      cache.debugHeaders,
+      etag
+    )
+    const responseHeaders: Record<string, string> = {}
+    for (const [k, v] of Object.entries(set.headers)) {
+      if (v !== undefined) {
+        responseHeaders[k] = String(v)
       }
     }
-  } else {
-    marker = String(payload ?? '')
+    return new Response(null, {
+      status: 304,
+      headers: responseHeaders,
+    })
   }
-  const str = `${tag}:${marker}`
-  let h = 0x811c9dc5
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
+
+  setPublicCacheHeaders(
+    set.headers,
+    cacheTag,
+    cache.browserTTL,
+    cache.cdnTTL,
+    cache.debugHeaders,
+    etag
+  )
+
+  if (cache.rawJson) {
+    const responseHeaders: Record<string, string> = {
+      'content-type': 'application/json; charset=utf-8',
+    }
+    for (const [k, v] of Object.entries(set.headers)) {
+      if (v !== undefined) {
+        responseHeaders[k] = String(v)
+      }
+    }
+    return new Response(cache.rawJson, {
+      status: 200,
+      headers: responseHeaders,
+    })
   }
-  const hex = (h >>> 0).toString(16)
-  return `W/"${hex}"`
+
+  return payload
 }
 
 export function isIfNoneMatch(headerValue: string | null | undefined, etag: string): boolean {
@@ -450,31 +475,12 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       })
 
       if (singletonFallback.success) {
-        const cacheTag = singletonFallback.data.cache.cacheTag
-        const etag = generateWeakETag(cacheTag, singletonFallback.data.payload)
-        const ifNoneMatch = request.headers.get('if-none-match')
-        if (isIfNoneMatch(ifNoneMatch, etag)) {
-          set.status = 304
-          setPublicCacheHeaders(
-            set.headers,
-            cacheTag,
-            singletonFallback.data.cache.browserTTL,
-            singletonFallback.data.cache.cdnTTL,
-            singletonFallback.data.cache.debugHeaders,
-            etag
-          )
-          return
-        }
-
-        setPublicCacheHeaders(
-          set.headers,
-          cacheTag,
-          singletonFallback.data.cache.browserTTL,
-          singletonFallback.data.cache.cdnTTL,
-          singletonFallback.data.cache.debugHeaders,
-          etag
+        return respondWithSnapshot(
+          set,
+          singletonFallback.data.cache,
+          singletonFallback.data.payload,
+          request.headers.get('if-none-match')
         )
-        return singletonFallback.data.payload
       }
     }
 
@@ -484,32 +490,12 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       return { error: result.error.message }
     }
 
-    const cacheTag = result.data.cache.cacheTag
-    const etag = generateWeakETag(cacheTag, result.data.payload)
-    const ifNoneMatch = request.headers.get('if-none-match')
-    if (isIfNoneMatch(ifNoneMatch, etag)) {
-      set.status = 304
-      setPublicCacheHeaders(
-        set.headers,
-        cacheTag,
-        result.data.cache.browserTTL,
-        result.data.cache.cdnTTL,
-        result.data.cache.debugHeaders,
-        etag
-      )
-      return
-    }
-
-    setPublicCacheHeaders(
-      set.headers,
-      cacheTag,
-      result.data.cache.browserTTL,
-      result.data.cache.cdnTTL,
-      result.data.cache.debugHeaders,
-      etag
+    return respondWithSnapshot(
+      set,
+      result.data.cache,
+      result.data.payload,
+      request.headers.get('if-none-match')
     )
-
-    return result.data.payload
   })
   .get('/:collectionSlug/:entryIdOrSlug', {
     params: t.Object({
@@ -551,32 +537,12 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       return { error: result.error.message }
     }
 
-    const cacheTag = result.data.cache.cacheTag
-    const etag = generateWeakETag(cacheTag, result.data.payload)
-    const ifNoneMatch = request.headers.get('if-none-match')
-    if (isIfNoneMatch(ifNoneMatch, etag)) {
-      set.status = 304
-      setPublicCacheHeaders(
-        set.headers,
-        cacheTag,
-        result.data.cache.browserTTL,
-        result.data.cache.cdnTTL,
-        result.data.cache.debugHeaders,
-        etag
-      )
-      return
-    }
-
-    setPublicCacheHeaders(
-      set.headers,
-      cacheTag,
-      result.data.cache.browserTTL,
-      result.data.cache.cdnTTL,
-      result.data.cache.debugHeaders,
-      etag
+    return respondWithSnapshot(
+      set,
+      result.data.cache,
+      result.data.payload,
+      request.headers.get('if-none-match')
     )
-
-    return result.data.payload
   })
   .get('/singleton/:collectionSlug', {
     params: t.Object({
@@ -609,32 +575,12 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       return { error: result.error.message }
     }
 
-    const cacheTag = result.data.cache.cacheTag
-    const etag = generateWeakETag(cacheTag, result.data.payload)
-    const ifNoneMatch = request.headers.get('if-none-match')
-    if (isIfNoneMatch(ifNoneMatch, etag)) {
-      set.status = 304
-      setPublicCacheHeaders(
-        set.headers,
-        cacheTag,
-        result.data.cache.browserTTL,
-        result.data.cache.cdnTTL,
-        result.data.cache.debugHeaders,
-        etag
-      )
-      return
-    }
-
-    setPublicCacheHeaders(
-      set.headers,
-      cacheTag,
-      result.data.cache.browserTTL,
-      result.data.cache.cdnTTL,
-      result.data.cache.debugHeaders,
-      etag
+    return respondWithSnapshot(
+      set,
+      result.data.cache,
+      result.data.payload,
+      request.headers.get('if-none-match')
     )
-
-    return result.data.payload
   })
   .post('/preview-token', {
     body: t.Object({

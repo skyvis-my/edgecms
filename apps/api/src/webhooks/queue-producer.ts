@@ -125,17 +125,21 @@ export function toQueueMessages(
  */
 export async function buildMessagesForEvent(
   db: Database,
-  event: WebhookEvent
+  event: WebhookEvent,
+  cachedWebhooks?: WebhookRow[]
 ): Promise<WebhookQueueMessage[]> {
   try {
-    const chain = db
-      .select()
-      .from(webhooks)
-      .where(eq(webhooks.enabled, true)) as unknown as {
-      all?: () => Promise<WebhookRow[]>
-    } & PromiseLike<WebhookRow[]>
-    const enabledWebhooks =
-      typeof chain.all === 'function' ? await chain.all() : await chain
+    let enabledWebhooks = cachedWebhooks
+    if (!enabledWebhooks) {
+      const chain = db
+        .select()
+        .from(webhooks)
+        .where(eq(webhooks.enabled, true)) as unknown as {
+        all?: () => Promise<WebhookRow[]>
+      } & PromiseLike<WebhookRow[]>
+      enabledWebhooks =
+        typeof chain.all === 'function' ? await chain.all() : await chain
+    }
     const matching = enabledWebhooks.filter((webhook) =>
       (webhook.events as EventType[]).includes(event.event)
     )

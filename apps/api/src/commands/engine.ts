@@ -233,7 +233,7 @@ async function recordCommand(
   if (hasBatch && ((auditEntries ?? []).length > 0 || pendingOutbox.length > 0)) {
     try {
       const { auditLog, processedCommands, webhookOutbox } = await import('@/database/schema')
-      const processedBuilder = db.insert(processedCommands).values({
+      const baseInsert = db.insert(processedCommands).values({
         id: commandId,
         commandType: envelope.type,
         payload: envelope.payload,
@@ -243,6 +243,17 @@ async function recordCommand(
         tenantScope,
         executedAt: now,
       })
+      const processedBuilder =
+        typeof (baseInsert as unknown as { onConflictDoUpdate?: unknown }).onConflictDoUpdate === 'function'
+          ? (baseInsert as unknown as { onConflictDoUpdate: (args: unknown) => unknown }).onConflictDoUpdate({
+              target: processedCommands.id,
+              set: {
+                status,
+                result: result ?? null,
+                executedAt: now,
+              },
+            })
+          : baseInsert
       const builders: unknown[] = [processedBuilder]
       if ((auditEntries ?? []).length > 0) {
         builders.push(
@@ -701,10 +712,15 @@ async function handlePostExecution(
       try {
         const queue = ctx.env?.WEBHOOK_QUEUE as Queue<WebhookQueueMessage> | undefined
         if (queue) {
-          await relayOutbox(ctx.db, queue, (event) => buildMessagesForEvent(ctx.db, event), {
-            limit: 20,
-            staleOnlyMs: 60_000,
-          })
+          await relayOutbox(
+            ctx.db,
+            queue,
+            (event, cached) => buildMessagesForEvent(ctx.db, event, cached as any),
+            {
+              limit: 20,
+              staleOnlyMs: 60_000,
+            }
+          )
         }
       } catch {
         // Best-effort; orphans stay pending for the next sweep.

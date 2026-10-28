@@ -107,6 +107,23 @@ export function getTenantRateLimitKey(tenantSlug: string, category: RateLimitCat
   return `tenant-total:${tenantSlug}:${category}`
 }
 
+/**
+ * Fast synchronous check against local isolate memory (L1).
+ * Returns a RateLimitResult if the key has already exhausted its limit in this window,
+ * or null if the key is within limit or has no L1 record.
+ */
+export function checkRateLimitL1(
+  key: string,
+  limit: number,
+  now = Date.now()
+): RateLimitResult | null {
+  const l1Bucket = buckets.get(key)
+  if (l1Bucket && now < l1Bucket.resetAt && l1Bucket.count >= limit) {
+    return { allowed: false, remaining: 0, resetAt: l1Bucket.resetAt }
+  }
+  return null
+}
+
 export function consumeRateLimit(
   key: string,
   now = Date.now(),
@@ -148,6 +165,13 @@ export async function consumeRateLimitDistributed(
 
   if (!kv || typeof kv.get !== 'function' || typeof kv.put !== 'function') {
     return consumeRateLimit(key, now, windowMs, limit)
+  }
+
+  // L1 short-circuit: if local isolate already recorded limit exhaustion in this window,
+  // reject immediately to avoid redundant KV read latency.
+  const l1Bucket = buckets.get(key)
+  if (l1Bucket && now < l1Bucket.resetAt && l1Bucket.count >= limit) {
+    return { allowed: false, remaining: 0, resetAt: l1Bucket.resetAt }
   }
 
   const kvKey = `${KV_RATE_LIMIT_PREFIX}${key}`

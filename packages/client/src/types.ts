@@ -36,6 +36,13 @@ export type FilterFieldCondition =
 
 export type CollectionFilter = Record<string, FilterFieldCondition | undefined>
 
+export type FetchOptions = RequestInit & {
+  next?: {
+    revalidate?: number | false
+    tags?: string[]
+  }
+}
+
 export type CollectionListOptions = {
   page?: number | undefined
   perPage?: number | undefined
@@ -44,6 +51,7 @@ export type CollectionListOptions = {
   filter?: CollectionFilter | undefined
   depth?: number | undefined
   previewToken?: string | undefined
+  fetchOptions?: FetchOptions | undefined
 }
 
 export type CollectionGetOptions = {
@@ -51,11 +59,13 @@ export type CollectionGetOptions = {
   populate?: string | undefined
   depth?: number | undefined
   previewToken?: string | undefined
+  fetchOptions?: FetchOptions | undefined
 }
 
 export type CollectionSingletonOptions = {
   locale?: string | undefined
   previewToken?: string | undefined
+  fetchOptions?: FetchOptions | undefined
 }
 
 export type CreatePreviewTokenOptions = {
@@ -127,6 +137,7 @@ export type SearchOptions = {
   collection?: string | undefined
   limit?: number | undefined
   locale?: string | undefined
+  fetchOptions?: FetchOptions | undefined
 }
 
 export type SearchResultItem = {

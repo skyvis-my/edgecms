@@ -141,14 +141,35 @@ export const tenantMiddleware = new Elysia({ name: 'tenant-middleware' })
     })
   }
 
-  // HS-04: non-active tenants admit super-admins only, except public reads
-  // of a suspended tenant. Super-admin branches below return before the
-  // `superAdminOnly` checks.
+  const isPublicRead = isPublicReadRequest(
+    request.method,
+    getRequestUrl(request).pathname,
+    tenantSlug
+  )
   const superAdminOnly =
-    tenantStateAccess(
-      tenant.status,
-      isPublicReadRequest(request.method, getRequestUrl(request).pathname, tenantSlug)
-    ) === 'super-admin-only'
+    tenantStateAccess(tenant.status, isPublicRead) === 'super-admin-only'
+
+  // Public read routes on active tenants skip user authentication and membership checks completely.
+  // This eliminates session/auth overhead and prevents cross-tenant session cookies
+  // from incorrectly triggering a 403 Forbidden on public content.
+  if (isPublicRead && !superAdminOnly && tenant.status === 'active') {
+    return {
+      tenant: {
+        tenant: {
+          id: tenant.id,
+          slug: tenant.slug,
+          name: tenant.name,
+          status: tenant.status,
+          mediaUploadMaxBytes: tenant.mediaUploadMaxBytes,
+          mediaUploadMaxDimension: tenant.mediaUploadMaxDimension,
+          mediaAllowedMimeTypes: tenant.mediaAllowedMimeTypes,
+        },
+        resources: {
+          mode: 'shared',
+        },
+      },
+    }
+  }
 
   // Verify tenant membership for authenticated users
   // Public routes (unauthenticated) skip this check
