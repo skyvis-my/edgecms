@@ -739,6 +739,57 @@ function FieldEditorRow({
               </div>
             ) : null}
           </div>
+
+          {/* Schema Evolution & Compatibility */}
+          <div className='space-y-3 border-t border-border/50 pt-3'>
+            <p className='text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground'>
+              Schema Evolution
+            </p>
+
+            <div className='space-y-2'>
+              <Label htmlFor={`fields.${index}.renamedFrom`} className='text-xs'>
+                Renamed From
+              </Label>
+              <Controller
+                control={control}
+                name={`fields.${index}.renamedFrom`}
+                render={({ field }) => (
+                  <Input
+                    id={`fields.${index}.renamedFrom`}
+                    placeholder='Previous field name'
+                    value={(field.value as string | undefined) ?? ''}
+                    onChange={(e) => field.onChange(e.target.value || undefined)}
+                    className='h-8 text-xs'
+                  />
+                )}
+              />
+            </div>
+
+            <div className='space-y-2'>
+              <Label htmlFor={`fields.${index}.defaultValue`} className='text-xs'>
+                Default Value
+              </Label>
+              <Controller
+                control={control}
+                name={`fields.${index}.defaultValue`}
+                render={({ field }) => (
+                  <Input
+                    id={`fields.${index}.defaultValue`}
+                    placeholder='Fallback value'
+                    value={
+                      field.value === undefined || field.value === null
+                        ? ''
+                        : typeof field.value === 'object'
+                          ? JSON.stringify(field.value)
+                          : String(field.value)
+                    }
+                    onChange={(e) => field.onChange(e.target.value || undefined)}
+                    className='h-8 text-xs'
+                  />
+                )}
+              />
+            </div>
+          </div>
         </div>
       </div>
     </div>

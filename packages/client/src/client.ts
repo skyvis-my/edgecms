@@ -4,9 +4,12 @@ import type {
   CollectionListOptions,
   CollectionSingletonOptions,
   CreatePreviewTokenOptions,
+  DirectUploadOptions,
   EdgeCmsClientConfig,
   PaginatedListResponse,
   PreviewTokenResponse,
+  SearchOptions,
+  SearchResponse,
 } from './types'
 
 const TOP_LEVEL_FILTER_FIELDS = new Set(['slug', 'createdAt', 'updatedAt', 'status'])
@@ -204,6 +207,110 @@ export class EdgeCmsClient {
     }
 
     return (await res.json()) as PreviewTokenResponse
+  }
+
+  async search(options: SearchOptions): Promise<SearchResponse> {
+    if (!options?.query) {
+      throw new Error('Search query is required.')
+    }
+    const queryParams = new URLSearchParams()
+    queryParams.set('q', options.query)
+    if (options.limit) queryParams.set('limit', String(options.limit))
+    if (options.locale || this.defaultLocale) {
+      queryParams.set('locale', options.locale || this.defaultLocale)
+    }
+    if (options.collection) queryParams.set('collection', options.collection)
+
+    const url = `${this.baseUrl}/api/tenants/${this.tenantSlug}/public/search?${queryParams.toString()}`
+    const res = await this.fetch(url, {
+      method: 'GET',
+      headers: this.headers,
+    })
+    if (!res.ok) {
+      throw new Error(`EdgeCMS search failed (${res.status}): ${await res.text()}`)
+    }
+    return (await res.json()) as SearchResponse
+  }
+
+  async uploadAssetDirect(options: DirectUploadOptions): Promise<unknown> {
+    if (!options?.file) {
+      throw new Error('File is required for upload.')
+    }
+    if (!options.filename) {
+      throw new Error('Filename is required for upload.')
+    }
+    if (!options.mimeType) {
+      throw new Error('MIME type is required for upload.')
+    }
+
+    const fileSize =
+      'size' in options.file && typeof options.file.size === 'number'
+        ? options.file.size
+        : 'byteLength' in options.file && typeof options.file.byteLength === 'number'
+          ? options.file.byteLength
+          : 0
+
+    // Step 1: Request presigned intent
+    const intentUrl = `${this.baseUrl}/api/admin/assets/direct-upload-intent`
+    const intentRes = await this.fetch(intentUrl, {
+      method: 'POST',
+      headers: {
+        ...this.headers,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        filename: options.filename,
+        mimeType: options.mimeType,
+        size: fileSize,
+        folderId: options.folderId,
+      }),
+    })
+    if (!intentRes.ok) {
+      throw new Error(`EdgeCMS direct upload intent failed (${intentRes.status}): ${await intentRes.text()}`)
+    }
+    const intent = (await intentRes.json()) as {
+      uploadUrl: string
+      key: string
+      assetId: string
+      uploadId: string
+    }
+
+    // Step 2: Upload directly to R2 presigned URL
+    const uploadRes = await this.fetch(intent.uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': options.mimeType,
+      },
+      body: options.file as BodyInit,
+    })
+    if (!uploadRes.ok) {
+      throw new Error(`EdgeCMS R2 direct upload failed (${uploadRes.status}): ${await uploadRes.text()}`)
+    }
+
+    // Step 3: Confirm complete
+    const completeUrl = `${this.baseUrl}/api/admin/assets/direct-upload-complete`
+    const completeRes = await this.fetch(completeUrl, {
+      method: 'POST',
+      headers: {
+        ...this.headers,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        assetId: intent.assetId,
+        uploadId: intent.uploadId,
+        key: intent.key,
+        filename: options.filename,
+        mimeType: options.mimeType,
+        size: fileSize,
+        altText: options.altText,
+        folderId: options.folderId,
+      }),
+    })
+    if (!completeRes.ok) {
+      throw new Error(`EdgeCMS direct upload confirmation failed (${completeRes.status}): ${await completeRes.text()}`)
+    }
+
+    return await completeRes.json()
   }
 
   getAssetUrl(assetId: string, options?: AssetUrlOptions): string {

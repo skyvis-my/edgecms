@@ -41,6 +41,8 @@ export type FieldDefinition = {
   type: FieldType
   required: boolean
   localizable: boolean
+  renamedFrom?: string
+  defaultValue?: unknown
   options?: FieldOptions
 }
 

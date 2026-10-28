@@ -121,3 +121,51 @@ export type TipTapDoc = TipTapNode
 export type RenderHtmlOptions = {
   customRenderers?: Record<string, (node: TipTapNode) => string>
 }
+
+export type SearchOptions = {
+  query: string
+  collection?: string | undefined
+  limit?: number | undefined
+  locale?: string | undefined
+}
+
+export type SearchResultItem = {
+  id: string
+  collection?: string | undefined
+  title?: string | undefined
+  snippet?: string | undefined
+  score?: number | undefined
+  [key: string]: unknown
+}
+
+export type SearchResponse = {
+  data: SearchResultItem[]
+  meta?: {
+    total: number
+    query: string
+  }
+}
+
+export type DirectUploadOptions = {
+  file: Blob | File | ArrayBuffer | Uint8Array
+  filename: string
+  mimeType: string
+  altText?: string | undefined
+  folderId?: string | undefined
+}
+
+export type DirectUploadIntentResponse = {
+  uploadUrl: string
+  key: string
+  assetId: string
+  uploadId: string
+  expiresAt: string
+}
+
+export type VerifyWebhookOptions = {
+  payload: string | Uint8Array
+  signatureHeader: string
+  secret: string
+  toleranceSeconds?: number | undefined
+}
+

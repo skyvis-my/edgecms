@@ -52,6 +52,8 @@ export const collectionField = createSchema(
     type: fieldType,
     required: Type.Boolean(),
     localizable: Type.Boolean(),
+    renamedFrom: Type.Optional(Type.String({ minLength: 1 })),
+    defaultValue: Type.Optional(Type.Unknown()),
     options: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   })
 )

@@ -128,11 +128,80 @@ function buildUploadFormData(input: UploadAssetMultipartInput): FormData {
   return formData
 }
 
+export async function uploadAssetDirect(input: {
+  file: File
+  filename?: string
+  mimeType?: string
+  altText?: string
+  folderId?: string
+}): Promise<Asset> {
+  const file = input.file
+  const filename = input.filename || file.name
+  const mimeType = input.mimeType || file.type || 'application/octet-stream'
+
+  const intent = await edenPost<{
+    uploadUrl: string
+    key: string
+    assetId: string
+    uploadId: string
+    expiresAt: string
+  }>('/admin/assets/direct-upload-intent', {
+    filename,
+    mimeType,
+    size: file.size,
+    folderId: input.folderId,
+  })
+
+  const uploadRes = await fetch(intent.uploadUrl, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': mimeType,
+    },
+    body: file,
+  })
+
+  if (!uploadRes.ok) {
+    throw new Error(`Direct R2 upload failed with HTTP ${uploadRes.status}`)
+  }
+
+  return edenPost<Asset>('/admin/assets/direct-upload-complete', {
+    assetId: intent.assetId,
+    uploadId: intent.uploadId,
+    key: intent.key,
+    filename,
+    mimeType,
+    size: file.size,
+    altText: input.altText,
+    folderId: input.folderId,
+  })
+}
+
+export function useDirectUploadAsset() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: uploadAssetDirect,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: assetsKeys.all })
+    },
+  })
+}
+
 export function useUploadAsset() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (input: UploadAssetInput | UploadAssetMultipartInput) => {
       if (isMultipartInput(input)) {
+        if (input.file.size > 2 * 1024 * 1024) {
+          try {
+            return await uploadAssetDirect({
+              file: input.file,
+              filename: input.filename,
+              mimeType: input.mimeType,
+            })
+          } catch {
+            return edenPostMultipart<Asset>('/admin/assets/upload', buildUploadFormData(input))
+          }
+        }
         return edenPostMultipart<Asset>('/admin/assets/upload', buildUploadFormData(input))
       }
       return edenPost<Asset>('/admin/assets/upload', input)

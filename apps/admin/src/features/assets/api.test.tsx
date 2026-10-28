@@ -127,4 +127,60 @@ describe('assets api hooks', () => {
     expect(invalidateSpy).toHaveBeenCalledTimes(2)
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: assetsKeys.all })
   })
+
+  it('performs direct R2 upload with presigned intent and confirmation', async () => {
+    const { assetsKeys, useDirectUploadAsset } = await import('./api')
+    const { edenPost } = await import('@/lib/eden-client')
+
+    const originalFetch = globalThis.fetch
+    const mockPutFetch = vi.fn().mockResolvedValue({ ok: true, status: 200 })
+    globalThis.fetch = mockPutFetch as any
+
+    try {
+      const intentResponse = {
+        uploadUrl: 'https://r2.storage/upload-signed',
+        key: 'media/photo.png',
+        assetId: 'asset-direct-1',
+        uploadId: 'up-123',
+        expiresAt: '2026-10-28T12:00:00Z',
+      }
+      const completedAsset = {
+        id: 'asset-direct-1',
+        filename: 'photo.png',
+        mimeType: 'image/png',
+        size: 512,
+        variants: [],
+      }
+
+      edenPost.mockResolvedValueOnce(intentResponse).mockResolvedValueOnce(completedAsset)
+
+      const { wrapper, queryClient } = createWrapper()
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+
+      const directUpload = renderHook(() => useDirectUploadAsset(), { wrapper })
+      const fakeFile = new File(['dummy-content'], 'photo.png', { type: 'image/png' })
+
+      const result = await directUpload.result.current.mutateAsync({
+        file: fakeFile,
+        altText: 'Hero photo',
+      })
+
+      expect(result.id).toBe('asset-direct-1')
+      expect(edenPost).toHaveBeenCalledWith('/admin/assets/direct-upload-intent', expect.objectContaining({
+        filename: 'photo.png',
+        mimeType: 'image/png',
+      }))
+      expect(mockPutFetch).toHaveBeenCalledWith('https://r2.storage/upload-signed', expect.objectContaining({
+        method: 'PUT',
+      }))
+      expect(edenPost).toHaveBeenCalledWith('/admin/assets/direct-upload-complete', expect.objectContaining({
+        assetId: 'asset-direct-1',
+        uploadId: 'up-123',
+        key: 'media/photo.png',
+      }))
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: assetsKeys.all })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
 })

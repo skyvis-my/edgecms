@@ -39,6 +39,8 @@ const collectionFormSchema = z.object({
       type: z.enum(collectionFieldTypes),
       required: z.boolean(),
       localizable: z.boolean(),
+      renamedFrom: z.string().optional(),
+      defaultValue: z.unknown().optional(),
       options: z.record(z.string(), z.unknown()).optional(),
     })
   ),
