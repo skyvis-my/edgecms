@@ -30,6 +30,13 @@ describe('StatusBadge', () => {
     expect(view.getByText('Scheduled')).toBeTruthy()
   })
 
+  it('renders published status badge with unpublish date', () => {
+    const futureDate = new Date(Date.now() + 86400000).toISOString()
+    const view = render(<StatusBadge status='published' unpublishDate={futureDate} />)
+    expect(view.getByText('Published')).toBeTruthy()
+    expect(view.getByText(/Unpublishes/)).toBeTruthy()
+  })
+
   it('applies custom className', () => {
     const { container } = render(<StatusBadge status='draft' className='custom-badge-class' />)
     expect(container.querySelector('.custom-badge-class')).toBeTruthy()

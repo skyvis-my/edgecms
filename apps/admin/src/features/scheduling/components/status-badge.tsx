@@ -16,14 +16,16 @@ const statusColors: Record<EntryStatus, string> = {
 type StatusBadgeProps = {
   status: EntryStatus
   scheduledDate?: string | null
+  unpublishDate?: string | null
   className?: string
 }
 
 /**
  * StatusBadge component displays a color-coded badge for entry status
  * For 'scheduled' status, it also shows the scheduled date/time
+ * For 'published' status with unpublishDate, it shows the scheduled unpublish date/time
  */
-export function StatusBadge({ status, scheduledDate, className }: StatusBadgeProps) {
+export function StatusBadge({ status, scheduledDate, unpublishDate, className }: StatusBadgeProps) {
   return (
     <div className={cn('flex flex-col gap-1', className)}>
       <Badge variant='outline' className={cn(statusColors[status])}>
@@ -35,6 +37,14 @@ export function StatusBadge({ status, scheduledDate, className }: StatusBadgePro
           title={toBrowserDateTime(scheduledDate) ?? undefined}
         >
           {toRelativeTime(scheduledDate)}
+        </span>
+      )}
+      {status === 'published' && unpublishDate && (
+        <span
+          className='text-xs text-amber-600 dark:text-amber-400'
+          title={toBrowserDateTime(unpublishDate) ?? undefined}
+        >
+          Unpublishes {toRelativeTime(unpublishDate)}
         </span>
       )}
     </div>

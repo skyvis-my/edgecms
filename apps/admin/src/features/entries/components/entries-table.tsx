@@ -9,6 +9,7 @@ import { DataTable } from '@/components/data-table'
 import type { CollectionDefinition } from '@/features/collections/api/collections-api'
 import { type NavigateFn, useTableUrlState } from '@/hooks/use-table-url-state'
 import type { Entry } from '../api/entries-api'
+import { EntriesBulkActions } from './entries-bulk-actions'
 import { getEntriesColumns } from './entries-columns'
 
 type EntriesTableProps = {
@@ -66,6 +67,7 @@ export function EntriesTable({ data, collection, totalRows, search, navigate }: 
       manualPagination
       rowCount={totalRows}
       pageCount={pageCount}
+      renderAfterPagination={(tbl) => <EntriesBulkActions table={tbl} />}
       enableVirtualization
       virtualizationThreshold={50}
       virtualizationEstimateSize={56}

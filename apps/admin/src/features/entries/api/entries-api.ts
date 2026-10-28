@@ -45,6 +45,8 @@ export type Entry = {
   data: Record<string, unknown>
   version: number
   serverDraftVersion?: number
+  publishAt?: string | null
+  unpublishAt?: string | null
   createdAt: string
   updatedAt: string
 }

@@ -1,23 +1,15 @@
 import type { ColumnDef } from '@tanstack/react-table'
 import { DataTableColumnHeader } from '@/components/data-table'
 import { LongText } from '@/components/long-text'
-import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import type { CollectionDefinition } from '@/features/collections/api/collections-api'
 import { toBrowserDateTime, toRelativeTime } from '@/lib/date-time'
 import { cn } from '@/lib/utils'
+import { StatusBadge } from '@/features/scheduling/components/status-badge'
 import type { Entry } from '../api/entries-api'
 import { EntriesRowActions } from './entries-row-actions'
 
-/**
- * Status badge colors
- */
-const statusColors = {
-  draft: 'border-gray-500 text-gray-600',
-  published: 'border-green-500 text-green-600',
-  scheduled: 'border-blue-500 text-blue-600',
-  archived: 'border-yellow-500 text-yellow-600',
-}
+
 
 function toDisplayString(value: unknown): string {
   if (value == null) return ''
@@ -166,11 +158,13 @@ export function getEntriesColumns(collection: CollectionDefinition): ColumnDef<E
       accessorKey: 'status',
       header: ({ column }) => <DataTableColumnHeader column={column} title='Status' />,
       cell: ({ row }) => {
-        const status = row.getValue('status') as Entry['status']
+        const entry = row.original
         return (
-          <Badge variant='outline' className={cn(statusColors[status])}>
-            {status.charAt(0).toUpperCase() + status.slice(1)}
-          </Badge>
+          <StatusBadge
+            status={entry.status}
+            scheduledDate={entry.publishAt}
+            unpublishDate={entry.unpublishAt}
+          />
         )
       },
       enableSorting: false,

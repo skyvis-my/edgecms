@@ -62,6 +62,14 @@ const ENTRY_STATUS_LABELS = {
   archived: 'Archived',
 } satisfies Record<EntryStatus, string>
 
+function formatToDatetimeLocal(dateStr?: string | null): string {
+  if (!dateStr) return ''
+  const date = new Date(dateStr)
+  if (isNaN(date.getTime())) return ''
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
 export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) {
   const createMutation = useCreateEntry()
   const updateMutation = useUpdateEntry()
@@ -73,9 +81,22 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
 
   const [lastAutosavedAt, setLastAutosavedAt] = useState<Date | null>(null)
   const [isAutosaving, setIsAutosaving] = useState(false)
-  const [scheduledPublishAt, setScheduledPublishAt] = useState('')
-  const [scheduledUnpublishAt, setScheduledUnpublishAt] = useState('')
+  const [scheduledPublishAt, setScheduledPublishAt] = useState(() =>
+    formatToDatetimeLocal(entry?.publishAt)
+  )
+  const [scheduledUnpublishAt, setScheduledUnpublishAt] = useState(() =>
+    formatToDatetimeLocal(entry?.unpublishAt)
+  )
   const [showScheduleControls, setShowScheduleControls] = useState(false)
+
+  useEffect(() => {
+    if (entry?.publishAt) {
+      setScheduledPublishAt(formatToDatetimeLocal(entry.publishAt))
+    }
+    if (entry?.unpublishAt) {
+      setScheduledUnpublishAt(formatToDatetimeLocal(entry.unpublishAt))
+    }
+  }, [entry?.id, entry?.publishAt, entry?.unpublishAt])
 
   // Track latest known version to avoid 409 conflicts between background autosave and manual save
   const currentVersionRef = useRef(entry?.version ?? 1)
@@ -336,7 +357,7 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
     return missing
   }, [data, collectionFields, collection.supportedLocales, hasLocalizableFields])
 
-  const onSubmit = async (formData: EntryFormValues) => {
+  const saveEntryData = async (formData: EntryFormValues): Promise<boolean> => {
     try {
       if (mode === 'create') {
         await createMutation.mutateAsync({
@@ -362,10 +383,16 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
       if (onSaved) {
         onSaved(formData.slug)
       }
+      return true
     } catch (error) {
       logger.error('Form submission error:', error)
       toast.error(`Failed to ${mode === 'create' ? 'create' : 'update'} entry`)
+      return false
     }
+  }
+
+  const onSubmit = async (formData: EntryFormValues) => {
+    await saveEntryData(formData)
   }
 
   const handleDiscardAndReload = useCallback(() => {
@@ -449,6 +476,13 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
   const handlePublishNow = async () => {
     if (!entry) return
     try {
+      if (formState.isDirty) {
+        let saved = false
+        await handleSubmit(async (formData) => {
+          saved = await saveEntryData(formData)
+        })()
+        if (!saved) return
+      }
       await publishMutation.mutateAsync(entry.id)
       toast.success('Entry published successfully')
     } catch {
@@ -478,6 +512,13 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
       return
     }
     try {
+      if (formState.isDirty) {
+        let saved = false
+        await handleSubmit(async (formData) => {
+          saved = await saveEntryData(formData)
+        })()
+        if (!saved) return
+      }
       await schedulePublishMutation.mutateAsync({
         id: entry.id,
         publishAt: date.toISOString(),
@@ -516,6 +557,8 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
     if (!entry) return
     try {
       await cancelScheduleMutation.mutateAsync(entry.id)
+      setScheduledPublishAt('')
+      setScheduledUnpublishAt('')
       toast.success('Schedule cancelled')
     } catch {
       toast.error('Failed to cancel schedule')
