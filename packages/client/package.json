@@ -1,10 +1,12 @@
 {
   "name": "@edgecms/client",
   "version": "0.2.0",
-  "private": true,
   "description": "Zero-backend-dependency client package for EdgeCMS public delivery, AST rendering, and live preview.",
   "type": "module",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "types": "./dist/index.d.ts",
   "files": [
     "dist",

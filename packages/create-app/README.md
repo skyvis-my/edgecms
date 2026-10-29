@@ -17,8 +17,8 @@ create-edgecms-app <target-dir> [--template starter] [--force]
 - Generated projects validate without Cloudflare credentials.
 - Generated projects include `bun run validate` for typecheck plus smoke proof.
 
-This package is private and not published to npm yet. Treat the command above as
-local workspace proof, not an external install path.
+Publishable via Changesets + `bun run publish:packages`. Until the first npm
+publish lands, pack locally with `npm pack` or use the workspace binary.
 
 ## Publish Readiness Gate
 

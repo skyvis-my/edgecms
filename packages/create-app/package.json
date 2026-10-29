@@ -3,6 +3,9 @@
   "version": "0.2.0",
   "description": "CLI scaffolding tool to create and bootstrap EdgeCMS starter applications.",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

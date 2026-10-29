@@ -2,7 +2,7 @@
 
 Type-safe authoring contracts for trusted EdgeCMS plugins.
 
-The package is publish-ready, but remains private until release approval. It emits ESM JavaScript and TypeScript declaration files to `dist`.
+Public npm package (`publishConfig.access: public`). Emits ESM JavaScript and TypeScript declaration files to `dist`.
 
 ## Usage
 

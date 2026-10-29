@@ -236,7 +236,7 @@ bun run check:release
 
 ## Starter app
 
-`packages/create-app` contains a private workspace `create-edgecms-app` CLI. It is not published to npm or installable outside this repo yet. `templates/starter/README.md` lists what a starter must do before it ships.
+`packages/create-app` contains the `create-edgecms-app` CLI (publishable; see [publishing-packages.md](publishing-packages.md)). `templates/starter/README.md` lists what a starter must do before it ships.
 
 Inside a generated starter, `bun run seed:smoke`, `bun run smoke` and `bun run validate` run the starter checks. The starter smoke checks that `.env.example` defines `EDGE_CMS_URL`, `EDGE_CMS_ADMIN_URL`, `EDGE_CMS_TENANT` and `EDGE_CMS_COLLECTION` before it reports the public read path.
 

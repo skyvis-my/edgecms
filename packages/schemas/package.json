@@ -1,12 +1,23 @@
 {
   "name": "@edgecms/schemas",
   "version": "0.2.0",
+  "description": "Shared TypeBox schemas and content contracts for EdgeCMS.",
   "license": "MIT",
-  "private": true,
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "src/*.ts",
+    "README.md"
+  ],
   "exports": {
     ".": "./src/index.ts",
     "./commands": "./src/commands.ts"
+  },
+  "scripts": {
+    "check": "node scripts/check-package.mjs",
+    "typecheck": "node -e \"process.exit(0)\""
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.52"

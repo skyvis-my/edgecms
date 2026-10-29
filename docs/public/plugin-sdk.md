@@ -33,7 +33,7 @@ import type {
 
 It builds ESM JavaScript and TypeScript declarations to `packages/plugin-sdk/dist`; `types`, `exports` and the packed files all point there. It has no dependencies and imports nothing from `apps/api` or Worker runtime modules. Loading, validation, sandboxing and route safety stay in `apps/api/src/plugins`.
 
-The package is marked `private: true` and is not published to npm yet. Use it as a workspace dependency.
+Install from npm after publish (`bun add @edgecms/plugin-sdk`), or use `workspace:*` inside this monorepo. See [publishing-packages.md](publishing-packages.md).
 
 ## How plugins load
 

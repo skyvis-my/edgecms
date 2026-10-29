@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export type PackageInfo = {
@@ -8,6 +8,7 @@ export type PackageInfo = {
 }
 
 export const PUBLISHABLE_PACKAGES: readonly PackageInfo[] = [
+  { name: '@edgecms/schemas', dir: 'packages/schemas' },
   { name: 'create-edgecms-app', dir: 'packages/create-app' },
   { name: '@edgecms/plugin-sdk', dir: 'packages/plugin-sdk' },
   { name: '@edgecms/runtime', dir: 'packages/runtime' },
@@ -98,33 +99,27 @@ export async function runPublishPackages(
   for (const pkg of PUBLISHABLE_PACKAGES) {
     const pkgDir = join(repoRoot, pkg.dir)
     const pkgJsonPath = join(pkgDir, 'package.json')
-    const originalJsonText = readFileSync(pkgJsonPath, 'utf8')
-    const pkgJson = JSON.parse(originalJsonText)
+    const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf8'))
 
-    try {
-      // Temporarily toggle private to false for publication
-      pkgJson.private = false
-      writeFileSync(pkgJsonPath, JSON.stringify(pkgJson, null, 2) + '\n', 'utf8')
-
-      console.log(`Publishing ${pkg.name} to npm (tag: ${options.tag})...`)
-      const pubResult = spawnSync(
-        'npm',
-        ['publish', '--access', options.access, '--tag', options.tag],
-        {
-          cwd: pkgDir,
-          encoding: 'utf8',
-          env: { ...process.env, NODE_AUTH_TOKEN: token },
-        }
-      )
-
-      if (pubResult.status !== 0) {
-        throw new Error(`Failed to publish ${pkg.name}:\n${pubResult.stderr || pubResult.stdout}`)
-      }
-      console.log(`✓ Published ${pkg.name} successfully`)
-    } finally {
-      // Always restore original package.json
-      writeFileSync(pkgJsonPath, originalJsonText, 'utf8')
+    if (pkgJson.private === true) {
+      throw new Error(`${pkg.name} is private: true; refuse to publish`)
     }
+
+    console.log(`Publishing ${pkg.name} to npm (tag: ${options.tag})...`)
+    const pubResult = spawnSync(
+      'npm',
+      ['publish', '--access', options.access, '--tag', options.tag],
+      {
+        cwd: pkgDir,
+        encoding: 'utf8',
+        env: { ...process.env, NODE_AUTH_TOKEN: token },
+      }
+    )
+
+    if (pubResult.status !== 0) {
+      throw new Error(`Failed to publish ${pkg.name}:\n${pubResult.stderr || pubResult.stdout}`)
+    }
+    console.log(`✓ Published ${pkg.name} successfully`)
   }
 
   return { success: true, qualifications, dryRun: false }

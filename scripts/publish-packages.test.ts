@@ -25,8 +25,9 @@ describe('publish-packages', () => {
     expect(opts.access).toBe('restricted')
   })
 
-  it('defines the 4 required publishable packages', () => {
+  it('defines the 5 required publishable packages', () => {
     expect(PUBLISHABLE_PACKAGES.map((p) => p.name)).toEqual([
+      '@edgecms/schemas',
       'create-edgecms-app',
       '@edgecms/plugin-sdk',
       '@edgecms/runtime',
@@ -34,7 +35,7 @@ describe('publish-packages', () => {
     ])
   })
 
-  it('qualifies all 4 packages via npm pack --dry-run', () => {
+  it('qualifies all publishable packages via npm pack --dry-run', () => {
     const repoRoot = process.cwd()
     for (const pkg of PUBLISHABLE_PACKAGES) {
       const qualification = qualifyPackage(repoRoot, pkg)

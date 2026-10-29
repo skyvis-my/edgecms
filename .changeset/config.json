@@ -1,0 +1,19 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "fixed": [
+    [
+      "@edgecms/client",
+      "@edgecms/schemas",
+      "@edgecms/runtime",
+      "@edgecms/plugin-sdk",
+      "create-edgecms-app"
+    ]
+  ],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "ignore": ["edgecms", "edgecms-admin", "edgecms-api"]
+}

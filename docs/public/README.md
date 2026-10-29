@@ -12,6 +12,7 @@ Guides for developers who run EdgeCMS, model content in it, or read its content 
 - [Public API](public-api.md): routes, query parameters, response shapes, errors and cache headers for published content.
 - [Frontend integration](frontend-integration.md): fetch examples for plain `fetch`, Next.js and Astro, plus revalidation handlers.
 - [Client SDK](client-sdk.md): the typed `@edgecms/client` package.
+- [Publishing packages](publishing-packages.md): Changesets, SemVer, npm dry-run / publish for `@edgecms/*`.
 - [Commands](commands.md): the command envelope used for every content change.
 - [Webhooks](webhooks.md): signed event delivery, destination rules and dry runs.
 - [Media](media.md): uploads, asset variants and public asset routes.
@@ -40,7 +41,7 @@ Guides for developers who run EdgeCMS, model content in it, or read its content 
 ## Contributing
 
 - [Agent repo map](agent-repo-map.md): where code lives and which focused tests to run. Written for coding agents.
-- Starter template checklist: `templates/starter/README.md`. `packages/create-app` is a private workspace package (`create-edgecms-app`); it is not published or installable outside this repo yet.
+- Starter template checklist: `templates/starter/README.md`. `create-edgecms-app` and `@edgecms/*` packages are publishable — see [publishing-packages.md](publishing-packages.md).
 - Public fetch helper: `examples/public-fetch/plain-fetch.ts`.
 
 Release checks run from the repo root:

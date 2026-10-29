@@ -17,7 +17,7 @@ packages/
   runtime/      @edgecms/runtime: createApp() for consumer applications
   schemas/      @edgecms/schemas: shared TypeBox schemas
   plugin-sdk/   @edgecms/plugin-sdk: types for trusted plugins
-  create-app/   create-edgecms-app starter CLI (workspace only)
+  create-app/   create-edgecms-app starter CLI (npm-publishable)
 templates/      starter template used by create-app
 examples/       plugin and public-fetch examples
 docs/           guides (docs/public), runbook, ADRs
@@ -95,7 +95,7 @@ bun run lint
 
 Start with the [quickstart](docs/public/quickstart.md), then the [guide index](docs/public/README.md): content model, public API, client SDK, commands, auth, media, webhooks, MCP, plugins and deployment.
 
-`create-edgecms-app` (`packages/create-app`) works inside this workspace but is not published to npm yet.
+Publishable packages (`@edgecms/client`, `@edgecms/schemas`, `@edgecms/runtime`, `@edgecms/plugin-sdk`, `create-edgecms-app`) use Changesets + `bun run publish:packages`. See [docs/public/publishing-packages.md](docs/public/publishing-packages.md).
 
 ## Configuration
 

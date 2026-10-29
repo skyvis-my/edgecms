@@ -4,13 +4,15 @@
 
 Source: [`packages/client/src`](../../packages/client/src). Tests: [`packages/client/src/__tests__`](../../packages/client/src/__tests__).
 
-## Install status
+## Install
 
-`@edgecms/client` is not published to npm. Its `package.json` has `"private": true`, and `bun run check:package` fails if that flag is removed. The package README shows `bun add @edgecms/client`; that command will not work until the package is published.
+```bash
+bun add @edgecms/client
+```
 
-Ways to use it today:
+Publish path, dry-run, and `NPM_TOKEN` notes: [publishing-packages.md](publishing-packages.md).
 
-**Inside this monorepo** (how `apps/admin` uses it):
+**Inside this monorepo** (how `apps/admin` uses it during local development):
 
 ```json
 {
@@ -27,7 +29,7 @@ bun run --filter @edgecms/client build
 bun run test:client
 ```
 
-**In a separate project**, pack a tarball from your checkout and install it with scripts disabled:
+**Before the first npm publish** (or offline), pack a tarball:
 
 ```bash
 cd packages/client
@@ -252,7 +254,7 @@ Security notes:
 
 The Section Builder is an admin field editor (`sections`, `blocks` or `section-builder` field types, in `apps/admin/src/features/entries/components/field-renderers/section-builder.tsx`). It stores an array of blocks typed in [`packages/schemas/src/block-sections.ts`](../../packages/schemas/src/block-sections.ts): `hero`, `features`, `textBlock`, `imageGallery`, `callToAction`, `faq`. Each block has an `id` and a `type`.
 
-`@edgecms/client` does not render these blocks. Read the field from the entry and switch on `type` in your own components. `@edgecms/schemas` is also a private workspace package.
+`@edgecms/client` does not render these blocks. Read the field from the entry and switch on `type` in your own components. Shared contracts live in `@edgecms/schemas` (also publishable).
 
 ## Checks
 

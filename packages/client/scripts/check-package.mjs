@@ -13,8 +13,12 @@ if (missingFiles.length > 0) {
   throw new Error(`Missing package files: ${missingFiles.join(', ')}`)
 }
 
-if (packageJson.private !== true) {
-  throw new Error('Package must stay private until publish approval.')
+if (packageJson.private === true) {
+  throw new Error('Publishable package must not set private: true.')
+}
+
+if (packageJson.publishConfig?.access !== 'public') {
+  throw new Error('publishConfig.access must be public.')
 }
 
 if (packageJson.dependencies && Object.keys(packageJson.dependencies).length > 0) {
