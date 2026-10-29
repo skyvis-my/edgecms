@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+- `@edgecms/client`, `@edgecms/schemas`, `@edgecms/runtime`, `@edgecms/plugin-sdk`, and `create-edgecms-app` are publishable (no longer `private: true`) with Changesets SemVer and documented npm dry-run / publish path. First registry publish still requires `NPM_TOKEN`.
+
 ## [0.2.0] - 2026-10-22
 
 ### Security
