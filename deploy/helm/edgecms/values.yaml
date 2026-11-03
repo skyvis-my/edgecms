@@ -65,7 +65,8 @@ minio:
   persistence:
     size: 20Gi
 
-# Optional shared KV for replicaCount > 1. When enabled, ConfigMap sets CACHE_DRIVER=redis.
+# Optional shared KV for replicaCount > 1. When enabled, ConfigMap sets CACHE_DRIVER=redis
+# (two-tier: L1 in-process + L2 Redis by default; override via values.env CACHE_L1_*).
 # externalUrl: use a managed Redis instead of the in-chart Deployment (leave blank for chart Redis).
 redis:
   enabled: false

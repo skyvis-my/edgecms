@@ -54,6 +54,8 @@ async function main() {
       databaseDriver: config.database.driver,
       mediaDriver: config.media.driver,
       cacheDriver: config.cache.driver,
+      cacheL1Enabled: config.cache.l1Enabled,
+      cacheWriteMode: config.cache.writeMode,
       appliedMigrations: bindings.appliedMigrations.length,
     })
   )

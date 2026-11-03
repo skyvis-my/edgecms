@@ -9,6 +9,7 @@ data:
   DATABASE_DRIVER: "postgres"
   # memory = single-replica. For multi-replica: uncomment redis.yaml in kustomization,
   # set CACHE_DRIVER=redis and REDIS_URL=redis://redis:6379 (or an external URL).
+  # Redis defaults to two-tier L1 memory + L2 Redis; set CACHE_L1_ENABLED=false for Redis-only.
   CACHE_DRIVER: "memory"
   MEDIA_DRIVER: "s3"
   S3_ENDPOINT: "http://minio:9000"

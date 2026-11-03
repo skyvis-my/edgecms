@@ -76,10 +76,35 @@ On the OSS Bun path, `env.CACHE` is a **KVNamespace-shaped** adapter (snapshots,
 
 | Setting | Behavior |
 | --- | --- |
-| `CACHE_DRIVER` unset / `memory`, and no `REDIS_URL` / `REDIS_HOST` | **Memory KV** (single replica) |
-| `CACHE_DRIVER` unset + `REDIS_URL` or `REDIS_HOST` set | **Redis** (auto) |
-| `CACHE_DRIVER=redis` | **Redis** — requires `REDIS_URL` or `REDIS_HOST` (+ optional port/password/db) |
+| `CACHE_DRIVER` unset / `memory`, and no `REDIS_URL` / `REDIS_HOST` | **Memory KV** (single replica, L1-only) |
+| `CACHE_DRIVER` unset + `REDIS_URL` or `REDIS_HOST` set | **Redis L2** + default **in-process L1** (two-tier) |
+| `CACHE_DRIVER=redis` | Same two-tier — requires `REDIS_URL` or `REDIS_HOST` (+ optional port/password/db) |
+| `CACHE_DRIVER=redis` + `CACHE_L1_ENABLED=false` | **Redis-only** (shared L2, no per-process L1) |
 | `CACHE_DRIVER=memory` with Redis env present | Stays **memory** (explicit override) |
+
+### Two-tier KV (L1 memory + L2 Redis)
+
+When Redis is selected, EdgeCMS wraps Redis with an in-process memory tier by default (`createTwoTierKv`):
+
+| Tier | Store | Scope |
+| --- | --- | --- |
+| **L1** | In-process memory KV | Per API replica / process |
+| **L2** | Redis | Shared across replicas |
+
+| Policy | Behavior |
+| --- | --- |
+| **Read-through** | `get` checks L1 → miss → L2 → populate L1 |
+| **Write-through** (default `CACHE_WRITE_MODE`) | `put` writes L2 then L1 |
+| **Write-invalidate** | `put` writes L2 and deletes L1 (next `get` refill) |
+| **Delete** | Clears both tiers |
+| **List** | Always L2 (authoritative key inventory) |
+
+**TTL / invalidation honesty**
+
+- L2 TTL follows the caller's `expirationTtl` / `expiration` (same as Workers KV).
+- L1 TTL defaults to **30s** (`CACHE_L1_TTL_SECONDS`) and is **capped at 60s** (`CACHE_L1_MAX_TTL_SECONDS`) even when L2 TTL is longer — keeps per-replica memory short so cross-replica lag after promote/invalidate stays bounded.
+- Versioned snapshot invalidation (increment collection/locale version) still applies on top via `kv.service`; L1 entries for old version keys age out via TTL.
+- Cross-replica L1 lag is bounded by L1 TTL (or immediate on write-through to the writing replica). Other replicas see L2 immediately; their L1 may serve a stale value until TTL or local delete.
 
 Env (Bun / Docker / K8s only — Workers keep the KV binding):
 
@@ -91,6 +116,10 @@ Env (Bun / Docker / K8s only — Workers keep the KV binding):
 | `REDIS_PORT` | Default `6379` |
 | `REDIS_PASSWORD` | Optional; encoded into URL |
 | `REDIS_DB` | Optional logical DB index |
+| `CACHE_L1_ENABLED` | Default `true` when Redis; set `false` for Redis-only |
+| `CACHE_L1_TTL_SECONDS` | Default `30` — L1 read-through / put default TTL |
+| `CACHE_L1_MAX_TTL_SECONDS` | Default `60` — hard cap on L1 TTL |
+| `CACHE_WRITE_MODE` | `write-through` (default) \| `write-invalidate` |
 
 The optional npm package `redis` is an `optionalDependency` of `edgecms-api` (used only when Redis is selected).
 
@@ -98,11 +127,11 @@ The optional npm package `redis` is an `optionalDependency` of `edgecms-api` (us
 
 | Cloudflare Workers | OSS Bun hosting |
 | --- | --- |
-| KV binding `env.CACHE` | Memory KV **or** Redis KV adapter (`createRedisKv`) — same app interface |
+| KV binding `env.CACHE` + isolate LRU in `kv.service` / isolate memos | Memory (L1-only) **or** two-tier memory L1 + Redis L2 (`createTwoTierKv`) |
 | Workers Cache API (`caches.default` + Cache-Tags) | **Absent** — no edge CDN HIT path on Docker/K8s |
-| Atomic Edge Promote tag purge (`CF_API_TOKEN` + zone) | N/A on OSS; Redis only shares the **application** KV layer across replicas |
+| Atomic Edge Promote tag purge (`CF_API_TOKEN` + zone) | N/A on OSS; Redis shares the **application** KV layer across replicas |
 
-Redis does **not** replace Workers Cache. Prefer Workers when published-plane edge HIT ratio matters; use Redis when you scale OSS API replicas and need a shared application cache / channel-pointer store.
+Redis does **not** replace Workers Cache. Prefer Workers when published-plane edge HIT ratio matters; use Redis (+ default L1) when you scale OSS API replicas and need a shared application cache / channel-pointer store with per-process hot reads.
 
 ## OSS object storage + CDN (Strapi / R2 style)
 
@@ -150,9 +179,10 @@ See also [Media economics (MD-06)](media.md#media-economics-md-06).
 | `DATABASE_DRIVER` | n/a (D1) | `postgres` \| `sqlite` | Postgres needs `DATABASE_URL` |
 | `DATABASE_URL` | — | required for postgres | e.g. `postgres://user:pass@host:5432/db` |
 | `SQLITE_PATH` | — | file path | When `DATABASE_DRIVER=sqlite` |
-| `CACHE_DRIVER` | KV binding | `memory` \| `redis` | Unset + no Redis env → memory; see [Redis shared cache](#redis-shared-cache-multi-replica) |
+| `CACHE_DRIVER` | KV binding | `memory` \| `redis` | Unset + no Redis env → memory; Redis defaults to two-tier L1+L2 — see [Redis shared cache](#redis-shared-cache-multi-replica) |
 | `REDIS_URL` | — | preferred for redis | Or use `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` / `REDIS_DB` |
 | `REDIS_HOST` (+ port/password/db) | — | alt to URL | Builds `redis://…` when `REDIS_URL` unset |
+| `CACHE_L1_ENABLED` / `CACHE_L1_TTL_SECONDS` / `CACHE_L1_MAX_TTL_SECONDS` / `CACHE_WRITE_MODE` | — | optional | Two-tier toggles when Redis; defaults on / 30s / 60s / write-through |
 | `MEDIA_DRIVER` | R2 binding | `filesystem` \| `s3` | S3 covers MinIO / AWS / Alibaba OSS |
 | `S3_*` / `OSS_*` | — | endpoint, keys, bucket | Write/origin only — not public URLs |
 | **`CDN_BASE_URL`** | recommended | recommended | Public CDN origin; preferred over `MEDIA_PUBLIC_BASE_URL` |
@@ -204,7 +234,7 @@ Full Cloudflare feature parity is **not** claimed on the OSS path:
 | Workers binding | OSS stand-in | Gap |
 | --- | --- | --- |
 | D1 | Postgres D1-facade or bun:sqlite file | SQL dialect differences; regenerate/review PG baseline after schema changes; `db.batch` is transactional but not D1-identical |
-| KV (`env.CACHE`) | Memory (default) or Redis (`CACHE_DRIVER=redis`) | Memory is not multi-replica; Redis shares app KV across replicas but is not a global edge |
+| KV (`env.CACHE`) | Memory (default) or Redis L2 + in-process L1 (default when `CACHE_DRIVER=redis`) | Memory is not multi-replica; two-tier shares L2 across replicas with per-process L1 — still not a global edge / Workers Cache |
 | R2 | Filesystem or S3-compatible | No Cloudflare Image Transformations / zone Cache Rules — put your own CDN in front via `CDN_BASE_URL` |
 | Workers Cache API (`caches.default`) | absent | Published CDN HIT path is Workers-only — Redis ≠ Workers Cache |
 | Queues | In-process queue | Lost on crash; no CF retry/backoff telemetry |

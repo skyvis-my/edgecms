@@ -5,7 +5,8 @@ type KvEntry = {
 
 /**
  * In-process KVNamespace stand-in for Docker/K8s self-host.
- * Not a multi-replica cache — use Redis (CACHE_DRIVER=redis) when scaling out.
+ * Not a multi-replica cache — use CACHE_DRIVER=redis (L2) with default L1 wrap
+ * (`createTwoTierKv`) when scaling out.
  */
 export function createMemoryKv(): KVNamespace {
   const store = new Map<string, KvEntry>()
