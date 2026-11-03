@@ -35,6 +35,7 @@ Guides for developers who run EdgeCMS, model content in it, or read its content 
 ## Deploy
 
 - [Deployment runbook](../deployment-runbook.md): provision Cloudflare resources, set secrets, migrate, deploy and roll back.
+- [Self-host: Docker / Kubernetes / Postgres](self-host-docker-k8s.md): optional OSS path (Bun adapters, Redis cache option, S3/OSS + CDN). Workers remains the default (NG1).
 - [Operations guide](../operations-guide.md): health checks and day-to-day operations.
 
 ## Contributing

@@ -1,0 +1,13 @@
+**/node_modules
+**/.wrangler
+**/.data
+**/dist
+**/.git
+**/coverage
+**/*.md
+!docs/public/self-host-docker-k8s.md
+apps/website
+apps/admin/e2e
+**/.env
+**/.env.*
+!.env.example

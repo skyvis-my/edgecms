@@ -5,8 +5,12 @@ node_modules/
 
 # Build outputs
 dist/
+dist-hosting/
 build/
 *.tsbuildinfo
+
+# OSS hosting local data
+apps/api/.data/
 
 # Environment variables
 .env

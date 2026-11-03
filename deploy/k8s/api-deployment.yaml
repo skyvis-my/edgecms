@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edgecms-api
+  namespace: edgecms
+  labels:
+    app.kubernetes.io/name: edgecms-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: edgecms-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: edgecms-api
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/skyvis-my/edgecms-api:oss
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8787
+              name: http
+          envFrom:
+            - configMapRef:
+                name: edgecms-api
+            - secretRef:
+                name: edgecms-api
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health/live
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: edgecms-api
+  namespace: edgecms
+  labels:
+    app.kubernetes.io/name: edgecms-api
+spec:
+  selector:
+    app.kubernetes.io/name: edgecms-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8787

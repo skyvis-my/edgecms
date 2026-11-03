@@ -1,0 +1,147 @@
+# EdgeCMS OSS stack: API (Bun) + Postgres + MinIO (S3) + optional Redis + optional admin nginx.
+# Workers/Cloudflare path is unchanged — this is the alternate hosting profile.
+#
+#   cp deploy/docker/.env.example deploy/docker/.env
+#   # edit secrets
+#   docker compose -f deploy/docker/docker-compose.yml --env-file deploy/docker/.env up --build
+#
+# Multi-replica shared cache (optional Redis profile):
+#   CACHE_DRIVER=redis REDIS_URL=redis://redis:6379
+#   docker compose -f deploy/docker/docker-compose.yml --env-file deploy/docker/.env --profile redis up --build
+
+name: edgecms-oss
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-edgecms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edgecms}
+      POSTGRES_DB: ${POSTGRES_DB:-edgecms}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - edgecms_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-edgecms} -d ${POSTGRES_DB:-edgecms}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    profiles: ["redis"]
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - edgecms_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - edgecms_minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      sleep 3;
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin};
+      mc mb --ignore-existing local/$${S3_BUCKET:-edgecms-media};
+      exit 0;
+      "
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-edgecms-media}
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_DRIVER: postgres
+      DATABASE_URL: postgres://${POSTGRES_USER:-edgecms}:${POSTGRES_PASSWORD:-edgecms}@postgres:5432/${POSTGRES_DB:-edgecms}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET (>=32 chars)}
+      JWT_HS256_SECRET: ${JWT_HS256_SECRET:-}
+      BASE_URL: ${BASE_URL:-http://localhost:8787}
+      SIGNUP_POLICY: ${SIGNUP_POLICY:-disabled}
+      SUPER_ADMIN_EMAILS: ${SUPER_ADMIN_EMAILS:-}
+      SUPER_ADMIN_REQUIRE_MFA: ${SUPER_ADMIN_REQUIRE_MFA:-true}
+      # Unset REDIS_* → in-process memory KV (single-replica only).
+      CACHE_DRIVER: ${CACHE_DRIVER:-memory}
+      REDIS_URL: ${REDIS_URL:-}
+      REDIS_HOST: ${REDIS_HOST:-}
+      REDIS_PORT: ${REDIS_PORT:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-}
+      MEDIA_DRIVER: ${MEDIA_DRIVER:-s3}
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-edgecms-media}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-minioadmin}
+      S3_FORCE_PATH_STYLE: "true"
+      CDN_BASE_URL: ${CDN_BASE_URL:-}
+      MEDIA_PUBLIC_BASE_URL: ${MEDIA_PUBLIC_BASE_URL:-}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:8080,http://localhost:5173,http://localhost:8787}
+      # Microsoft Entra ID (optional admin OIDC — same keys as Workers)
+      ENTRA_CLIENT_ID: ${ENTRA_CLIENT_ID:-}
+      ENTRA_CLIENT_SECRET: ${ENTRA_CLIENT_SECRET:-}
+      ENTRA_TENANT_ID: ${ENTRA_TENANT_ID:-}
+      ENTRA_REDIRECT_URI: ${ENTRA_REDIRECT_URI:-}
+      SSO_MODE: ${SSO_MODE:-}
+      SSO_LOCAL_AUTH_LOCKOUT: ${SSO_LOCAL_AUTH_LOCKOUT:-}
+      SSO_BREAK_GLASS_LOCAL: ${SSO_BREAK_GLASS_LOCAL:-}
+      SSO_ROLE_MAP: ${SSO_ROLE_MAP:-}
+      SSO_DEFAULT_TENANT_SLUG: ${SSO_DEFAULT_TENANT_SLUG:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      PORT: "8787"
+      HOST: "0.0.0.0"
+    ports:
+      - "${API_PORT:-8787}:8787"
+    volumes:
+      - edgecms_data:/data
+
+  admin:
+    profiles: ["split-admin"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.admin
+    depends_on:
+      - api
+    ports:
+      - "${ADMIN_PORT:-8080}:80"
+
+volumes:
+  edgecms_pg:
+  edgecms_minio:
+  edgecms_data:
+  edgecms_redis:

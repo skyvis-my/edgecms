@@ -18,8 +18,22 @@ export interface Env {
   ENTRA_CLIENT_ID?: string
   ENTRA_CLIENT_SECRET?: string
   ENTRA_TENANT_ID?: string
+  /**
+   * Optional ops echo of the Entra reply URL. Must equal
+   * `${BASE_URL}/api/auth/callback/microsoft` when set (fails closed otherwise).
+   */
+  ENTRA_REDIRECT_URI?: string
   GOOGLE_CLIENT_ID?: string
   GOOGLE_CLIENT_SECRET?: string
+  /** Public media / CDN origin for OSS self-host and Workers custom domains. */
+  MEDIA_PUBLIC_BASE_URL?: string
+  CDN_BASE_URL?: string
+  CDN_PUBLIC_BASE_URL?: string
+  /** Opt-in cache warming flags (Workers and OSS hosting). */
+  ENABLE_PROMOTE_CACHE_WARMING?: string
+  ENABLE_PUBLIC_CACHE_WARMING?: string
+  /** Optional deploy id label for OSS hosting / co-version evidence. */
+  EDGECMS_DEPLOY_ID?: string
   QWEN_API_KEY?: string
   GEMINI_API_KEY?: string
   AI_GATEWAY_URL?: string
@@ -64,8 +78,15 @@ export const envSchema = {
   ENTRA_CLIENT_ID: 'string',
   ENTRA_CLIENT_SECRET: 'string',
   ENTRA_TENANT_ID: 'string',
+  ENTRA_REDIRECT_URI: 'string',
   GOOGLE_CLIENT_ID: 'string',
   GOOGLE_CLIENT_SECRET: 'string',
+  MEDIA_PUBLIC_BASE_URL: 'string',
+  CDN_BASE_URL: 'string',
+  CDN_PUBLIC_BASE_URL: 'string',
+  ENABLE_PROMOTE_CACHE_WARMING: 'string',
+  ENABLE_PUBLIC_CACHE_WARMING: 'string',
+  EDGECMS_DEPLOY_ID: 'string',
   QWEN_API_KEY: 'string',
   GEMINI_API_KEY: 'string',
   AI_GATEWAY_URL: 'string',

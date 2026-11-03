@@ -1,0 +1,60 @@
+# Optional in-cluster Redis for multi-replica shared CACHE (KV stand-in).
+# Enable by adding this file to kustomization resources and setting:
+#   CACHE_DRIVER=redis
+#   REDIS_URL=redis://redis:6379
+# Or point REDIS_URL at an external managed Redis and skip this manifest.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: edgecms-redis
+  namespace: edgecms
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: edgecms
+  labels:
+    app.kubernetes.io/name: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args: ["redis-server", "--appendonly", "yes"]
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: edgecms-redis
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: edgecms
+  labels:
+    app.kubernetes.io/name: redis
+spec:
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - port: 6379
+      targetPort: 6379

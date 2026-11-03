@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: edgecms
+  labels:
+    app.kubernetes.io/name: edgecms
+    app.kubernetes.io/part-of: edgecms-oss

@@ -18,6 +18,7 @@ Set these as Worker vars or secrets (`wrangler secret put NAME --env <env>`). Th
 | `SUPER_ADMIN_REQUIRE_MFA` | `false` | Super-admins need a second-factor session on admin routes. |
 | `SUPER_ADMIN_DEV_MODE` | unset | `true` lets every signed-in user through the super-admin-only routes (`/api/admin/tenants`, `/api/admin/invites`), but only while `SUPER_ADMIN_EMAILS` is empty. Never set in production. |
 | `ENTRA_CLIENT_ID`, `ENTRA_CLIENT_SECRET`, `ENTRA_TENANT_ID` | unset | Microsoft Entra sign-in. Tenant ID defaults to `common`. |
+| `ENTRA_REDIRECT_URI` | unset | Optional ops echo of the Entra reply URL. When set, must equal `${BASE_URL}/api/auth/callback/microsoft` or auth fails closed at boot. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | unset | Google sign-in. |
 | `JWT_HS256_SECRET` | unset | Signs and verifies short-lived access tokens. |
 | `JWT_ISSUER`, `JWT_AUDIENCE` | unset | Checked on access tokens when set. |
@@ -45,6 +46,26 @@ GET  /api/me                        current user, with role "superadmin" when ap
 - A new user's global `role` is `viewer`. Sign-up and update-user input cannot set it.
 
 Password reset is not wired up. The admin has a "Forgot password" page, but the API configures no reset email, so reset requests do not send anything.
+
+## Microsoft Entra ID setup (Workers + self-host)
+
+Register an Entra app with a **Web** redirect URI equal to your public site:
+
+```text
+${BASE_URL}/api/auth/callback/microsoft
+```
+
+Set on the Worker (secrets) or OSS hosting process (Compose / Helm / env):
+
+| Variable | Notes |
+| --- | --- |
+| `ENTRA_CLIENT_ID` | Application (client) ID |
+| `ENTRA_CLIENT_SECRET` | Client secret (or a secret injected by your vault / federated ops path) |
+| `ENTRA_TENANT_ID` | Directory GUID, or `common` / `organizations` / `consumers` |
+| `ENTRA_REDIRECT_URI` | Optional; must equal the reply URL above when set |
+| `BASE_URL` | Canonical public URL used to derive the reply URL |
+
+Docker Compose, K8s ConfigMap/Secret, and Helm values forward `ENTRA_*` into the API process. Shared resolver: `apps/api/src/auth/entra-auth.ts`. Full SSO packaging (SAML ACS, local-auth lockout, role-map upsert) remains a host concern — see the [self-host guide](self-host-docker-k8s.md).
 
 ## Sign-up policy (HS-01)
 

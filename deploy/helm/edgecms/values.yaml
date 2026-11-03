@@ -1,0 +1,82 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/skyvis-my/edgecms-api
+  tag: oss
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8787
+
+ingress:
+  enabled: true
+  className: nginx
+  host: cms.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "32m"
+  tls: []
+
+env:
+  DATABASE_DRIVER: postgres
+  # memory = single-replica in-process KV. Set redis.enabled=true (or externalUrl) for shared CACHE.
+  CACHE_DRIVER: memory
+  MEDIA_DRIVER: s3
+  S3_ENDPOINT: http://minio:9000
+  S3_REGION: us-east-1
+  S3_BUCKET: edgecms-media
+  S3_FORCE_PATH_STYLE: "true"
+  SIGNUP_POLICY: disabled
+  SUPER_ADMIN_REQUIRE_MFA: "true"
+  BASE_URL: https://cms.example.com
+  CORS_ALLOWED_ORIGINS: https://cms.example.com
+  CDN_BASE_URL: https://cdn.example.com
+  MEDIA_PUBLIC_BASE_URL: https://cdn.example.com
+  # Optional Microsoft Entra ID (pair with secrets.ENTRA_CLIENT_*):
+  # ENTRA_TENANT_ID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  # ENTRA_REDIRECT_URI: https://cms.example.com/api/auth/callback/microsoft
+  # SSO_MODE: entra
+
+# Provide via --set-file / SealedSecret / ExternalSecrets in real deploys.
+secrets:
+  BETTER_AUTH_SECRET: "REPLACE_WITH_32+_CHAR_SECRET"
+  DATABASE_URL: "postgres://edgecms:edgecms@postgres:5432/edgecms"
+  S3_ACCESS_KEY_ID: "minioadmin"
+  S3_SECRET_ACCESS_KEY: "minioadmin"
+  SUPER_ADMIN_EMAILS: "admin@example.com"
+  # Optional when redis.externalUrl embeds credentials, or pass REDIS_PASSWORD separately via secret.
+  # Optional Microsoft Entra ID (omit keys to leave disabled):
+  # ENTRA_CLIENT_ID: ""
+  # ENTRA_CLIENT_SECRET: ""
+
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  user: edgecms
+  password: edgecms
+  database: edgecms
+  persistence:
+    size: 10Gi
+
+minio:
+  enabled: true
+  image: minio/minio:latest
+  persistence:
+    size: 20Gi
+
+# Optional shared KV for replicaCount > 1. When enabled, ConfigMap sets CACHE_DRIVER=redis.
+# externalUrl: use a managed Redis instead of the in-chart Deployment (leave blank for chart Redis).
+redis:
+  enabled: false
+  externalUrl: ""
+  image: redis:7-alpine
+  persistence:
+    size: 2Gi
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi

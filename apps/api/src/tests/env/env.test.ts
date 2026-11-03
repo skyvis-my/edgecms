@@ -8,6 +8,7 @@ describe('env schema', () => {
       expect(envSchema).toHaveProperty('ENTRA_CLIENT_ID')
       expect(envSchema).toHaveProperty('ENTRA_CLIENT_SECRET')
       expect(envSchema).toHaveProperty('ENTRA_TENANT_ID')
+      expect(envSchema).toHaveProperty('ENTRA_REDIRECT_URI')
     })
 
     it('requires AI gateway env keys in schema', () => {
@@ -194,8 +195,15 @@ describe('env schema', () => {
       'ENTRA_CLIENT_ID',
       'ENTRA_CLIENT_SECRET',
       'ENTRA_TENANT_ID',
+      'ENTRA_REDIRECT_URI',
       'GOOGLE_CLIENT_ID',
       'GOOGLE_CLIENT_SECRET',
+      'MEDIA_PUBLIC_BASE_URL',
+      'CDN_BASE_URL',
+      'CDN_PUBLIC_BASE_URL',
+      'ENABLE_PROMOTE_CACHE_WARMING',
+      'ENABLE_PUBLIC_CACHE_WARMING',
+      'EDGECMS_DEPLOY_ID',
       'QWEN_API_KEY',
       'GEMINI_API_KEY',
       'AI_GATEWAY_URL',
