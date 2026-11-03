@@ -110,6 +110,17 @@ Cache-Control: no-store
 CDN-Cache-Control: no-store
 ```
 
+### Cache hierarchy (Workers vs OSS)
+
+| Layer | Workers | OSS Bun (`CACHE_DRIVER=redis`) |
+| --- | --- | --- |
+| Edge HTTP | Workers Cache API (`caches.default` + Cache-Tags) | Absent |
+| App L1 | Isolate LRU in `kv.service` + ~30s isolate memos (DL-10) | In-process memory via `createTwoTierKv` |
+| App L2 | Workers KV binding `env.CACHE` | Redis KV adapter |
+| Truth | D1 | Postgres or file SQLite |
+
+OSS Redis defaults to L1+L2 (read-through / write-through). See [self-host Docker/K8s → Redis shared cache](self-host-docker-k8s.md#redis-shared-cache-multi-replica).
+
 Public read cache entries are kept per tenant, collection, requested locale and filter hash, and hold published content only.
 
 ## Revalidating your frontend

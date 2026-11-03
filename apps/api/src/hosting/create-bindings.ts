@@ -2,6 +2,7 @@ import type { Env } from '@/env'
 import type { HostingConfig } from './config'
 import { createMemoryKv } from './bindings/memory-kv'
 import { connectRedisUrl, createRedisKv } from './bindings/redis-kv'
+import { createTwoTierKv } from './bindings/two-tier-kv'
 import { createFilesystemR2 } from './bindings/filesystem-r2'
 import { createS3R2 } from './bindings/s3-r2'
 import { createSqliteFileD1 } from './bindings/sqlite-d1'
@@ -49,7 +50,16 @@ export async function createHostingBindings(config: HostingConfig): Promise<Host
     }
     const client = await connectRedisUrl(config.cache.redisUrl)
     redisClose = () => client.close()
-    cache = createRedisKv(client)
+    const l2 = createRedisKv(client)
+    // Default: L1 in-process memory + L2 Redis (read-through / write-through).
+    // CACHE_L1_ENABLED=false → Redis-only shared tier (previous Redis L2 behavior).
+    cache = config.cache.l1Enabled
+      ? createTwoTierKv(createMemoryKv(), l2, {
+          l1DefaultTtlSeconds: config.cache.l1DefaultTtlSeconds,
+          l1MaxTtlSeconds: config.cache.l1MaxTtlSeconds,
+          writeMode: config.cache.writeMode,
+        })
+      : l2
   } else {
     cache = createMemoryKv()
   }

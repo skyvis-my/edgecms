@@ -6,6 +6,7 @@
 export type DatabaseDriver = 'sqlite' | 'postgres'
 export type MediaDriver = 'filesystem' | 's3'
 export type CacheDriver = 'memory' | 'redis'
+export type CacheWriteMode = 'write-through' | 'write-invalidate'
 
 export interface HostingConfig {
   runtime: 'node'
@@ -24,6 +25,17 @@ export interface HostingConfig {
   cache: {
     driver: CacheDriver
     redisUrl?: string
+    /**
+     * When driver=redis: wrap Redis (L2) with in-process memory (L1).
+     * Default true. Set CACHE_L1_ENABLED=false for Redis-only.
+     */
+    l1Enabled: boolean
+    /** Default L1 TTL seconds (read-through fill / put without TTL). Default 30. */
+    l1DefaultTtlSeconds: number
+    /** Cap L1 TTL even when L2 TTL is longer. Default 60. */
+    l1MaxTtlSeconds: number
+    /** write-through (default) or write-invalidate. */
+    writeMode: CacheWriteMode
   }
   media: {
     driver: MediaDriver
@@ -133,6 +145,70 @@ export function resolveCacheDriverFromEnv(
   return { driver: 'memory', redisUrl: redisUrl || undefined }
 }
 
+function parsePositiveInt(raw: string | undefined, fallback: number, name: string): number {
+  if (raw === undefined || raw.trim() === '') return fallback
+  const n = Number(raw)
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 1) {
+    throw new Error(`${name} must be a positive integer (got ${raw})`)
+  }
+  return n
+}
+
+/**
+ * L1 (in-process) tier toggles for Redis L2.
+ * When CACHE_DRIVER=memory, L1 is unused (the memory store is the only tier).
+ */
+export function resolveCacheL1FromEnv(
+  driver: CacheDriver,
+  env: NodeJS.ProcessEnv = process.env
+): {
+  l1Enabled: boolean
+  l1DefaultTtlSeconds: number
+  l1MaxTtlSeconds: number
+  writeMode: CacheWriteMode
+} {
+  const l1DefaultTtlSeconds = parsePositiveInt(env.CACHE_L1_TTL_SECONDS, 30, 'CACHE_L1_TTL_SECONDS')
+  const l1MaxTtlSeconds = parsePositiveInt(
+    env.CACHE_L1_MAX_TTL_SECONDS,
+    60,
+    'CACHE_L1_MAX_TTL_SECONDS'
+  )
+  if (l1MaxTtlSeconds < l1DefaultTtlSeconds) {
+    throw new Error(
+      `CACHE_L1_MAX_TTL_SECONDS (${l1MaxTtlSeconds}) must be >= CACHE_L1_TTL_SECONDS (${l1DefaultTtlSeconds})`
+    )
+  }
+
+  const writeRaw = env.CACHE_WRITE_MODE?.trim().toLowerCase()
+  let writeMode: CacheWriteMode = 'write-through'
+  if (writeRaw !== undefined && writeRaw !== '') {
+    if (writeRaw !== 'write-through' && writeRaw !== 'write-invalidate') {
+      throw new Error(
+        `CACHE_WRITE_MODE must be "write-through" or "write-invalidate" (got ${writeRaw})`
+      )
+    }
+    writeMode = writeRaw
+  }
+
+  if (driver !== 'redis') {
+    return {
+      l1Enabled: false,
+      l1DefaultTtlSeconds,
+      l1MaxTtlSeconds,
+      writeMode,
+    }
+  }
+
+  const raw = env.CACHE_L1_ENABLED?.trim().toLowerCase()
+  // Default ON for redis so multi-replica gets per-process L1 + shared L2.
+  const l1Enabled =
+    raw === undefined || raw === ''
+      ? true
+      : raw === '1' || raw === 'true' || raw === 'yes'
+
+  return { l1Enabled, l1DefaultTtlSeconds, l1MaxTtlSeconds, writeMode }
+}
+
 /**
  * Load hosting config from process.env. Throws on missing required secrets.
  */
@@ -148,6 +224,7 @@ export function loadHostingConfig(cwd = process.cwd()): HostingConfig {
   }
 
   const { driver: cacheDriver, redisUrl } = resolveCacheDriverFromEnv()
+  const cacheL1 = resolveCacheL1FromEnv(cacheDriver)
 
   const databaseUrl = process.env.DATABASE_URL?.trim()
   if (driver === 'postgres' && !databaseUrl) {
@@ -218,6 +295,7 @@ export function loadHostingConfig(cwd = process.cwd()): HostingConfig {
     cache: {
       driver: cacheDriver,
       redisUrl,
+      ...cacheL1,
     },
     media: {
       driver: mediaDriver,

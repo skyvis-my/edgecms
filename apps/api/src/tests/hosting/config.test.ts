@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import {
   loadHostingConfig,
   resolveCacheDriverFromEnv,
+  resolveCacheL1FromEnv,
   resolveRedisUrlFromEnv,
 } from '@/hosting/config'
 
@@ -57,6 +58,49 @@ describe('resolveCacheDriverFromEnv', () => {
   })
 })
 
+describe('resolveCacheL1FromEnv', () => {
+  it('disables L1 for memory driver', () => {
+    expect(resolveCacheL1FromEnv('memory', {})).toMatchObject({
+      l1Enabled: false,
+      writeMode: 'write-through',
+      l1DefaultTtlSeconds: 30,
+      l1MaxTtlSeconds: 60,
+    })
+  })
+
+  it('defaults L1 on for redis', () => {
+    expect(resolveCacheL1FromEnv('redis', {})).toMatchObject({
+      l1Enabled: true,
+      writeMode: 'write-through',
+    })
+  })
+
+  it('honors CACHE_L1_ENABLED=false and write-invalidate', () => {
+    expect(
+      resolveCacheL1FromEnv('redis', {
+        CACHE_L1_ENABLED: 'false',
+        CACHE_WRITE_MODE: 'write-invalidate',
+        CACHE_L1_TTL_SECONDS: '20',
+        CACHE_L1_MAX_TTL_SECONDS: '40',
+      })
+    ).toEqual({
+      l1Enabled: false,
+      writeMode: 'write-invalidate',
+      l1DefaultTtlSeconds: 20,
+      l1MaxTtlSeconds: 40,
+    })
+  })
+
+  it('rejects max TTL below default TTL', () => {
+    expect(() =>
+      resolveCacheL1FromEnv('redis', {
+        CACHE_L1_TTL_SECONDS: '60',
+        CACHE_L1_MAX_TTL_SECONDS: '30',
+      })
+    ).toThrow(/CACHE_L1_MAX_TTL_SECONDS/)
+  })
+})
+
 describe('loadHostingConfig', () => {
   it('loads postgres config from env', () => {
     const prev = { ...process.env }
@@ -94,6 +138,26 @@ describe('loadHostingConfig', () => {
       const cfg = loadHostingConfig('/workspace/apps/api')
       expect(cfg.cache.driver).toBe('redis')
       expect(cfg.cache.redisUrl).toBe('redis://:pw@redis:6379')
+      expect(cfg.cache.l1Enabled).toBe(true)
+      expect(cfg.cache.writeMode).toBe('write-through')
+    } finally {
+      process.env = prev
+    }
+  })
+
+  it('allows disabling L1 on redis via CACHE_L1_ENABLED=false', () => {
+    const prev = { ...process.env }
+    try {
+      process.env.DATABASE_DRIVER = 'sqlite'
+      process.env.BETTER_AUTH_SECRET = 'x'.repeat(32)
+      process.env.MEDIA_DRIVER = 'filesystem'
+      process.env.CACHE_DRIVER = 'redis'
+      process.env.REDIS_URL = 'redis://localhost:6379'
+      process.env.CACHE_L1_ENABLED = 'false'
+      process.env.CACHE_WRITE_MODE = 'write-invalidate'
+      const cfg = loadHostingConfig('/workspace/apps/api')
+      expect(cfg.cache.l1Enabled).toBe(false)
+      expect(cfg.cache.writeMode).toBe('write-invalidate')
     } finally {
       process.env = prev
     }
