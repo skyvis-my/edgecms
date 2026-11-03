@@ -13,7 +13,9 @@ command = "bun scripts/build-worker.ts"
 # AI_GATEWAY_GUARDRAILS_PROFILE_ID=<guardrails-profile-id>
 # ENTRA_CLIENT_ID=<entra-app-client-id>
 # ENTRA_CLIENT_SECRET=<entra-app-client-secret>
-# ENTRA_TENANT_ID=<entra-tenant-id-or-common>
+# ENTRA_TENANT_ID=<directory-guid-or-common|organizations|consumers>
+# ENTRA_REDIRECT_URI=<must-equal-${BASE_URL}/api/auth/callback/microsoft-when-set>
+# Reply URL to register in Entra: ${BASE_URL}/api/auth/callback/microsoft
 # GOOGLE_CLIENT_ID=<google-oauth-client-id>
 # GOOGLE_CLIENT_SECRET=<google-oauth-client-secret>
 

@@ -187,6 +187,7 @@ Generic hooks that let anyone run EdgeCMS as a multi-customer service, including
 | **HS-12** | Audit log hardening: hash-chained entries for tamper evidence, configurable retention (at least 1 year), per-tenant export, and coverage of sign-ins, permission changes and super-admin actions as well as commands. See [operations and security](docs/public/operations-security.md#audit-ledger-hs-12). | Shipped |
 | **HS-13** | Personal data requests: export and delete one user's personal data (account, sessions, memberships, authored-by references pseudonymized) with an audit receipt. See [operations and security](docs/public/operations-security.md#personal-data-requests-hs-13). | Shipped |
 | **HS-14** | Per-tenant AI switch: AI features and the providers they send content to are disabled until a tenant admin enables them, and the admin shows which providers will receive content. New tenants start off; migration `0033` keeps existing tenants on. See [AI command safety](docs/public/ai-command-safety.md#per-tenant-ai-switch-hs-14). | Shipped |
+| **HS-15** | Optional OSS hosting adapters (Docker / Kubernetes / Bun): Postgres or bun:sqlite D1 facade, memory or Redis KV, filesystem or S3/OSS media with `CDN_BASE_URL`, in-process queue/DO shims. Workers remains the default runtime (NG1). Documented parity gaps. See [self-host guide](docs/public/self-host-docker-k8s.md). | Partial |
 
 ## 11. Adoption and operations
 
@@ -200,6 +201,7 @@ Generic hooks that let anyone run EdgeCMS as a multi-customer service, including
 | **OP-06** | Collection export and non-destructive import preview. | Partial |
 | **OP-07** | Observability: request IDs, cache metrics, scheduler alarm logs, sync logs, AI Gateway analytics. | Partial |
 | **OP-08** | `bun run check:all` is the merge gate: merge markers, types, tests, package checks, docs claims, lint. | Shipped |
+| **OP-11** | Documented Docker Compose + Kubernetes/Helm path for the OSS hosting adapters (`deploy/docker`, `deploy/k8s`, `deploy/helm/edgecms`), including optional Redis and Entra env forwarding. | Shipped |
 
 ### 11.1 Targets
 
@@ -232,6 +234,7 @@ Every PR that adds or changes product behavior must fit this PRD.
 
 | Date | Version | Change |
 | --- | --- | --- |
+| 2026-11-03 | 3.8 | Ported optional OSS hosting adapters (`HS-15` Partial, `OP-11` Shipped): Docker/K8s/Helm, Postgres/SQLite facades, Redis cache option, S3/OSS + CDN public URL, shared Entra resolver (`ENTRA_REDIRECT_URI`). Workers path unchanged (NG1). |
 | 2026-10-22 | 3.7 | Recorded #20 (tenant public reads fixed; OP-01 Shipped), #21 (MCP writes, auth and Streamable HTTP fixed; AI-06 verified on staging) and #23 (list cache hits skip D1, opt-in KV metrics; DL-03 Partial for the missing CDN layer). Added staging measurements to §11.1 and DL-10 for the per-request D1/KV lookups the audit found. |
 | 2026-10-22 | 3.6 | Corrected CM-04, CMD-03, MD-01, MD-03, MD-05 and PL-03 to Partial after the developer guides were written against the code; each row names its gap. |
 | 2026-10-22 | 3.5 | Shipped `HS-05`, `HS-06`, `HS-07` (usage sink, limit policy, per-tenant rate limits) and `HS-08` (`tenant.limit_reached` now emitted). |

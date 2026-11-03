@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: edgecms
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secret.yaml
+  - postgres.yaml
+  - minio.yaml
+  # Optional shared CACHE for multi-replica: uncomment redis.yaml and set
+  # CACHE_DRIVER=redis + REDIS_URL=redis://redis:6379 on the API ConfigMap/Secret.
+  # - redis.yaml
+  - api-deployment.yaml
+  - ingress.yaml

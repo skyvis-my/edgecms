@@ -17,6 +17,10 @@ import {
   enforceSuperAdminEmailSignup,
   readInviteToken,
 } from './signup-policy'
+import {
+  resolveEntraAuthConfig,
+  toBetterAuthMicrosoftProvider,
+} from './entra-auth'
 import { parseSuperAdminEmails } from './super-admin'
 
 export type CreateAuthOptions = {
@@ -26,6 +30,8 @@ export type CreateAuthOptions = {
     clientId?: string
     clientSecret?: string
     tenantId?: string
+    /** Optional ops echo; must match `${baseURL}/api/auth/callback/microsoft`. */
+    redirectUri?: string
   }
   google?: {
     clientId?: string
@@ -121,6 +127,7 @@ function buildOptionsKey(options?: CreateAuthOptions): string {
     options?.entra?.clientId ?? '',
     options?.entra?.clientSecret ?? '',
     options?.entra?.tenantId ?? '',
+    options?.entra?.redirectUri ?? '',
     options?.google?.clientId ?? '',
     options?.google?.clientSecret ?? '',
     policies.signupPolicy,
@@ -172,6 +179,16 @@ export function createAuth(
         .filter((origin): origin is string => Boolean(origin))
         .map((origin) => origin.replace(/\/$/, ''))
     )
+  )
+
+  const microsoftProvider = toBetterAuthMicrosoftProvider(
+    resolveEntraAuthConfig({
+      baseURL: options?.baseURL ?? 'http://localhost:8787',
+      ENTRA_CLIENT_ID: options?.entra?.clientId,
+      ENTRA_CLIENT_SECRET: options?.entra?.clientSecret,
+      ENTRA_TENANT_ID: options?.entra?.tenantId,
+      ENTRA_REDIRECT_URI: options?.entra?.redirectUri,
+    })
   )
 
   const instance = betterAuth({
@@ -298,15 +315,7 @@ export function createAuth(
       },
     },
     socialProviders: {
-      ...(options?.entra?.clientId && options?.entra?.clientSecret
-        ? {
-            microsoft: {
-              clientId: options.entra.clientId,
-              clientSecret: options.entra.clientSecret,
-              tenantId: options.entra.tenantId ?? 'common',
-            },
-          }
-        : {}),
+      ...(microsoftProvider ? { microsoft: microsoftProvider } : {}),
       ...(options?.google?.clientId && options?.google?.clientSecret
         ? {
             google: {
@@ -338,6 +347,7 @@ type AuthEnv = Pick<
   | 'ENTRA_CLIENT_ID'
   | 'ENTRA_CLIENT_SECRET'
   | 'ENTRA_TENANT_ID'
+  | 'ENTRA_REDIRECT_URI'
   | 'GOOGLE_CLIENT_ID'
   | 'GOOGLE_CLIENT_SECRET'
   | 'SIGNUP_POLICY'
@@ -348,13 +358,21 @@ type AuthEnv = Pick<
 
 /** Builds the auth instance for a Worker env, including composition-time policies. */
 export function createAuthForEnv(env: AuthEnv, baseURL: string) {
+  const entra = resolveEntraAuthConfig({
+    baseURL,
+    ENTRA_CLIENT_ID: env.ENTRA_CLIENT_ID,
+    ENTRA_CLIENT_SECRET: env.ENTRA_CLIENT_SECRET,
+    ENTRA_TENANT_ID: env.ENTRA_TENANT_ID,
+    ENTRA_REDIRECT_URI: env.ENTRA_REDIRECT_URI,
+  })
   return createAuth(env.DB, {
     secret: env.BETTER_AUTH_SECRET,
     baseURL,
     entra: {
-      clientId: env.ENTRA_CLIENT_ID,
-      clientSecret: env.ENTRA_CLIENT_SECRET,
-      tenantId: env.ENTRA_TENANT_ID,
+      clientId: entra.clientId,
+      clientSecret: entra.clientSecret,
+      tenantId: entra.tenantId,
+      redirectUri: entra.redirectUri,
     },
     google: {
       clientId: env.GOOGLE_CLIENT_ID,

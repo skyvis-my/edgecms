@@ -35,7 +35,10 @@
     "db:migrate:remote": "node scripts/cf.mjs d1 migrations apply \"$D1_DATABASE_ID\" --dir drizzle/migrations",
     "db:seed:smoke": "bun ../../scripts/seed-smoke-db.ts",
     "db:studio": "drizzle-kit studio",
-    "db:studio:local": "drizzle-kit studio --config=drizzle.local.config.ts"
+    "db:studio:local": "drizzle-kit studio --config=drizzle.local.config.ts",
+    "hosting:build": "bun ./scripts/build-hosting.ts",
+    "hosting:migrate": "bun ./scripts/build-hosting.ts && bun dist-hosting/migrate.js",
+    "hosting:serve": "bun ./scripts/build-hosting.ts && bun dist-hosting/server.js"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.124",
@@ -49,12 +52,17 @@
     "drizzle-orm": "^0.45.4",
     "elysia": "^2.0.0-beta.30",
     "graphql": "^17.0.2",
+    "postgres": "^4.0.0",
     "typebox": "^1.3.37"
+  },
+  "optionalDependencies": {
+    "redis": "^5.10.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260702.1",
     "@libsql/client": "^0.17.4",
     "@types/node": "25.1.0",
+    "@types/pg": "^8.23.1",
     "cf": "^1.0.0-beta.14",
     "drizzle-kit": "0.31.11",
     "oxlint": "^1.88.0",
