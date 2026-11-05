@@ -1,6 +1,6 @@
 # EdgeCMS Product Requirements
 
-Version: 3.7 (2026-10-22)
+Version: 3.8 (2026-11-05)
 Owner: EdgeCMS maintainers
 Status: Living document. Every feature PR cites a requirement ID from this file (see [Change control](#12-change-control)).
 
@@ -236,6 +236,7 @@ Every PR that adds or changes product behavior must fit this PRD.
 | --- | --- | --- |
 | 2026-11-03 | 3.9 | OSS Redis path defaults to two-tier KV (`createTwoTierKv`: L1 in-process + L2 Redis; `CACHE_L1_*` / `CACHE_WRITE_MODE`). Follow-up on hosting port; Workers path unchanged (NG1). `HS-15` still Partial. |
 | 2026-11-03 | 3.8 | Ported optional OSS hosting adapters (`HS-15` Partial, `OP-11` Shipped): Docker/K8s/Helm, Postgres/SQLite facades, Redis cache option, S3/OSS + CDN public URL, shared Entra resolver (`ENTRA_REDIRECT_URI`). Workers path unchanged (NG1). |
+| 2026-11-05 | 3.8 | Recorded #28 (DL-10 Shipped: in-isolate tenant cache with a 20 s state bound, KV-free public read rate limiting), #29 (CM-04 Shipped: public populate respects publish windows), #30 (CMD-03 Shipped: transaction dry-run writes nothing), #31 (DL-03 Shipped: Cache API edge layer), #32 (MD-05 Shipped: server-side dimension check; MD-03 Partial for blurhash), #33 (AI-05 Shipped: single-use preview receipts), #34 (OF-05 Partial), #35 (HS-10 Shipped), #36 (HS-09 Partial: shared-mode offboarding), #37 (PL-03 Partial: custom-role grants enforced, editor admin reads closed) and #38 (P2: MCP and version reads scoped to the request tenant). |
 | 2026-10-22 | 3.7 | Recorded #20 (tenant public reads fixed; OP-01 Shipped), #21 (MCP writes, auth and Streamable HTTP fixed; AI-06 verified on staging) and #23 (list cache hits skip D1, opt-in KV metrics; DL-03 Partial for the missing CDN layer). Added staging measurements to §11.1 and DL-10 for the per-request D1/KV lookups the audit found. |
 | 2026-10-22 | 3.6 | Corrected CM-04, CMD-03, MD-01, MD-03, MD-05 and PL-03 to Partial after the developer guides were written against the code; each row names its gap. |
 | 2026-10-22 | 3.5 | Shipped `HS-05`, `HS-06`, `HS-07` (usage sink, limit policy, per-tenant rate limits) and `HS-08` (`tenant.limit_reached` now emitted). |
