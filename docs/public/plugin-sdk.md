@@ -1,6 +1,6 @@
 # Plugin SDK
 
-This guide explains how to write a trusted EdgeCMS plugin: hooks, AI tools, field types, admin routes, admin menu items and admin contributions (sidebar pages, panels and banners). It is for developers extending EdgeCMS in their own fork or deployment.
+This guide explains how to write a trusted EdgeCMS plugin: hooks, AI tools, field types, admin routes, admin menu items, admin contributions (sidebar pages, panels and banners) and the extension contract (supported versions, dependencies and bindings). It is for developers extending EdgeCMS in their own fork or deployment.
 
 EdgeCMS runs trusted plugins only. A plugin loads when it is listed in the trusted catalog in the API source and is enabled by runtime configuration and KV state. Uploading arbitrary plugin code is not supported, and there is no plugin marketplace.
 
@@ -20,7 +20,7 @@ EdgeCMS runs trusted plugins only. A plugin loads when it is listed in the trust
 
 ## The SDK package
 
-`@edgecms/plugin-sdk` is mostly types, plus the dependency-free admin contribution validators described in [Admin contributions](#admin-contributions-hs-10):
+`@edgecms/plugin-sdk` is mostly types, plus dependency-free validators: the [extension contract](#extension-contract-ex-02) checks and semver matcher, and the [admin contribution](#admin-contributions-hs-10) checks:
 
 ```ts
 import type {
@@ -41,7 +41,8 @@ The package is marked `private: true` and is not published to npm yet. Use it as
 1. You list plugins by name in the `EDGE_PLUGINS_JSON` Worker variable.
 2. The loader looks up each name in the trusted catalog. Unknown names are marked `blocked`.
 3. Disabled plugins stay visible in the admin but register nothing.
-4. For an enabled, trusted plugin, the loader registers only these capabilities: hooks, AI tools, field types, admin routes and admin menu items.
+4. The loader checks the [extension contract](#extension-contract-ex-02) of every enabled, trusted plugin together: supported EdgeCMS versions, dependencies and Worker bindings. A plugin that fails any check is `blocked` and registers nothing.
+5. For each admitted plugin, in dependency order, the loader registers only these capabilities: hooks, AI tools, field types, admin routes and admin menu items.
 
 `EDGE_PLUGINS_JSON` is a JSON array of manifests:
 
@@ -53,7 +54,7 @@ The package is marked `private: true` and is not published to npm yet. Use it as
 ]
 ```
 
-`enabled` defaults to `true`. Manifests can also carry `version`, `dependencies`, `requiredBindings`, `capabilities`, `coreVersionRange` and `sdkVersionRange`.
+`enabled` defaults to `true`. Manifests can also carry `version`, `dependencies`, `requiredBindings`, `capabilities`, `coreVersionRange` and `sdkVersionRange`. These operator-side checks are older than the extension contract and still apply; `coreVersionRange` and `sdkVersionRange` use the same range matcher and reject a range they cannot parse. Prefer declaring requirements in the catalog entry, where they travel with the plugin code.
 
 Loading fails closed: a manifest alone cannot grant routes, hooks, fields, AI tools, menu items or public access. Only the catalog entry can. The shared release schema treats a manifest as safe only when it is enabled, comes from the trusted catalog, lists explicit permissions, and keeps the hook timeout within the budget below.
 
@@ -106,10 +107,63 @@ type PluginDefinition<
   routes?: Record<string, PluginRouteFactory<TApp>>
   fields?: PluginFieldType<TSchema>[]
   adminMenu?: PluginAdminMenuItem[]
+  edgecms?: string // supported EdgeCMS versions, e.g. '>=0.2.0 <1.0.0'
+  dependencies?: Record<string, string> // plugin name -> version range
+  bindings?: PluginBindingRequirement[]
 }
 ```
 
 `TrustedPluginDefinition` is an alias kept for the API catalog.
+
+## Extension contract (EX-02)
+
+A catalog entry declares what it needs from the deployment. The API loader checks every enabled plugin's contract once, when it composes the plugin set (at startup and after an enable or disable toggle), before anything registers.
+
+```ts
+export const plugin = {
+  metadata: { displayName: 'Media Renditions', description: '…', version: '0.1.0' },
+  edgecms: '>=0.2.0 <1.0.0',
+  dependencies: { 'audit-trace': '^1.0.0' },
+  bindings: [
+    { name: 'MEDIA', kind: 'r2', description: 'reads originals' },
+    { name: 'RENDITION_SIGNING_SECRET', kind: 'secret' },
+  ],
+  hooks: {},
+} satisfies PluginDefinition
+```
+
+| Field | Checked against | Blocked with |
+| --- | --- | --- |
+| `edgecms` | The running framework version (`API_VERSION` in `apps/api/src/version.ts`) | `INCOMPATIBLE_CORE` |
+| `dependencies` | Other plugins enabled from the trusted catalog, by their `metadata.version` | `MISSING_DEPENDENCY`, `INCOMPATIBLE_DEPENDENCY`, `CYCLIC_DEPENDENCY`, `DEPENDENCY_BLOCKED` |
+| `bindings` | The Worker env | `MISSING_REQUIRED_BINDING` |
+| Field shapes | Valid ranges, slug dependency names, uppercase binding names, known kinds | `INVALID_CONTRACT` |
+
+Binding kinds and what counts as present:
+
+| `kind` | Env value must be |
+| --- | --- |
+| `d1` | A D1 database (has `prepare` and `batch`) |
+| `kv` | A KV namespace (has `get`, `put` and `getWithMetadata`) |
+| `r2` | An R2 bucket (has `get`, `put` and `head`) |
+| `queue` | A Queue producer (has `send`) |
+| `secret` | A non-empty string (a secret or a plain var) |
+
+Rules:
+
+- **Fail closed.** A plugin with any issue registers nothing. A plugin whose dependency is blocked is blocked too (`DEPENDENCY_BLOCKED`). Every plugin on a dependency cycle is blocked, and the message names the cycle.
+- **Dependencies are trusted plugins only.** A dependency must be in the trusted catalog and enabled in this deployment. Disabling a plugin blocks the plugins that depend on it.
+- **Deterministic order.** Dependencies register first, so their hooks run first. Otherwise plugins keep their `EDGE_PLUGINS_JSON` order.
+- **Duplicates.** A plugin listed twice in `EDGE_PLUGINS_JSON` is blocked (`DUPLICATE_PLUGIN`).
+- **Route ownership** is by path: two plugins may both name a route `health`, but a plugin cannot register a path another plugin already owns (`DUPLICATE_OWNERSHIP`).
+
+Ranges use a small, dependency-free subset of npm semver: `1.2.3`, `1.2.x`, `*`, `^`, `~`, `<`, `<=`, `>`, `>=`, `=`, hyphen ranges (`1.2.3 - 2.0.0`), spaces for "and" and `||` for "or". A prerelease such as `1.0.0-beta.1` only matches a range that names a prerelease of the same version. Tags like `latest` are not ranges and are rejected. The SDK exports the matcher as `satisfiesSemverRange`, `isValidSemverRange`, `parseSemver` and `compareSemver`.
+
+As in npm, `^0.2.0` means `>=0.2.0 <0.3.0`, because a 0.x minor release may break plugins. The shipped catalog plugins declare `>=0.2.0 <1.0.0`; use a narrower range if your plugin has not been tested against later minors.
+
+### Composition report
+
+`GET /api/admin/plugins` shows each blocked plugin's first `rejectionCode`, a `reason` that joins every message, and `issues`, the full list with a `path` (for example `bindings[0]` or `dependencies.audit-trace`) and a `code`. In code, `PluginRuntime.getCompositionReport()` returns the framework version, the `loadOrder` and every rejection. The same checks are available without the API as `composePluginContracts({ frameworkVersion, plugins, env })` from the SDK, along with `validatePluginContract` and `checkPluginBindings`.
 
 ## Example
 
@@ -294,7 +348,7 @@ The SDK exports `LoadedPluginMetadata`, `PluginAdminListResponse` and `PluginAdm
 ## Add a plugin
 
 1. Add the plugin to `apps/api/src/plugins/trusted-plugin-catalog.ts`.
-2. Give it metadata with version, category and permissions.
+2. Give it metadata with a semver version, category and permissions, and declare its `edgecms` range, `dependencies` and `bindings`.
 3. Register only the hooks it needs.
 4. Keep its routes under `/api/admin/plugins/:pluginName/*`.
 5. Add tests for the loaded, disabled and blocked states.

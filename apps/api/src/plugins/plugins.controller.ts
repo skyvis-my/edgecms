@@ -22,13 +22,14 @@ export function createPluginsController(runtime?: PluginRuntime) {
       const { enabled } = body
       const apiEnv = env as Env
       const kv = apiEnv.CACHE
+      const pluginEnv = apiEnv as unknown as Record<string, unknown>
     
       const reg = runtime?.registry ?? pluginRegistry
       await reg.setPluginEnabled(kv, pluginName, enabled)
       if (runtime) {
-        await runtime.reloadConfiguredPlugins(apiEnv.EDGE_PLUGINS_JSON, { kv })
+        await runtime.reloadConfiguredPlugins(apiEnv.EDGE_PLUGINS_JSON, { kv, env: pluginEnv })
       } else {
-        await reloadConfiguredPlugins(apiEnv.EDGE_PLUGINS_JSON, reg, { kv })
+        await reloadConfiguredPlugins(apiEnv.EDGE_PLUGINS_JSON, reg, { kv, env: pluginEnv })
       }
     
       return {
