@@ -186,6 +186,10 @@ export async function invalidateByTags(
  * - `publishNow` / `unpublishNow` / scheduled lifecycle commands → `entry:{entryId}`, `collection:{collectionId}`
  * - `linkRelation` / `unlinkRelation` → `entry:{sourceEntryId}`, `entry:{targetEntryId}`
  * - `bulkUpdate` → Tags for each affected entry
+ * - Every entry tag also has a tenant-scoped twin `t:{tenantId}:e:{entryId}`.
+ *   Public snapshots that populate an entry carry that entry's tag (or its
+ *   collection's tag above the related-entry cap), so these tags also purge
+ *   the snapshots of entries that include it as related content.
  * - `updateSingleton` → `collection:{collectionId}`
  * - `transaction` → No tags (sub-commands handle their own invalidation)
  *
@@ -274,6 +278,14 @@ export async function extractCacheTagsFromCommand(
     }
   }
 
+  function addEntryTags(entryId: unknown) {
+    if (typeof entryId !== 'string' || !entryId) return
+    tags.add(`entry:${entryId}`)
+    if (resolvedTenantId) {
+      tags.add(`t:${resolvedTenantId}:e:${entryId}`)
+    }
+  }
+
   switch (commandType) {
     case 'createEntry':
     case 'updateEntry':
@@ -307,21 +319,17 @@ export async function extractCacheTagsFromCommand(
 
     case 'linkRelation':
     case 'unlinkRelation': {
-      if (payload.sourceEntryId && typeof payload.sourceEntryId === 'string') {
-        tags.add(`entry:${payload.sourceEntryId}`)
-      }
-      if (payload.targetEntryId && typeof payload.targetEntryId === 'string') {
-        tags.add(`entry:${payload.targetEntryId}`)
-      }
+      // Tenant-scoped entry tags too: populated snapshots that include the
+      // source entry are tagged `t:{tenant}:e:{id}` (CM-04/DL-03).
+      addEntryTags(payload.sourceEntryId)
+      addEntryTags(payload.targetEntryId)
       break
     }
 
     case 'bulkUpdate': {
       if (Array.isArray(payload.entryIds)) {
         for (const entryId of payload.entryIds.slice(0, 100)) {
-          if (typeof entryId === 'string') {
-            tags.add(`entry:${entryId}`)
-          }
+          addEntryTags(entryId)
         }
       }
 
