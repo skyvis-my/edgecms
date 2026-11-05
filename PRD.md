@@ -146,7 +146,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | --- | --- | --- |
 | **DL-01** | Tenant-scoped public REST: list, get by ID, singletons and asset variants. Published content only (P5). See [public API](docs/public/public-api.md). | Shipped |
 | **DL-02** | Typed client (`@edgecms/client`) and fetch examples for frontends. | Shipped |
-| **DL-03** | Cache hierarchy Browser → CDN → KV → memory → D1 with versioned keys, tag invalidation and stale-while-revalidate. Gap: the Worker sets `CDN-Cache-Control` and `Cache-Tag` but does not store responses in the Cloudflare cache (no Cache API), so public reads are served by the Worker from memory/KV, not the CDN. | Partial |
+| **DL-03** | Cache hierarchy Browser → CDN → KV → memory → D1 with versioned keys, tag invalidation and stale-while-revalidate. Anonymous public list, entry and singleton reads are stored in the Workers Cache API (`caches.default`) under keys with tenant, collection, locale, content version and query, so a version bump or tag purge retires them; credentialed, preview, paid-read and read-your-writes requests skip it. The edge layer is per data centre, has no stale-while-revalidate (the Cache API does not support it) and is absent on non-Cloudflare hosts. See [public API](docs/public/public-api.md#edge-cache-workers). | Shipped |
 | **DL-04** | Snapshots per collection, locale and query pattern, with relations resolved and lifecycle filtered. | Shipped |
 | **DL-05** | Scheduled publishing is evaluated at request time; cache TTLs shrink toward the next `publishAt`/`unpublishAt`; a Durable Object alarm invalidates KV at the transition. | Shipped |
 | **DL-06** | GraphQL read endpoint over published content, guarded against expensive D1 queries. Not a parity claim with REST. | Partial |
@@ -211,7 +211,7 @@ Design targets, with the latest staging measurement. Staging numbers are server-
 | --- | --- | --- |
 | Cached public read latency | < 50 ms | Entry 38 ms, list 52 ms server p50 (met / borderline) |
 | Uncached global read latency | < 100 ms | Not measured |
-| CDN-served share of public reads | > 90% | About 0%: no CDN cache layer yet (DL-03) |
+| CDN-served share of public reads | > 90% | About 0% before the Cache API layer (DL-03); not re-measured since |
 | Worker CPU per cached request | < 5 ms | 5–6 ms p50 cached reads; 3.2 ms p50 across all routes (borderline) |
 | Browser image pipeline (4 WebP variants) | < 3 s | Not measured |
 | Offline sync recovery | < 5 s | Not measured |

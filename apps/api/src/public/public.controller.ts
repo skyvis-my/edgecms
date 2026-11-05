@@ -8,6 +8,7 @@ import { publicRepository } from './public.repository'
 import type { CollectionRow } from '@/collections/collections.repository'
 import { generatePreviewToken, verifyPreviewToken } from './preview-token'
 import { handleX402Gate } from './x402.middleware'
+import { edgeCached } from '@/cache/edge-cache'
 
 type CacheHeaders = Record<string, string | number | string[] | undefined>
 const PUBLIC_STALE_WHILE_REVALIDATE_SECONDS = 300
@@ -413,7 +414,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       perPage: t.Optional(t.String()),
       sort: t.Optional(t.String()),
     }),
-  }, async (ctx) => {
+  }, edgeCached(async (ctx) => {
     const { params, query, set, request, db, kv, tenantCtx, workerEnv } = ctx
     const page = parsePositiveInt(query.page as string | undefined, 1)
     const perPage = Math.min(100, parsePositiveInt(query.perPage as string | undefined, 20))
@@ -496,7 +497,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       result.data.payload,
       request.headers.get('if-none-match')
     )
-  })
+  }))
   .get('/:collectionSlug/:entryIdOrSlug', {
     params: t.Object({
       collectionSlug: t.String({ minLength: 1 }),
@@ -507,7 +508,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       populate: t.Optional(t.String()),
       depth: t.Optional(t.String()),
     }),
-  }, async (ctx) => {
+  }, edgeCached(async (ctx) => {
     const { params, query, set, db, kv, tenantCtx, workerEnv, request } = ctx
     const depthParam = Number.parseInt((query.depth as string) || '1', 10)
     const depth = Math.min(Math.max(depthParam, 1), 3)
@@ -543,7 +544,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       result.data.payload,
       request.headers.get('if-none-match')
     )
-  })
+  }))
   .get('/singleton/:collectionSlug', {
     params: t.Object({
       collectionSlug: t.String({ minLength: 1 }),
@@ -551,7 +552,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
     query: t.Object({
       locale: t.Optional(t.String()),
     }),
-  }, async (ctx) => {
+  }, edgeCached(async (ctx) => {
     const { params, query, set, db, kv, tenantCtx, workerEnv, request } = ctx
 
     const x402Res = await handleX402Gate(ctx, {
@@ -581,7 +582,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       result.data.payload,
       request.headers.get('if-none-match')
     )
-  })
+  }))
   .post('/preview-token', {
     body: t.Object({
       tenantSlug: t.Optional(t.String()),

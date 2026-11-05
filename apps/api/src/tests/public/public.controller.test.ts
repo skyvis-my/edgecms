@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'bun:test'
 import { Elysia } from 'elysia'
 import {
   DEFAULT_ASSET_ALLOWED_MIME_TYPES,
@@ -839,5 +839,140 @@ describe('publicController', () => {
       })
     )
     expect(weakWildcardRes.status).toBe(304)
+  })
+})
+
+describe('publicController edge cache hook (DL-03)', () => {
+  const originalCaches = (globalThis as { caches?: unknown }).caches
+  let store: Map<string, Response>
+  let puts: string[]
+
+  const tenantApp = (tenantId: string) =>
+    applyPublicAssetFormatAliases(
+      new Elysia()
+        .derive(() => ({
+          tenant: { tenant: { id: tenantId, slug: tenantId }, resources: {} },
+        }))
+        .use(publicController)
+    )
+  const app = applyPublicAssetFormatAliases(new Elysia().use(publicController))
+  const settle = () => new Promise((r) => setTimeout(r, 0))
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    store = new Map()
+    puts = []
+    ;(globalThis as { caches?: unknown }).caches = {
+      default: {
+        async match(req: Request) {
+          return store.get(req.url)?.clone()
+        },
+        async put(req: Request, res: Response) {
+          puts.push(req.url)
+          store.set(req.url, res)
+        },
+        async delete() {
+          return false
+        },
+      },
+    }
+    kvService.getCurrentVersion.mockResolvedValue(1)
+    kvService.getVersionedKey.mockImplementation((key: string) => `v1:${key}`)
+    computeDynamicTTL.mockResolvedValue(60)
+  })
+
+  afterEach(() => {
+    ;(globalThis as { caches?: unknown }).caches = originalCaches
+  })
+
+  it('stores an anonymous list read and serves the repeat from the edge without KV', async () => {
+    kvService.getSnapshot.mockResolvedValue({ entries: [{ id: 'e1' }] })
+
+    const first = await app.handle(new Request('http://localhost/api/public/posts?locale=en'))
+    expect(first.status).toBe(200)
+    expect(first.headers.get('x-edgecms-edge-cache')).toBe('miss')
+    await settle()
+    expect(puts.length).toBe(1)
+    expect(kvService.getSnapshot).toHaveBeenCalledTimes(1)
+
+    const second = await app.handle(new Request('http://localhost/api/public/posts?locale=en'))
+    expect(second.status).toBe(200)
+    expect(second.headers.get('x-edgecms-edge-cache')).toBe('hit')
+    expect(second.headers.get('x-edgecms-cache')).toBe('hit')
+    expect(second.headers.get('server-timing')).toMatch(/cache;desc="edge"/)
+    expect(second.headers.get('cache-control')).toContain('stale-while-revalidate=')
+    expect(second.headers.get('cache-tag')).toContain('collection:posts')
+    expect(await second.json()).toEqual({ entries: [{ id: 'e1' }] })
+    expect(kvService.getSnapshot).toHaveBeenCalledTimes(1)
+    kvService.getSnapshot.mockReset()
+  })
+
+  it('keys entries by tenant so tenant B never receives tenant A content', async () => {
+    kvService.getSnapshot.mockResolvedValueOnce({ owner: 'a' }).mockResolvedValueOnce({ owner: 'b' })
+
+    const a = await tenantApp('tenant-a').handle(new Request('http://localhost/api/public/posts'))
+    expect(await a.json()).toEqual({ owner: 'a' })
+    await settle()
+
+    const b = await tenantApp('tenant-b').handle(new Request('http://localhost/api/public/posts'))
+    expect(b.headers.get('x-edgecms-edge-cache')).toBe('miss')
+    expect(await b.json()).toEqual({ owner: 'b' })
+    expect(puts.length).toBe(2)
+    expect(puts[0]).toContain('/tenant-a/')
+    expect(puts[1]).toContain('/tenant-b/')
+  })
+
+  it('misses after the content version is bumped', async () => {
+    kvService.getSnapshot.mockResolvedValueOnce({ rev: 1 }).mockResolvedValueOnce({ rev: 2 })
+
+    await app.handle(new Request('http://localhost/api/public/posts'))
+    await settle()
+    kvService.getCurrentVersion.mockResolvedValue(2)
+    const res = await app.handle(new Request('http://localhost/api/public/posts'))
+    expect(await res.json()).toEqual({ rev: 2 })
+  })
+
+  it('caches entry and singleton reads, keyed by locale', async () => {
+    kvService.getSnapshot.mockResolvedValue({ entry: { id: 'e1' } })
+    await app.handle(new Request('http://localhost/api/public/posts/e1?locale=fr'))
+    await app.handle(new Request('http://localhost/api/public/singleton/home?locale=de'))
+    await settle()
+    expect(puts.length).toBe(2)
+    expect(puts[0]).toContain('/global/posts/fr/v1/api/public/posts/e1?locale=fr')
+    expect(puts[1]).toContain('/global/home/de/v1/api/public/singleton/home?locale=de')
+    kvService.getSnapshot.mockReset()
+  })
+
+  it('does not store errors, credentialed reads or paid-read challenges', async () => {
+    kvService.getSnapshot.mockResolvedValue(null)
+    publicRepository.findCollectionBySlug.mockResolvedValue(null)
+    const missing = await app.handle(new Request('http://localhost/api/public/missing'))
+    expect(missing.status).toBe(404)
+
+    kvService.getSnapshot.mockResolvedValue({ entries: [] })
+    await app.handle(
+      new Request('http://localhost/api/public/posts', { headers: { cookie: 'session=1' } })
+    )
+    await app.handle(
+      new Request('http://localhost/api/public/posts', { headers: { authorization: 'Bearer t' } })
+    )
+    const paid = await app.handle(new Request('http://localhost/api/public/premium-posts'))
+    expect(paid.status).toBe(402)
+    await settle()
+    expect(puts.length).toBe(0)
+    kvService.getSnapshot.mockReset()
+  })
+
+  it('serves a 304 from the edge when If-None-Match matches the cached ETag', async () => {
+    kvService.getSnapshot.mockResolvedValue({ entries: [] })
+    const first = await app.handle(new Request('http://localhost/api/public/posts'))
+    const etag = first.headers.get('etag')!
+    await settle()
+    const conditional = await app.handle(
+      new Request('http://localhost/api/public/posts', { headers: { 'if-none-match': etag } })
+    )
+    expect(conditional.status).toBe(304)
+    expect(conditional.headers.get('x-edgecms-edge-cache')).toBe('hit')
+    kvService.getSnapshot.mockReset()
   })
 })
