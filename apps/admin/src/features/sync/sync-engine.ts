@@ -1,6 +1,8 @@
 import type { CommandEnvelope } from '@/features/commands/command-builder'
 import { edenDelete, edenGet, edenPost, edenPostForTenant, edenPut } from '@/lib/eden-client'
-import { db } from './local-db'
+import { type AutoMergePlan, type ConflictBase, planConflictAutoMerge, readServerEntry } from './field-merge'
+import { type CommandQueueItem, db } from './local-db'
+import { logger } from '@/lib/logger'
 
 /**
  * Server response types matching the sync backend API
@@ -57,6 +59,8 @@ export interface PushSummary {
   synced: number
   conflicted: number
   failed: number
+  /** OF-04: queued updates rebased onto a newer server version without overlapping changes. */
+  merged: number
 }
 
 /**
@@ -232,6 +236,39 @@ async function markQueueItems(
   }
 }
 
+async function deleteQueueItems(queueItemIds: number[]): Promise<void> {
+  for (const queueItemId of queueItemIds) {
+    await db.commandQueue.delete(queueItemId)
+  }
+}
+
+/** Field names of a collection that hold per-locale maps, from the local schema mirror. */
+export async function getLocalizedFieldNames(collectionId: string | undefined): Promise<string[]> {
+  if (!collectionId) return []
+  try {
+    const collection = await db.collections.get(collectionId)
+    return (collection?.fields ?? []).filter((f) => f.localizable).map((f) => f.name)
+  } catch (error) {
+    logger.warn('Could not read collection fields for conflict merge:', error)
+    return []
+  }
+}
+
+async function planVersionConflict(
+  command: CommandEnvelope,
+  base: ConflictBase | undefined,
+  serverState: unknown
+): Promise<AutoMergePlan> {
+  const serverEntry = readServerEntry(serverState)
+  if (!serverEntry || !base) return { kind: 'review' }
+  return planConflictAutoMerge({
+    envelope: command as unknown as Record<string, unknown>,
+    base,
+    serverEntry,
+    localizedFields: await getLocalizedFieldNames(serverEntry.collectionId),
+  })
+}
+
 type DexiePutTable = {
   bulkPut?: (items: Record<string, unknown>[]) => Promise<unknown>
   put: (item: Record<string, unknown>) => Promise<unknown>
@@ -278,7 +315,7 @@ async function bulkDeleteOrFallback(table: DexieDeleteTable, keys: string[]): Pr
  * 5. Handle results
  */
 export async function pushPendingCommands(): Promise<PushSummary> {
-  const summary: PushSummary = { synced: 0, conflicted: 0, failed: 0 }
+  const summary: PushSummary = { synced: 0, conflicted: 0, failed: 0, merged: 0 }
 
   // Get all pending commands
   const pendingItems = await db.commandQueue.where('status').equals('pending').toArray()
@@ -380,6 +417,10 @@ export async function pushPendingCommands(): Promise<PushSummary> {
   // Compaction is tenant-scoped to avoid cross-tenant replay on the wrong endpoint.
   const queueBatches = buildQueueBatches(regularItems)
   const processedItemIds = new Set<number>()
+  const itemsById = new Map<number, CommandQueueItem>()
+  for (const item of regularItems) {
+    if (item.id !== undefined) itemsById.set(item.id, item)
+  }
 
   try {
     for (const queueBatch of queueBatches) {
@@ -393,6 +434,20 @@ export async function pushPendingCommands(): Promise<PushSummary> {
           },
           queueBatch.tenantSlug
         )
+
+        // OF-04: plan three-way merges for version conflicts before the queue transaction
+        // (the plan reads collection field definitions from another table).
+        const mergePlans = new Map<number, AutoMergePlan>()
+        for (let i = 0; i < batch.length; i++) {
+          const result = response.results[i]
+          const compactItem = batch[i]
+          if (!compactItem || result?.status !== 'conflict') continue
+          const firstItem = itemsById.get(compactItem.queueItemIds[0] as number)
+          mergePlans.set(
+            i,
+            await planVersionConflict(compactItem.command, firstItem?.base, result.serverState)
+          )
+        }
 
         // Process each batch result
         await db.transaction('rw', db.commandQueue, async () => {
@@ -426,7 +481,40 @@ export async function pushPendingCommands(): Promise<PushSummary> {
             }
 
             if (result.status === 'conflict') {
-              await markQueueItems(compactItem.queueItemIds, {
+              const plan = mergePlans.get(i) ?? { kind: 'review' }
+              const [firstId, ...restIds] = compactItem.queueItemIds
+              if (plan.kind === 'noop') {
+                // The server already holds everything this command would write.
+                await markQueueItems(compactItem.queueItemIds, {
+                  status: 'synced',
+                  syncedAt: new Date().toISOString(),
+                  error: undefined,
+                  serverState: undefined,
+                })
+                summary.merged += compactItem.queueItemIds.length
+                continue
+              }
+              if (plan.kind === 'merged' && firstId !== undefined) {
+                // Rebase onto the server version and push again; compacted rows fold into one.
+                await db.commandQueue.update(firstId, {
+                  envelope: plan.envelope,
+                  base: plan.base,
+                  status: 'pending',
+                  error: undefined,
+                  serverState: undefined,
+                })
+                await deleteQueueItems(restIds)
+                summary.merged += compactItem.queueItemIds.length
+                continue
+              }
+              // True conflicts: keep one conflicted row per pushed command for review.
+              if (firstId !== undefined && restIds.length > 0) {
+                await db.commandQueue.update(firstId, {
+                  envelope: compactItem.command as unknown as Record<string, unknown>,
+                })
+                await deleteQueueItems(restIds)
+              }
+              await markQueueItems(firstId === undefined ? [] : [firstId], {
                 status: 'conflicted',
                 serverState: result.serverState,
                 error: normalizePushError(result.error),
@@ -581,6 +669,14 @@ export async function pullChanges(): Promise<PullSummary> {
 export async function sync(): Promise<SyncSummary> {
   // Push-before-pull strategy
   const pushSummary = await pushPendingCommands()
+  if (pushSummary.merged > 0) {
+    // OF-04: push rebased updates once more in the same cycle.
+    const retry = await pushPendingCommands()
+    pushSummary.synced += retry.synced
+    pushSummary.conflicted += retry.conflicted
+    pushSummary.failed += retry.failed
+    pushSummary.merged += retry.merged
+  }
   const pullSummary = await pullChanges()
 
   return {
