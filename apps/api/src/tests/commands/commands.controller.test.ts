@@ -106,6 +106,33 @@ describe('commandsController', () => {
     }
   })
 
+  it('returns the typed preview receipt reason with its status (AI-05)', async () => {
+    const cases = [
+      ['RECEIPT_ALREADY_USED', 409],
+      ['TENANT_MISMATCH', 403],
+      ['HASH_MISMATCH', 400],
+      ['RECEIPT_CLAIM_FAILED', 503],
+    ] as const
+
+    for (const [reason, status] of cases) {
+      mockExecuteCommand.mockResolvedValueOnce({
+        status: 'failed',
+        error: { code: 'INVALID_PREVIEW_RECEIPT', message: 'x', reason },
+      })
+      const response = await app.handle(
+        new Request('http://localhost/api/admin/commands', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(baseBody),
+        })
+      )
+      expect(response.status).toBe(status)
+      const body = (await response.json()) as { error: { code: string; details?: { reason?: string } } }
+      expect(body.error.code).toBe('INVALID_PREVIEW_RECEIPT')
+      expect(body.error.details?.reason).toBe(reason)
+    }
+  })
+
   it('forwards previewReceipt in envelope to executeCommand', async () => {
     mockExecuteCommand.mockResolvedValueOnce({
       status: 'success',

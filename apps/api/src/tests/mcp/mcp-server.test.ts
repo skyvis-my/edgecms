@@ -382,13 +382,10 @@ describe('Native MCP Server Adapter Gated by Command Engine (C-01)', () => {
 
     const result = response.result as { isError?: boolean; content: Array<{ text: string }> }
     expect(result.isError).toBeFalsy()
-    expect(mockExecuteCommand).toHaveBeenCalledWith(
-      ctx,
-      expect.objectContaining({
-        type: 'transaction',
-        previewReceipt: receipt.receiptId,
-      })
-    )
+    expect(mockExecuteCommand).toHaveBeenCalledWith(ctx, expect.objectContaining({ type: 'transaction' }))
+    // Redeemed by the adapter before execution; the engine must not redeem it again.
+    const txEnvelope = mockExecuteCommand.mock.calls[mockExecuteCommand.mock.calls.length - 1]?.[1] as { previewReceipt?: string }
+    expect(txEnvelope.previewReceipt).toBeUndefined()
     const parsed = JSON.parse(result.content[0]!.text)
     expect(parsed.status).toBe('success')
     expect(parsed.results).toHaveLength(2)
