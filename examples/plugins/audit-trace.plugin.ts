@@ -26,6 +26,7 @@ export const auditTracePlugin = {
     category: 'operations',
     permissions: ['commands:read'],
   },
+  edgecms: '>=0.2.0 <1.0.0',
   hooks: {
     beforeCommand: async (ctx) => {
       void ctx.requestId

@@ -85,6 +85,16 @@ Tests check that it:
 
 See [Admin contributions](plugin-sdk.md#admin-contributions-hs-10).
 
+## Media Renditions (contract example)
+
+Shows every EX-02 contract field: a supported EdgeCMS range, a dependency on `audit-trace` with a version range, and two required bindings (an R2 bucket and a secret). It is illustrative only: it has no catalog entry and does no media work.
+
+Module: `examples/plugins/contract-dependencies.plugin.ts`.
+
+The loader tests in `apps/api/src/tests/plugins/plugin-contract-composition.test.ts` check the same shapes: the plugin is blocked when the version, dependency or a binding is missing, and its dependency loads first when everything is present.
+
+See [Extension contract](plugin-sdk.md#extension-contract-ex-02).
+
 ## Form Capture (not built)
 
 A form submission plugin is planned but not built, because it needs a public route and EdgeCMS does not load public plugin routes. It waits for a reviewed public plugin namespace with tenant isolation, auth policy, cache behavior and route-prefix tests.
