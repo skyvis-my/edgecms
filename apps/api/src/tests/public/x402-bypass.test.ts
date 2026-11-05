@@ -70,7 +70,8 @@ describe('paid collections are not readable for free outside the 402 gate (DL-07
     expect(fields.some((name) => name.toLowerCase().includes('premium'))).toBe(false)
 
     const result = await execute({ schema, document: parse('{ _collections { slug } }') })
-    const slugs = (result.data?._collections as Array<{ slug: string }>).map((c) => c.slug)
+    const data = result.data as { _collections: Array<{ slug: string }> }
+    const slugs = data._collections.map((c) => c.slug)
     expect(slugs).not.toContain('premium-posts')
   })
 
