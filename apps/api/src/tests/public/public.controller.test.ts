@@ -38,9 +38,16 @@ const publicRepository = {
   findFirstVisibleEntryForCollection: vi.fn(),
 }
 const computeDynamicTTL = vi.fn()
+const X402_TEST_SECRET = 'x402-test-secret-at-least-32-characters'
+const mockWorkerEnv: Record<string, unknown> = {
+  DB: mockDb,
+  CACHE: mockKv,
+  MEDIA: mockR2,
+  X402_SECRET: X402_TEST_SECRET,
+}
 
 vi.mock('cloudflare:workers', () => ({
-  env: { DB: mockDb, CACHE: mockKv, MEDIA: mockR2 },
+  env: mockWorkerEnv,
 }))
 vi.mock('@/tenants/tenant-context', () => ({
   hasTenantContext: (ctx: unknown) =>
@@ -75,6 +82,7 @@ vi.mock('@/scheduling/ttl.service', () => ({ computeDynamicTTL }))
 
 const { publicController } = await import(`../../public/public.controller?bypass=${Date.now()}`)
 const { setCorsHeaders } = await import('@/auth/cors')
+const { createSettlementToken, createL402Challenge } = await import('@/public/x402.middleware')
 
 describe('publicController', () => {
   const app = applyPublicAssetFormatAliases(new Elysia().use(publicController))
@@ -1057,5 +1065,93 @@ describe('publicController edge cache hook (DL-03)', () => {
     expect(conditional.status).toBe(304)
     expect(conditional.headers.get('x-edgecms-edge-cache')).toBe('hit')
     kvService.getSnapshot.mockReset()
+  })
+
+  describe('paid reads (DL-07)', () => {
+    afterEach(() => {
+      mockWorkerEnv.X402_SECRET = X402_TEST_SECRET
+      delete mockWorkerEnv.BETTER_AUTH_SECRET
+      delete mockWorkerEnv.EDGECMS_API_KEY
+    })
+
+    it('fails closed with 500 CONFIG_ERROR when a paid route has no X402_SECRET (no built-in or borrowed secret)', async () => {
+      delete mockWorkerEnv.X402_SECRET
+      mockWorkerEnv.BETTER_AUTH_SECRET = 'better-auth-secret-at-least-32-chars'
+      mockWorkerEnv.EDGECMS_API_KEY = 'edgecms-api-key'
+      kvService.getSnapshot.mockResolvedValue({ entries: [{ id: 'paid' }] })
+      for (const path of ['/api/public/premium-posts', '/api/public/premium-posts/e1', '/api/public/singleton/premium-home']) {
+        const res = await app.handle(new Request(`http://localhost${path}`))
+        expect(res.status).toBe(500)
+        expect(res.headers.get('cache-control')).toContain('no-store')
+        const body = (await res.json()) as { error?: { code?: string } }
+        expect(body.error?.code).toBe('CONFIG_ERROR')
+      }
+      await settle()
+      expect(puts.length).toBe(0)
+      kvService.getSnapshot.mockReset()
+    })
+
+    it('rejects a settlement token signed with the old hard-coded secret', async () => {
+      delete mockWorkerEnv.X402_SECRET
+      const forged = await createSettlementToken('edgecms_secret', {
+        challengeId: 'forged',
+        resource: '/api/public/premium-posts',
+        price: 100,
+        currency: 'SATS',
+      })
+      mockWorkerEnv.X402_SECRET = X402_TEST_SECRET
+      kvService.getSnapshot.mockResolvedValue({ entries: [{ id: 'paid' }] })
+      const res = await app.handle(
+        new Request('http://localhost/api/public/premium-posts', {
+          headers: { authorization: `L402 ${forged}` },
+        })
+      )
+      expect(res.status).toBe(402)
+      kvService.getSnapshot.mockReset()
+    })
+
+    it('rejects the 402 challenge macaroon echoed back as a payment proof', async () => {
+      kvService.getSnapshot.mockResolvedValue({ entries: [{ id: 'paid' }] })
+      const challengeRes = await app.handle(new Request('http://localhost/api/public/premium-posts'))
+      expect(challengeRes.status).toBe(402)
+      const { macaroon } = (await challengeRes.json()) as { macaroon: string }
+      const replay = await app.handle(
+        new Request('http://localhost/api/public/premium-posts', {
+          headers: { authorization: `L402 ${macaroon}` },
+        })
+      )
+      expect(replay.status).toBe(402)
+      kvService.getSnapshot.mockReset()
+    })
+
+    it('serves a settled paid read as private, no-store and never stores it in the edge cache', async () => {
+      kvService.getSnapshot.mockResolvedValue({ entries: [{ id: 'paid' }] })
+      const challenge = await createL402Challenge(X402_TEST_SECRET, '/api/public/premium-posts')
+      const token = await createSettlementToken(X402_TEST_SECRET, {
+        challengeId: challenge.challengeId,
+        resource: '/api/public/premium-posts',
+        price: challenge.price,
+        currency: challenge.currency,
+      })
+      for (let i = 0; i < 2; i++) {
+        const res = await app.handle(
+          new Request('http://localhost/api/public/premium-posts', {
+            headers: { authorization: `L402 ${token}` },
+          })
+        )
+        expect(res.status).toBe(200)
+        expect(res.headers.get('x-402-settled')).toBe('true')
+        expect(res.headers.get('cache-control')).toBe('private, no-store')
+        expect(res.headers.get('cdn-cache-control')).toBe('no-store')
+        expect(res.headers.get('x-edgecms-edge-cache')).toBeNull()
+        expect(await res.json()).toEqual({ entries: [{ id: 'paid' }] })
+      }
+      await settle()
+      expect(puts.length).toBe(0)
+      // An anonymous read of the same path still gets a challenge, not the paid body.
+      const anon = await app.handle(new Request('http://localhost/api/public/premium-posts'))
+      expect(anon.status).toBe(402)
+      kvService.getSnapshot.mockReset()
+    })
   })
 })

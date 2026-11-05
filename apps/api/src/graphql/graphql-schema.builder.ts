@@ -16,6 +16,7 @@ import { collectionsRepository } from '@/collections/collections.repository'
 import type { Database } from '@/database/db'
 import { entriesRepository } from '@/entries/entries.repository'
 import { isEntryPubliclyVisible } from '@/entries/public-visibility'
+import { isPaidCollectionSlug } from '@/public/x402.middleware'
 import { flattenLocaleFields } from '@/shared/locale'
 import { API_VERSION } from '@/version'
 
@@ -141,7 +142,10 @@ export async function buildDynamicGraphQLSchema(
     return cached.schema
   }
 
-  const collections = await collectionsRepository.findAll(db, tenantId)
+  // DL-07: GraphQL has no 402 gate, so paid collections are left out entirely.
+  const collections = (await collectionsRepository.findAll(db, tenantId)).filter(
+    (col) => !isPaidCollectionSlug(col.slug)
+  )
 
   const queryFields: Record<string, GraphQLFieldConfig<unknown, unknown>> = {
     _version: {

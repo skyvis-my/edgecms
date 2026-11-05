@@ -239,6 +239,7 @@ export function loadHostingConfig(cwd = process.cwd()): HostingConfig {
     'ADMIN_CORS_ALLOWED_ORIGINS',
     'PUBLIC_CORS_ALLOWED_ORIGINS',
     'PREVIEW_SECRET',
+    'X402_SECRET',
     'ASSET_SIGNING_SECRET',
     'MEDIA_PUBLIC_BASE_URL',
     'CDN_BASE_URL',
