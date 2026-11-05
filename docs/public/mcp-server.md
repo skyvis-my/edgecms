@@ -164,7 +164,7 @@ Semantic search over published entries, using the `ASSET_VECTORS` Vectorize inde
    }
    ```
 
-   You can also pass `command`, the envelope you expect, and execution fails if it does not match the receipt. Receipts expire after 15 minutes, work once, and only for the same caller and tenant. A receipt with several commands runs as one transaction.
+   You can also pass `command`, the envelope you expect, and execution fails if it does not match the receipt. Receipts expire after 15 minutes, work once, and only for the same caller and tenant. A receipt with several commands runs as one transaction. A dry run that fails returns `isError: true` and no receipt. A rejected receipt returns `isError: true` with `{ "status": "rejected", "error": { "code", "message" } }`; the codes are listed in [AI command safety](ai-command-safety.md#preview-receipts).
 
 There is no tool that writes without a preview receipt.
 

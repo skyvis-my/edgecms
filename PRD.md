@@ -125,7 +125,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | **AI-02** | Capabilities: single and bulk updates, cross-collection transactions, localization generation, relation navigation, scheduling help. | Partial |
 | **AI-03** | Provider-agnostic via the Vercel AI SDK, routed through Cloudflare AI Gateway. Qwen primary, Gemini fallback, swappable by config. | Shipped |
 | **AI-04** | A model router picks a cost tier by command complexity. | Shipped |
-| **AI-05** | Preview receipts: execution is accepted only when it matches the reviewed preview. | Partial |
+| **AI-05** | Preview receipts: execution is accepted only when it matches the reviewed preview. Receipts are stored server-side, bound to actor, tenant, a canonical SHA-256 hash of the reviewed envelopes and a 15-minute expiry; single use is claimed atomically in D1 (`preview_receipt_redemptions`) before anything runs. Command engine, admin AI and MCP execute reject mismatched, expired, other-actor, other-tenant and replayed receipts with typed codes. See [AI command safety](docs/public/ai-command-safety.md#preview-receipts). | Shipped |
 | **AI-06** | MCP server exposes tenant-scoped discovery, read, semantic search and command tools with the caller's RBAC, over Streamable HTTP (version negotiation, session cookie, access token or deployment key). Reads and preview/execute writes verified on staging with the official MCP SDK client. See [MCP docs](docs/public/mcp-server.md). | Shipped |
 | **AI-07** | Semantic search and RAG over tenant content using Vectorize. | Shipped |
 | **AI-08** | AI-assisted imports (for example WordPress WXR) run as a non-destructive preview first. | Partial |

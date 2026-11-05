@@ -4,8 +4,7 @@ import { collectionsRepository } from '@/collections/collections.repository'
 import { entriesRepository } from '@/entries/entries.repository'
 import {
   createPreviewReceipt,
-  markPreviewReceiptConsumed,
-  verifyPreviewReceipt,
+  redeemPreviewReceipt,
 } from '@/ai/preview-receipt.service'
 import { AI_DISABLED_MESSAGE, isTenantAiEnabled } from '@/ai/ai-access'
 import { ragService } from '@/ai/rag.service'
@@ -357,12 +356,14 @@ export async function handleMcpToolCall(
           }
         }
 
-        // Verify the immutable preview receipt
-        const verification = await verifyPreviewReceipt({
+        // AI-05: verify against the exact reviewed commands and claim the
+        // receipt for single use before anything runs.
+        const verification = await redeemPreviewReceipt({
           receiptId: previewReceiptId,
           userId: ctx.actor.userId,
           tenantId: ctx.tenantScope,
           kv: ctx.kv,
+          db: ctx.db,
           commandsToVerify: args.command ? [args.command as CommandEnvelope] : undefined,
         })
 
@@ -371,7 +372,17 @@ export async function handleMcpToolCall(
             content: [
               {
                 type: 'text',
-                text: `Preview receipt verification failed: ${verification.message ?? verification.error}`,
+                text: JSON.stringify(
+                  {
+                    status: 'rejected',
+                    error: {
+                      code: verification.error ?? 'RECEIPT_NOT_FOUND',
+                      message: `Preview receipt verification failed: ${verification.message ?? verification.error}`,
+                    },
+                  },
+                  null,
+                  2
+                ),
               },
             ],
             isError: true,
@@ -388,10 +399,11 @@ export async function handleMcpToolCall(
         const results: CommandResult[] = []
         if (verification.receipt.commands.length === 1) {
           const stagedCommand = verification.receipt.commands[0]!
+          // Already redeemed above; the engine must not redeem it again.
           const executionEnvelope: CommandEnvelope = {
             ...stagedCommand,
             dryRun: false,
-            previewReceipt: previewReceiptId,
+            previewReceipt: undefined,
             timestamp: new Date().toISOString(),
           }
 
@@ -430,7 +442,6 @@ export async function handleMcpToolCall(
               })),
             },
             dryRun: false,
-            previewReceipt: previewReceiptId,
             actor: {
               userId: ctx.actor.userId,
               source: 'ai',
@@ -462,8 +473,6 @@ export async function handleMcpToolCall(
           const subResults = (txResult.data?.subResults as CommandResult[] | undefined) ?? [txResult]
           results.push(...subResults)
         }
-
-        await markPreviewReceiptConsumed(previewReceiptId, ctx.kv, ctx.tenantScope)
 
         const finalData =
           results.length === 1

@@ -3,6 +3,7 @@ import { betterAuthPlugin } from '@/auth/auth.middleware'
 import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import { AI_DISABLED_CODE, AI_DISABLED_MESSAGE, isTenantAiEnabled } from './ai-access'
 import { executeGeneratedCommands, runAiWorkflow } from './ai.service'
+import { PreviewReceiptError, previewReceiptErrorStatus } from './preview-receipt.service'
 import { aiImportsController, isAiImportReviewEnabled, aiImportReviewDisabled } from './ai-imports.controller'
 import { getRequestPathname } from '@/shared/utils/request-url'
 import { createErrorEnvelope } from '@/shared/utils/service-response'
@@ -171,6 +172,10 @@ export const aiController = new Elysia({ prefix: '/api/admin/ai' })
         },
       }
     } catch (err) {
+      if (err instanceof PreviewReceiptError) {
+        set.status = previewReceiptErrorStatus(err.code)
+        return createErrorEnvelope(err.code, err.message)
+      }
       const message = err instanceof Error ? err.message : 'Unknown error'
 
       set.status = 400

@@ -387,7 +387,7 @@ describe('Immutable Preview Receipt Verification (T05a / G10)', () => {
     expect(replayVerify.message).toContain('already been executed')
   })
 
-  it('supports verifying individual command envelopes from a multi-command receipt without divergence', async () => {
+  it('accepts only the exact reviewed command set from a multi-command receipt (AI-05)', async () => {
     const cmd1: CommandEnvelope = {
       type: 'createEntry',
       actor: { userId: 'u1', source: 'ai' },
@@ -406,20 +406,23 @@ describe('Immutable Preview Receipt Verification (T05a / G10)', () => {
       userId: 'u1',
     })
 
-    // Verification of individual commands from the receipt succeeds
-    const verifyCmd1 = await verifyPreviewReceipt({
+    const verifyAll = await verifyPreviewReceipt({
       receiptId: receipt.receiptId,
       userId: 'u1',
-      commandsToVerify: [cmd1],
+      commandsToVerify: [cmd1, cmd2],
     })
-    expect(verifyCmd1.valid).toBe(true)
+    expect(verifyAll.valid).toBe(true)
 
-    const verifyCmd2 = await verifyPreviewReceipt({
-      receiptId: receipt.receiptId,
-      userId: 'u1',
-      commandsToVerify: [cmd2],
-    })
-    expect(verifyCmd2.valid).toBe(true)
+    // A subset, a repeat or a reorder is not what was reviewed.
+    for (const commandsToVerify of [[cmd1], [cmd2], [cmd1, cmd1], [cmd2, cmd1]]) {
+      const verification = await verifyPreviewReceipt({
+        receiptId: receipt.receiptId,
+        userId: 'u1',
+        commandsToVerify,
+      })
+      expect(verification.valid).toBe(false)
+      expect(verification.error).toBe('HASH_MISMATCH')
+    }
 
     // Verification of a tampered command fails with HASH_MISMATCH
     const tamperedCmd: CommandEnvelope = {

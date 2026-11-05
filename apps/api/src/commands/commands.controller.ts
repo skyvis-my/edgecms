@@ -10,6 +10,7 @@ import { type CommandContext, executeCommand } from './engine'
 import type { WaitUntilContext } from './deferred-work'
 import { getRequestPathname } from '@/shared/utils/request-url'
 import { createErrorEnvelope } from '@/shared/utils/service-response'
+import { type PreviewReceiptErrorCode, previewReceiptErrorStatus } from '@/ai/preview-receipt.service'
 import { createCommandHostHooks, getCommandLimitError } from '@/host/command-hooks'
 import { getHostRuntime } from '@/host/host-context'
 
@@ -198,6 +199,12 @@ export const commandsController = new Elysia({ prefix: '/api/admin/commands', no
     if (limitError && result.error) {
       set.status = limitError.status
       return createErrorEnvelope(result.error.code, result.error.message, limitError.details)
+    }
+
+    // AI-05: receipt rejections keep their code and expose the typed reason.
+    if (result.error?.code === 'INVALID_PREVIEW_RECEIPT' && result.error.reason) {
+      set.status = previewReceiptErrorStatus(result.error.reason as PreviewReceiptErrorCode)
+      return createErrorEnvelope(result.error.code, result.error.message, { reason: result.error.reason })
     }
 
     // Error handling — map error codes to HTTP status
