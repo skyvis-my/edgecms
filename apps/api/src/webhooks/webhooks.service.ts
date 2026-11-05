@@ -13,6 +13,13 @@ import {
   validateWebhookDestination,
 } from './webhook-destination-policy'
 import { type WebhookRow, webhooksRepository } from './webhooks.repository'
+import {
+  MAX_BULK_REPLAY,
+  REPLAYABLE_DELIVERY_STATUSES,
+  type ReplayableDeliveryStatus,
+} from './webhook-replay-policy'
+
+export { MAX_BULK_REPLAY, REPLAYABLE_DELIVERY_STATUSES, type ReplayableDeliveryStatus }
 
 /** Input for creating a webhook. */
 export interface CreateWebhookInput {
@@ -45,6 +52,13 @@ export interface TestDeliveryResult {
 
 const MAX_STORED_RESPONSE_BODY_BYTES = 10_240
 const MAX_QUEUE_RETRIES = 5
+
+/** Bulk replay response. */
+export interface BulkReplayResult {
+  replayed: number
+  skipped: number
+  deliveryIds: string[]
+}
 
 function normalizeRetryMaxRetries(value: number | undefined): number {
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -455,7 +469,7 @@ export const webhooksService = {
    * Replay a failed delivery (DL-09): re-enqueue the stored event for the
    * webhook's current URL and secret. The queue consumer re-validates scope
    * and destination and dedups on (eventId, webhookId), so only deliveries
-   * that never succeeded are replayable.
+   * that never succeeded are replayable ('failed' or 'dead').
    */
   async replayDelivery(
     db: Database,
@@ -487,12 +501,12 @@ export const webhooksService = {
         error: { code: 'VALIDATION_ERROR', message: 'Test deliveries cannot be replayed' },
       }
     }
-    if (delivery.status !== 'failed') {
+    if (!(REPLAYABLE_DELIVERY_STATUSES as readonly string[]).includes(delivery.status)) {
       return {
         success: false,
         error: {
           code: 'CONFLICT',
-          message: `Only failed deliveries can be replayed (status is '${delivery.status}')`,
+          message: `Only failed or dead deliveries can be replayed (status is '${delivery.status}')`,
         },
       }
     }
@@ -537,6 +551,117 @@ export const webhooksService = {
     return {
       success: true,
       data: { deliveryId: delivery.id, eventId: delivery.eventId, status: 'pending' },
+    }
+  },
+  /**
+   * Bulk replay (DL-09): re-enqueue up to MAX_BULK_REPLAY dead/failed
+   * deliveries of one webhook, oldest first. Rows are first moved to
+   * 'pending' with a conditional update, and only the rows this call moved
+   * are sent, so overlapping replays never enqueue the same delivery twice.
+   * Stored payloads whose scope no longer matches the webhook's tenant are
+   * skipped. On a queue failure the claimed rows return to their status.
+   */
+  async replayDeliveries(
+    db: Database,
+    queue: Pick<Queue<WebhookQueueMessage>, 'sendBatch'> | null | undefined,
+    webhookId: string,
+    tenantId?: string,
+    options: { statuses?: ReplayableDeliveryStatus[]; limit?: number } = {}
+  ): Promise<ServiceResult<BulkReplayResult>> {
+    const webhook = tenantId
+      ? await webhooksRepository.findById(db, webhookId, tenantId)
+      : await webhooksRepository.findById(db, webhookId)
+    if (!webhook) {
+      return {
+        success: false,
+        error: { code: 'NOT_FOUND', message: `Webhook '${webhookId}' not found` },
+      }
+    }
+    if (!queue) {
+      return {
+        success: false,
+        error: { code: 'QUEUE_UNAVAILABLE', message: 'WEBHOOK_QUEUE binding is not configured' },
+      }
+    }
+
+    const statuses = (options.statuses?.length ? options.statuses : REPLAYABLE_DELIVERY_STATUSES)
+      .filter((status) => (REPLAYABLE_DELIVERY_STATUSES as readonly string[]).includes(status))
+    const requested = Number.isFinite(options.limit) ? Math.trunc(options.limit as number) : MAX_BULK_REPLAY
+    const limit = Math.min(MAX_BULK_REPLAY, Math.max(1, requested))
+
+    const candidates = await webhooksRepository.findReplayableDeliveries(
+      db,
+      webhook.id,
+      [...statuses],
+      limit
+    )
+    let skipped = 0
+    const deliverable: Array<{ id: string; status: string; event: WebhookEvent; scope: string }> = []
+    for (const delivery of candidates) {
+      const event = delivery.payload as unknown as WebhookEvent
+      const scope =
+        event && typeof event === 'object' && event.data ? resolveEventTenantScope(event) : null
+      if (scope === null || !canDeliver(webhook.tenantId, scope)) {
+        skipped++
+        continue
+      }
+      deliverable.push({ id: delivery.id, status: delivery.status, event, scope })
+    }
+
+    const claimedIds = new Set(
+      await webhooksRepository.markDeliveriesReplayed(
+        db,
+        webhook.id,
+        deliverable.map((d) => d.id),
+        [...statuses],
+        new Date().toISOString()
+      )
+    )
+    const claimed = deliverable.filter((d) => claimedIds.has(d.id))
+    if (claimed.length === 0) {
+      return { success: true, data: { replayed: 0, skipped, deliveryIds: [] } }
+    }
+
+    try {
+      await queue.sendBatch(
+        claimed.map((d) => ({
+          body: {
+            webhookId: webhook.id,
+            eventPayload: d.event,
+            webhookUrl: webhook.url,
+            webhookSecret: webhook.secret,
+            webhookHeaders: (webhook.headers as Record<string, string> | null) ?? undefined,
+            maxRetries: normalizeRetryMaxRetries(webhook.retryMaxRetries),
+            timeout: webhook.retryTimeout,
+            tenantId: d.scope,
+          },
+        }))
+      )
+    } catch (err) {
+      for (const d of claimed) {
+        try {
+          await webhooksRepository.updateDelivery(
+            db,
+            d.id,
+            { status: d.status, nextRetryAt: null },
+            webhook.id
+          )
+        } catch {
+          // Best-effort restore; the row stays visible as pending.
+        }
+      }
+      return {
+        success: false,
+        error: {
+          code: 'QUEUE_UNAVAILABLE',
+          message: `Failed to enqueue replay: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      }
+    }
+
+    return {
+      success: true,
+      data: { replayed: claimed.length, skipped, deliveryIds: claimed.map((d) => d.id) },
     }
   },
 }

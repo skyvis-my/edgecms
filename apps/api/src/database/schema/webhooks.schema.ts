@@ -60,7 +60,7 @@ export const webhookDeliveries = sqliteTable(
     eventType: text('event_type').notNull(),
     /** JSON-serialised webhook event payload (includes before/after/metadata). */
     payload: text('payload', { mode: 'json' }).notNull().$type<Record<string, unknown>>(),
-    /** Delivery status: pending, delivered, or failed. */
+    /** Delivery status: pending, delivered, failed, or dead (dead-letter queue). */
     status: text('status').notNull().default('pending'),
     /** Number of delivery attempts made so far. */
     attempts: integer('attempts').notNull().default(0),
@@ -110,7 +110,7 @@ export const webhookOutbox = sqliteTable(
     tenantScope: text('tenant_scope').notNull().default('global'),
     /** Command that produced the event (nullable for non-command events). */
     commandId: text('command_id'),
-    /** Outbox status: pending, sent, or failed. */
+    /** Outbox status: pending, sent, or dead (after OUTBOX_MAX_ATTEMPTS relay failures). */
     status: text('status').notNull().default('pending'),
     /** Number of relay attempts made so far. */
     attempts: integer('attempts').notNull().default(0),

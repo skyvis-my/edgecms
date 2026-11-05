@@ -17,8 +17,12 @@ import type { WebhookQueueMessage } from './queue-producer'
  * - engine post-execution calls relayOutbox() with staleOnlyMs=60s as a
  *   best-effort opportunistic sweep (never touches fresh rows the producer
  *   listener is about to send, so no duplicate sends).
- * - a sweeper cron / admin relay endpoint (follow-up, not yet wired) calls
- *   relayOutbox() without staleOnlyMs to drain all due rows.
+ * - the Worker scheduled() cron (outbox-sweeper.ts) calls it per tenant
+ *   scope in bounded batches, also with staleOnlyMs=60s.
+ *
+ * Each claimed row is leased (conditional UPDATE) before it is sent, so
+ * overlapping relays send a row at most once. Failures back off
+ * exponentially with jitter; after OUTBOX_MAX_ATTEMPTS the row is 'dead'.
  *
  * Subscription resolution is injected via callback to avoid circular imports:
  * the producer passes (event) => buildMessagesForEvent(db, event).
@@ -33,7 +37,26 @@ export type ResolveOutboxMessages = (
 ) => Promise<WebhookQueueMessage[]>
 
 const RELAY_SEND_BATCH_SIZE = 100
-const RELAY_RETRY_DELAY_MS = 60_000
+/** Relay attempts before an outbox row moves to the terminal 'dead' state. */
+export const OUTBOX_MAX_ATTEMPTS = 8
+const OUTBOX_RETRY_BASE_MS = 60_000
+const OUTBOX_RETRY_MAX_MS = 60 * 60_000
+/** How long a relay holds a claimed row before another relay may take it. */
+const OUTBOX_LEASE_MS = 5 * 60_000
+
+/**
+ * Exponential backoff with equal jitter: the cap doubles per attempt from
+ * 60 s up to one hour, and the delay is uniform in [cap/2, cap].
+ */
+export function computeOutboxRetryDelayMs(attempt: number, random: () => number = Math.random): number {
+  const n = Number.isFinite(attempt) ? Math.max(1, Math.trunc(attempt)) : 1
+  const cap = Math.min(OUTBOX_RETRY_MAX_MS, OUTBOX_RETRY_BASE_MS * 2 ** Math.min(n - 1, 30))
+  const half = cap / 2
+  const r = Math.min(1, Math.max(0, random()))
+  return Math.floor(half + r * half)
+}
+
+export type OutboxRelayResult = { relayed: number; pending: number; dead: number }
 
 function toWebhookEvent(row: OutboxRow): WebhookEvent {
   const payload = (row.payload ?? {}) as {
@@ -56,46 +79,67 @@ function toWebhookEvent(row: OutboxRow): WebhookEvent {
 
 /**
  * Claim due outbox rows and send each through the queue. Marks rows sent on
- * success; on sendBatch failure leaves the row pending with +60s backoff.
+ * success; on sendBatch failure leaves the row pending with exponential
+ * backoff, or moves it to 'dead' once OUTBOX_MAX_ATTEMPTS is reached.
  * Never throws — per-row failures are contained.
  */
 export async function relayOutbox(
   db: Database,
   queue?: Queue<WebhookQueueMessage> | null,
   resolveMessages?: ResolveOutboxMessages | null,
-  opts?: { limit?: number; staleOnlyMs?: number }
-): Promise<{ relayed: number; pending: number }> {
-  if (!queue) return { relayed: 0, pending: 0 }
+  opts?: {
+    limit?: number
+    staleOnlyMs?: number
+    tenantScope?: string
+    maxAttempts?: number
+    /** Enabled webhook rows already loaded by the caller (sweeper prefetch). */
+    enabledWebhooks?: unknown[]
+  }
+): Promise<OutboxRelayResult> {
+  const empty = { relayed: 0, pending: 0, dead: 0 }
+  if (!queue) return empty
   let claimed: OutboxRow[]
   try {
     claimed = await outboxRepository.claimPending(db, opts?.limit ?? 20, {
       staleOnlyMs: opts?.staleOnlyMs,
+      tenantScope: opts?.tenantScope,
     })
   } catch (err) {
     logger.warn('webhook_outbox_claim_failed', {
       error: err instanceof Error ? err.message : String(err),
     })
-    return { relayed: 0, pending: 0 }
+    return empty
   }
-  if (claimed.length === 0) return { relayed: 0, pending: 0 }
+  if (claimed.length === 0) return empty
 
-  let enabledWebhooks: unknown[] | undefined
-  if (resolveMessages) {
-    try {
-      const chain = db
-        .select()
-        .from(webhooks)
-        .where(eq(webhooks.enabled, true)) as unknown as {
-        all?: () => Promise<unknown[]>
-      } & PromiseLike<unknown[]>
-      enabledWebhooks = typeof chain.all === 'function' ? await chain.all() : await chain
-    } catch {
-      // Best-effort prefetch; resolveMessages can fall back to querying if needed
-    }
+  let enabledWebhooks: unknown[] | undefined = opts?.enabledWebhooks
+  if (resolveMessages && !enabledWebhooks) {
+    enabledWebhooks = await loadEnabledWebhooks(db)
   }
 
+  const maxAttempts = opts?.maxAttempts ?? OUTBOX_MAX_ATTEMPTS
   let relayed = 0
+  let dead = 0
+  let skipped = 0
   for (const row of claimed) {
+    try {
+      const leased = await outboxRepository.lease(
+        db,
+        row.eventId,
+        new Date(Date.now() + OUTBOX_LEASE_MS).toISOString()
+      )
+      if (!leased) {
+        skipped++
+        continue
+      }
+    } catch (err) {
+      logger.warn('webhook_outbox_lease_failed', {
+        eventId: row.eventId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      skipped++
+      continue
+    }
     const event = toWebhookEvent(row)
     try {
       const messages = resolveMessages ? await resolveMessages(event, enabledWebhooks) : []
@@ -106,22 +150,50 @@ export async function relayOutbox(
       await outboxRepository.markSent(db, row.eventId)
       relayed++
     } catch (err) {
+      const attempt = (row.attempts ?? 0) + 1
       logger.warn('webhook_outbox_relay_failed', {
         eventId: row.eventId,
+        attempt,
         error: err instanceof Error ? err.message : String(err),
       })
       try {
-        await outboxRepository.markFailed(
-          db,
-          row.eventId,
-          new Date(Date.now() + RELAY_RETRY_DELAY_MS).toISOString()
-        )
+        if (attempt >= maxAttempts) {
+          await outboxRepository.markDead(db, row.eventId)
+          dead++
+          logger.error('webhook_outbox_row_dead', {
+            eventId: row.eventId,
+            tenantScope: row.tenantScope,
+            attempts: attempt,
+          })
+        } else {
+          await outboxRepository.markFailed(
+            db,
+            row.eventId,
+            new Date(Date.now() + computeOutboxRetryDelayMs(attempt)).toISOString()
+          )
+        }
       } catch {
-        // Best-effort backoff; row stays pending for the next sweep.
+        // Best-effort backoff; the lease expires and the row is retried.
       }
     }
   }
-  return { relayed, pending: claimed.length - relayed }
+  return { relayed, pending: claimed.length - relayed - dead - skipped, dead }
+}
+
+/** Prefetch enabled webhooks once per relay/sweep (best-effort). */
+export async function loadEnabledWebhooks(db: Database): Promise<unknown[] | undefined> {
+  try {
+    const chain = db
+      .select()
+      .from(webhooks)
+      .where(eq(webhooks.enabled, true)) as unknown as {
+      all?: () => Promise<unknown[]>
+    } & PromiseLike<unknown[]>
+    return typeof chain.all === 'function' ? await chain.all() : await chain
+  } catch {
+    // resolveMessages falls back to querying if needed.
+    return undefined
+  }
 }
 
 /**
@@ -153,7 +225,7 @@ export async function relayOutboxForCommand(
       await outboxRepository.markFailed(
         db,
         event.id,
-        new Date(Date.now() + RELAY_RETRY_DELAY_MS).toISOString()
+        new Date(Date.now() + computeOutboxRetryDelayMs(1)).toISOString()
       )
     } catch {
       // Best-effort backoff.

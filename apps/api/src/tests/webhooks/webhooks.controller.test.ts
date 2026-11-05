@@ -11,6 +11,7 @@ const mockWebhooksService = {
   testDelivery: vi.fn(),
   getDeliveries: vi.fn(),
   replayDelivery: vi.fn(),
+  replayDeliveries: vi.fn(),
 }
 
 vi.mock('cloudflare:workers', () => ({
@@ -100,6 +101,39 @@ describe('webhooksController', () => {
     )
     expect((await replay()).status).toBe(409)
     expect((await replay()).status).toBe(404)
+  })
+
+  it('POST /:webhookId/deliveries/replay bulk-replays with a bounded batch (DL-09)', async () => {
+    mockWebhooksService.replayDeliveries.mockResolvedValue({
+      success: true,
+      data: { replayed: 2, skipped: 0, deliveryIds: ['d1', 'd2'] },
+    })
+    const bulk = (body?: unknown) =>
+      app.handle(
+        new Request('http://localhost/api/admin/webhooks/w1/deliveries/replay', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        })
+      )
+
+    const ok = await bulk({ statuses: ['dead'], limit: 10 })
+    expect(ok.status).toBe(202)
+    expect(mockWebhooksService.replayDeliveries).toHaveBeenLastCalledWith(
+      expect.anything(),
+      undefined,
+      'w1',
+      undefined,
+      { statuses: ['dead'], limit: 10 }
+    )
+
+    const tooMany = await bulk({ limit: 51 })
+    expect(tooMany.status).toBeGreaterThanOrEqual(400)
+    expect(tooMany.status).toBeLessThan(500)
+    const badStatus = await bulk({ statuses: ['delivered'] })
+    expect(badStatus.status).toBeGreaterThanOrEqual(400)
+    expect(badStatus.status).toBeLessThan(500)
+    expect(mockWebhooksService.replayDeliveries).toHaveBeenCalledTimes(1)
   })
 
   it('POST / returns 201 on success and 400 on failure', async () => {

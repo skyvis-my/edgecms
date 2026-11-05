@@ -87,6 +87,7 @@ DELETE /api/tenants/:tenantSlug/admin/webhooks/:webhookId
 POST   /api/tenants/:tenantSlug/admin/webhooks/:webhookId/test
 GET    /api/tenants/:tenantSlug/admin/webhooks/:webhookId/deliveries?limit=50&offset=0
 POST   /api/tenants/:tenantSlug/admin/webhooks/:webhookId/deliveries/:deliveryId/replay
+POST   /api/tenants/:tenantSlug/admin/webhooks/:webhookId/deliveries/replay
 ```
 
 The same routes under `/api/admin/webhooks` manage **global** webhooks (`tenantId: "global"`).
@@ -150,7 +151,7 @@ Delivery requests also send `Content-Type: application/json` and `User-Agent: Ed
 
 ### Delivery log
 
-`GET .../:webhookId/deliveries` returns `{ deliveries, total }`. Each delivery row has `eventId`, `eventType`, `payload`, `status` (`pending`, `delivered`, `failed`), `attempts`, `lastAttemptAt`, `nextRetryAt`, `responseStatus` and the first 10 KB of `responseBody`. `limit` is capped at 100 by the repository. `total` is the number of rows in this page, not the overall count.
+`GET .../:webhookId/deliveries` returns `{ deliveries, total }`. Each delivery row has `eventId`, `eventType`, `payload`, `status` (`pending`, `delivered`, `failed`, `dead`), `attempts`, `lastAttemptAt`, `nextRetryAt`, `responseStatus` and the first 10 KB of `responseBody`. `limit` is capped at 100 by the repository. `total` is the number of rows in this page, not the overall count.
 
 ## Delivery
 
@@ -174,7 +175,11 @@ A failed attempt (non-`2xx`, network error or timeout) is retried with Cloudflar
 | 3 | 5–40 s |
 | 4 | 5–80 s |
 
-Each attempt updates one delivery row per `(eventId, webhookId)`: `pending` while retries remain, `failed` when they run out. The queue consumers in `apps/api/wrangler.toml` set `max_retries = 5`, `max_batch_size = 10` and `max_batch_timeout = 5`. No dead-letter queue is configured.
+Each attempt updates one delivery row per `(eventId, webhookId)`: `pending` while retries remain, `failed` when they run out. The queue consumers in `apps/api/wrangler.toml` set `max_retries = 5`, `max_batch_size = 10` and `max_batch_timeout = 5`.
+
+### Dead-letter queue
+
+Each environment's webhook queue names a dead-letter queue (`edgecms-webhook-dlq`, `-staging`, `-production`), and the API Worker consumes it. A message lands there when the consumer kept throwing before it could record a result, until Queues gave up. The dead-letter consumer makes no HTTP request. It re-reads the webhook, drops the message if the webhook is gone or in another scope, and otherwise sets the `(eventId, webhookId)` delivery row to `dead` (a `delivered` row is left alone). Create the dead-letter queues with `wrangler queues create` before the first deploy, like the main queues.
 
 ### Duplicates
 
@@ -184,12 +189,22 @@ Command events use the outbox row's event ID as `id` on both the live path and t
 
 ### Replay
 
-Replay today means re-sending outbox rows that never reached the queue:
+Outbox rows that never reached the queue are re-sent by `relayOutbox` (`apps/api/src/webhooks/outbox-relay.ts`):
 
-- After each successful command the engine starts a best-effort sweep (`relayOutbox`, `apps/api/src/webhooks/outbox-relay.ts`). It picks up to 20 `pending` outbox rows older than 60 seconds, resolves subscriptions fresh, sends them to the queue and marks them `sent`. A failed send leaves the row `pending` with a 60-second backoff.
-- A sweep that drains all due rows on a schedule, or from an admin route, is not wired yet. With no command traffic, orphaned rows wait for the next command.
+- **Scheduled sweep.** The API Worker has a `scheduled()` handler, and `apps/api/wrangler.toml` declares a one-minute cron trigger (`[triggers] crons = ["*/1 * * * *"]`, also under each env). Each tick (`apps/api/src/webhooks/outbox-sweeper.ts`) picks up to 25 tenant scopes with due `pending` rows older than 60 seconds, oldest backlog first, and relays up to 20 rows per scope and 200 per tick, so one busy tenant cannot hold up the others.
+- **After each command.** The engine also starts a best-effort sweep of up to 20 due rows older than 60 seconds.
+- **Lease.** Before sending, a relay sets the row's `next_attempt_at` five minutes ahead with a conditional update, and only the relay whose update matched sends it. Overlapping sweeps therefore send a row once; a relay that crashes mid-send releases the row when the lease ends.
+- **Backoff and dead rows.** A failed queue send leaves the row `pending` and backs off exponentially with jitter: a random delay between half and all of `min(1 h, 60 s × 2^(attempt − 1))` (30–60 s after the first failure, 1–2 min after the second, up to 30–60 min). After 8 failed attempts the row becomes `dead` and is not swept again.
 
-To re-send a delivery that ended as `failed`, call `POST .../:webhookId/deliveries/:deliveryId/replay` (same auth as the other webhook routes). It re-enqueues the stored event for the webhook's current URL, secret and headers, sets the delivery row back to `pending` and returns `202 { deliveryId, eventId, status: "pending" }`. The consumer then runs its usual scope, destination and retry checks. Errors: `404` for an unknown webhook or delivery (or one in another tenant), `409 CONFLICT` when the delivery is not `failed`, `400 VALIDATION_ERROR` for test deliveries or a payload with no matching scope, `503 QUEUE_UNAVAILABLE` when `WEBHOOK_QUEUE` is not bound. There is no bulk replay, and outbox rows are not dead-lettered: a row whose queue send keeps failing stays `pending` and is retried every 60 seconds by the next sweep.
+To re-send a delivery that ended as `failed` or `dead`, call `POST .../:webhookId/deliveries/:deliveryId/replay` (same auth as the other webhook routes). It re-enqueues the stored event for the webhook's current URL, secret and headers, sets the delivery row back to `pending` and returns `202 { deliveryId, eventId, status: "pending" }`. The consumer then runs its usual scope, destination and retry checks. Errors: `404` for an unknown webhook or delivery (or one in another tenant), `409 CONFLICT` when the delivery is not `failed` or `dead`, `400 VALIDATION_ERROR` for test deliveries or a payload with no matching scope, `503 QUEUE_UNAVAILABLE` when `WEBHOOK_QUEUE` is not bound.
+
+To re-send many at once, call `POST .../:webhookId/deliveries/replay` with an optional body:
+
+```json
+{ "statuses": ["dead", "failed"], "limit": 50 }
+```
+
+`statuses` defaults to both; `limit` is `1`–`50` (default `50`). It takes that webhook's oldest matching deliveries (test deliveries excluded), moves them to `pending` with a conditional update, and sends only the rows it moved in one queue batch, so a second request while the first is in flight finds nothing to replay. Rows whose stored payload is not in the webhook's scope are skipped. It returns `202 { replayed, skipped, deliveryIds }`. Same auth as the single replay (tenant owner or admin); `404` for a webhook in another tenant, `503 QUEUE_UNAVAILABLE` when the queue is not bound or the send fails (the rows go back to their previous status).
 
 ## Destination Policy
 

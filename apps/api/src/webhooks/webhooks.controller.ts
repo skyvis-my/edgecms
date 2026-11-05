@@ -3,6 +3,7 @@ import { isSuperAdminUser } from '@/auth/super-admin'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
 import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import { parseAllowedWebhookHosts } from './webhook-destination-policy'
+import { MAX_BULK_REPLAY } from './webhook-replay-policy'
 import { webhooksService } from './webhooks.service'
 import { toServiceResponse } from '@/shared/utils/service-response'
 
@@ -178,6 +179,40 @@ export const webhooksController = new Elysia({ prefix: '/api/admin/webhooks' })
         params.webhookId,
         params.deliveryId,
         tenantCtx?.tenant.id
+      )
+      return toServiceResponse(set, result, {
+        successStatus: 202,
+        errorStatusMap: { QUEUE_UNAVAILABLE: 503 },
+      })
+    }
+  )
+
+  /**
+   * POST /:webhookId/deliveries/replay — Bulk re-enqueue dead/failed
+   * deliveries of one webhook (max MAX_BULK_REPLAY per call). Owner/admin
+   * only via the TenantAdminWebhooks mutation guard.
+   */
+  .post(
+    '/:webhookId/deliveries/replay',
+    {
+      auth: true,
+      body: t.Optional(
+        t.Object({
+          statuses: t.Optional(
+            t.Array(t.Union([t.Literal('failed'), t.Literal('dead')]), { minItems: 1, maxItems: 2 })
+          ),
+          limit: t.Optional(t.Integer({ minimum: 1, maximum: MAX_BULK_REPLAY })),
+        })
+      ),
+    },
+    async ({ db, params, body, set, tenantCtx, workerEnv }) => {
+      const queue = (workerEnv as { WEBHOOK_QUEUE?: Queue }).WEBHOOK_QUEUE
+      const result = await webhooksService.replayDeliveries(
+        db,
+        queue,
+        params.webhookId,
+        tenantCtx?.tenant.id,
+        { statuses: body?.statuses, limit: body?.limit }
       )
       return toServiceResponse(set, result, {
         successStatus: 202,
