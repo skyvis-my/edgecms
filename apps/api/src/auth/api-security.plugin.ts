@@ -24,9 +24,18 @@ import type { TenantRateLimitResolver } from '@/host/rate-limits'
 import {
   type ActorRole,
   type TenantActorRole,
+  asTenantActorRole,
   resolveActorSessionDetails,
-  resolveTenantRoleForActor,
+  resolveTenantMembershipRole,
 } from './rbac'
+import {
+  builtInContentAccess,
+  createContentAccess,
+  FULL_CONTENT_ACCESS,
+  NO_CONTENT_ACCESS,
+  setRequestContentAccess,
+} from './content-access'
+import type { DbPermission } from './authorization'
 import { rbacService } from './rbac.service'
 import { hasSuperAdminRole, isSuperAdminEmail, parseSuperAdminEmails } from './super-admin'
 import { isSuperAdminMissingMfa, MFA_REQUIRED_CODE, MFA_REQUIRED_MESSAGE } from './mfa'
@@ -333,9 +342,11 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
           const tenantObj = await tenantPromise
           tenantId = tenantObj?.id
 
+          // Cache the stored role (built-in or custom name): the tenant
+          // middleware treats any cached role as membership.
           let rolePromise = getCachedMembership(ctx.request, actorId, tenantSlug)
           if (!rolePromise) {
-            rolePromise = resolveTenantRoleForActor(typedEnv.DB, actorId, tenantSlug).then(
+            rolePromise = resolveTenantMembershipRole(typedEnv.DB, actorId, tenantSlug).then(
               (r) => r ?? null
             )
             setCachedMembership(ctx.request, actorId, tenantSlug, rolePromise)
@@ -344,7 +355,8 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
             }
           }
           const roleResult = await rolePromise
-          tenantRole = roleResult ? (roleResult as TenantActorRole) : undefined
+          tenantRole = asTenantActorRole(roleResult)
+          fastCustomRole = roleResult && !tenantRole ? roleResult : undefined
         }
 
         const principal = {
@@ -359,31 +371,42 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
         }
 
         let authorization = authorizeApiRequest({ pathname, method, principal })
-        if (!authorization.allowed && authorization.code === 'FORBIDDEN' && tenantId && db) {
-          // DB permissions are additive grants over role abilities. A deny from
-          // role claims alone may still be allowed by a custom grant, so fetch
-          // once and re-evaluate. Custom role names always need this lookup;
-          // the common allow case stays at zero D1 reads.
-          const roleForPerms = fastCustomRole ?? (!fastActor ? tenantRole : undefined)
-          if (roleForPerms) {
-            const permissionsResult = await rbacService.getEffectivePermissions(
-              db,
-              tenantId,
-              roleForPerms
-            )
-            if (permissionsResult.success) {
-              authorization = authorizeApiRequest({
-                pathname,
-                method,
-                principal,
-                customPermissions: permissionsResult.data,
-              })
-            }
-          }
+        // Stored grants of a custom role (PL-03). Built-in roles use the static
+        // abilities above, so the common case stays at zero D1 reads.
+        const customRole = fastCustomRole
+        let customPermissions: Promise<DbPermission[]> | undefined
+        const loadCustomPermissions = (): Promise<DbPermission[]> => {
+          if (!customRole || !tenantId || !db) return Promise.resolve([])
+          customPermissions ??= rbacService
+            .getEffectivePermissions(db, tenantId, customRole)
+            .then((result) => (result.success ? result.data : []))
+          return customPermissions
+        }
+        if (!authorization.allowed && authorization.code === 'FORBIDDEN' && customRole && tenantId && db) {
+          // DB permissions are additive grants over role abilities: a deny from
+          // role claims alone may still be allowed by a custom grant.
+          authorization = authorizeApiRequest({
+            pathname,
+            method,
+            principal,
+            customPermissions: await loadCustomPermissions(),
+          })
         }
         if (!authorization.allowed) {
           ctx.set.status = authorization.status
           return createErrorEnvelope(authorization.code, authorization.message)
+        }
+
+        // PL-03: hand the caller's per-collection content access to handlers
+        // and the command engine (resolved lazily, at most once).
+        if (tenantId && actorId) {
+          const isSuperAdmin = principal.isSuperAdmin || principal.isSuperAdminByEmail
+          setRequestContentAccess(ctx.request, async () => {
+            if (isSuperAdmin) return FULL_CONTENT_ACCESS
+            if (tenantRole) return builtInContentAccess(tenantRole)
+            if (customRole) return createContentAccess(await loadCustomPermissions())
+            return NO_CONTENT_ACCESS
+          })
         }
 
         // HS-11: deployment-wide MFA requirement for super-admins on every

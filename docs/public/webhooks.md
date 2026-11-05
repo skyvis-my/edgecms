@@ -90,7 +90,7 @@ GET    /api/tenants/:tenantSlug/admin/webhooks/:webhookId/deliveries?limit=50&of
 
 The same routes under `/api/admin/webhooks` manage **global** webhooks (`tenantId: "global"`).
 
-Auth: every route needs a signed-in user. Writes need a role that can write to the admin API (tenant editor, admin or owner). The built-in `webhooks:*` permission for admins is not used by the route checks today, so editors can also manage webhooks. See [auth and access](auth-and-access.md).
+Auth: every route needs a signed-in user. Reading, creating, changing, testing and deleting webhooks, and reading delivery logs, need a tenant owner or admin (global routes: global admin), or a custom role with a `TenantAdminWebhooks` or `webhooks:*` grant. Editors and members get `403`. `GET .../webhooks/signing` only describes the signature scheme and is open to any role that can read the admin API. See [auth and access](auth-and-access.md).
 
 Create body (`POST`):
 

@@ -101,7 +101,7 @@ describe('authorizeApiRequest', () => {
 
   it('forbids global admin reads for viewer role', () => {
     const decision = authorizeApiRequest({
-      pathname: '/api/admin/webhooks',
+      pathname: '/api/admin/collections',
       method: 'GET',
       principal: {
         actorId: 'user-1',
@@ -119,7 +119,7 @@ describe('authorizeApiRequest', () => {
 
   it('allows global admin reads for editor role', () => {
     const decision = authorizeApiRequest({
-      pathname: '/api/admin/webhooks',
+      pathname: '/api/admin/collections',
       method: 'GET',
       principal: {
         actorId: 'user-1',
@@ -283,7 +283,7 @@ describe('authorizeApiRequest', () => {
 
   it('forbids tenant admin reads for tenant viewer role', () => {
     const decision = authorizeApiRequest({
-      pathname: '/api/tenants/acme/api/admin/webhooks',
+      pathname: '/api/tenants/acme/api/admin/collections',
       method: 'GET',
       principal: {
         actorId: 'user-1',

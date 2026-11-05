@@ -1,5 +1,6 @@
 import { schemaSnapshotsRepository } from '@/collections/schema-snapshots.repository'
 import type { CommandContext } from '@/commands/engine'
+import type { ContentAccess } from '@/auth/content-access'
 import type { Database } from '@/database/db'
 import { entriesRepository } from '@/entries/entries.repository'
 import type { CommandEnvelope, CommandResult } from '@edgecms/schemas/commands'
@@ -138,6 +139,8 @@ export async function executeSyncPushCommands(params: {
   syncChannel: string
   executeCommandFn: ExecuteCommandFn
   findEntryByIdFn?: FindEntryByIdFn
+  /** PL-03: the caller's per-collection content access, checked per command. */
+  contentAccess?: ContentAccess
 }): Promise<SyncPushResult[]> {
   const { commands, userId, db, kv, syncChannel, executeCommandFn } = params
   const findEntryByIdFn = params.findEntryByIdFn ?? entriesRepository.findById
@@ -162,6 +165,7 @@ export async function executeSyncPushCommands(params: {
           actor: enrichedCommand.actor,
           kv,
           syncChannel,
+          ...(params.contentAccess && { contentAccess: params.contentAccess }),
         },
         enrichedCommand
       )

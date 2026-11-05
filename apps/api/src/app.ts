@@ -11,7 +11,7 @@ import {
   getAuthRevision,
   getPermissionRevision,
 } from '@/auth/auth-revision'
-import { resolveActorSessionDetails, resolveTenantRoleForActor } from '@/auth/rbac'
+import { resolveActorSessionDetails, resolveTenantMembershipRole } from '@/auth/rbac'
 import {
   createSignedCsrfToken,
   formatCsrfCookieHeader,
@@ -279,7 +279,7 @@ export const createApp = (options: CreateAppOptions = {}) => {
             tid = tenantResult.data.id
             tsl = tenantResult.data.slug
             tenantRequiresMfa = tenantResult.data.requireMfa === true
-            trl = await resolveTenantRoleForActor(typedEnv.DB, actor.actorId, tsl)
+            trl = await resolveTenantMembershipRole(typedEnv.DB, actor.actorId, tsl)
             if (!trl) {
               set.status = 403
               return createErrorEnvelope('FORBIDDEN', 'Tenant membership required')

@@ -1,4 +1,5 @@
 import type { CommandContext } from '@/commands/engine'
+import type { ContentAccess } from '@/auth/content-access'
 import { executeCommand } from '@/commands/engine'
 import { collectionsRepository } from '@/collections/collections.repository'
 import type { CollectionRow } from '@/collections/collections.repository'
@@ -461,7 +462,8 @@ export const aiImportService = {
     suggestionSetId: string,
     userId: string,
     tenantId?: string,
-    requestMeta?: CommandContext['requestMeta']
+    requestMeta?: CommandContext['requestMeta'],
+    contentAccess?: ContentAccess
   ) {
     const suggestionSet = await aiImportsRepository.findSuggestionSet(db, suggestionSetId, tenantId)
     if (!suggestionSet) throw new Error('Suggestion set was not found')
@@ -480,6 +482,7 @@ export const aiImportService = {
       actor: { userId, source: 'ai' },
       tenantScope: tenantId,
       requestMeta,
+      contentAccess,
     }
     const results: CommandResult[] = []
     for (const command of commands) {
@@ -502,7 +505,8 @@ export const aiImportService = {
     dryRunHash: string,
     userId: string,
     tenantId?: string,
-    requestMeta?: CommandContext['requestMeta']
+    requestMeta?: CommandContext['requestMeta'],
+    contentAccess?: ContentAccess
   ) {
     const suggestionSet = await aiImportsRepository.findSuggestionSet(db, suggestionSetId, tenantId)
     if (!suggestionSet) throw new Error('Suggestion set was not found')
@@ -523,6 +527,7 @@ export const aiImportService = {
       actor: { userId, source: 'ai' },
       tenantScope: tenantId,
       requestMeta,
+      contentAccess,
     }
     const results: CommandResult[] = []
     for (const command of commands) {

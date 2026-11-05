@@ -15,6 +15,7 @@ export type AuthorizationSubject =
   | 'TenantAdminWebhooks'
   | 'GlobalAdminAssetsHardDelete'
   | 'TenantAdminAssetsHardDelete'
+  | 'TenantContent'
   | 'collection:*'
   | 'collection'
   | 'entry'
@@ -100,6 +101,28 @@ function isRolesMutationPath(pathname: string, method: string): boolean {
   )
 }
 
+/**
+ * PL-03: tenant content routes (entry CRUD, versions and commands). The guard
+ * checks the coarse `TenantContent` ability; handlers and the command engine
+ * then check per-collection grants (see `content-access.ts`).
+ */
+const TENANT_CONTENT_PATH = /^\/api\/tenants\/[^/]+\/api\/admin\/(?:entries|commands)(?:\/|$)/
+
+function isTenantContentPath(pathname: string): boolean {
+  return TENANT_CONTENT_PATH.test(pathname)
+}
+
+/** Webhook configuration and delivery reads (not the static `/signing` doc). */
+function isWebhooksReadPath(pathname: string, method: string): boolean {
+  if (method !== 'GET' && method !== 'HEAD') return false
+  const match =
+    /^\/api\/admin\/webhooks(\/.*)?$/.exec(pathname) ??
+    /^\/api\/tenants\/[^/]+\/api\/admin\/webhooks(\/.*)?$/.exec(pathname)
+  if (!match) return false
+  const rest = match[1] ?? ''
+  return rest !== '/signing' && rest !== '/signing/'
+}
+
 function isWebhooksMutationPath(pathname: string, method: string): boolean {
   if (SAFE_METHODS.has(method)) return false
   return (
@@ -156,6 +179,25 @@ function resolveRequirement(
       subject: isTenant ? 'TenantAdminWebhooks' : 'GlobalAdminWebhooks',
       unauthenticatedMessage: 'Authentication required',
       forbiddenMessage: isTenant ? 'Tenant owner or admin access required' : 'Admin access required',
+    }
+  }
+
+  if (isWebhooksReadPath(pathname, method)) {
+    const isTenant = isTenantScopedPath(pathname)
+    return {
+      action: 'read',
+      subject: isTenant ? 'TenantAdminWebhooks' : 'GlobalAdminWebhooks',
+      unauthenticatedMessage: 'Authentication required',
+      forbiddenMessage: isTenant ? 'Tenant owner or admin access required' : 'Admin access required',
+    }
+  }
+
+  if (isTenantContentPath(pathname) && method !== 'OPTIONS') {
+    return {
+      action: SAFE_METHODS.has(method) ? 'read' : 'mutate',
+      subject: 'TenantContent',
+      unauthenticatedMessage: 'Authentication required',
+      forbiddenMessage: 'Insufficient role',
     }
   }
 
@@ -251,6 +293,8 @@ export function createAuthorizationAbility(
   ) {
     can('mutate', 'TenantAdminApi')
     can('read', 'TenantAdminApi')
+    can('mutate', 'TenantContent')
+    can('read', 'TenantContent')
     can('read', 'TenantAdminUsers')
     can('read', 'TenantAdminAudit')
     can('manage', 'TenantAdminRoles')
@@ -261,24 +305,41 @@ export function createAuthorizationAbility(
   if (principal.tenantRole === 'editor') {
     can('mutate', 'TenantAdminApi')
     can('read', 'TenantAdminApi')
+    can('mutate', 'TenantContent')
+    can('read', 'TenantContent')
   }
 
   if (principal.tenantRole === 'member') {
     can('read', 'TenantAdminApi')
+    can('read', 'TenantContent')
   }
 
   // Apply custom permissions from database
   if (customPermissions && customPermissions.length > 0) {
     for (const perm of customPermissions) {
-      const subject = mapDbSubjectToAuthorizationSubject(perm.subject)
       const action = mapDbActionToAuthorizationAction(perm.action)
-      if (subject && action) {
+      if (!action) continue
+      for (const subject of mapDbSubjectToAuthorizationSubjects(perm.subject)) {
         can(action, subject)
       }
     }
   }
 
   return build()
+}
+
+/**
+ * Map a stored permission subject to the guard subjects it grants. Entry
+ * grants (and `TenantAdminApi`, `*:*`) also open the content routes; the
+ * per-collection check happens in handlers and the command engine.
+ */
+function mapDbSubjectToAuthorizationSubjects(dbSubject: string): AuthorizationSubject[] {
+  const subject = mapDbSubjectToAuthorizationSubject(dbSubject)
+  if (!subject) return []
+  if (subject === 'TenantAdminApi' || subject === 'entry' || dbSubject === '*:*') {
+    return [subject, 'TenantContent']
+  }
+  return [subject]
 }
 
 /** Map database permission subject to authorization subject. */
