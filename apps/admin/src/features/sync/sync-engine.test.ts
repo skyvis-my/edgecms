@@ -21,7 +21,10 @@ const mockCommandQueueItems: Array<{
   status: string
   createdAt: string
   tenantSlug?: string
+  base?: { version: number; slug?: string; data: Record<string, unknown> }
 }> = []
+const mockQueueDelete = vi.fn().mockResolvedValue(undefined)
+const mockCollectionGet = vi.fn().mockResolvedValue(undefined)
 const mockUpdate = vi.fn().mockResolvedValue(1)
 const mockPut = vi.fn().mockResolvedValue(undefined)
 const mockDelete = vi.fn().mockResolvedValue(undefined)
@@ -43,8 +46,10 @@ vi.mock('./local-db', () => ({
         })),
       })),
       update: (...args: unknown[]) => mockUpdate(...args),
+      delete: (...args: unknown[]) => mockQueueDelete(...args),
     },
     collections: {
+      get: (...args: unknown[]) => mockCollectionGet(...args),
       bulkPut: (...args: unknown[]) => mockBulkPut(...args),
       bulkDelete: (...args: unknown[]) => mockBulkDelete(...args),
       put: (...args: unknown[]) => mockPut(...args),
@@ -87,7 +92,7 @@ describe('pushPendingCommands', () => {
   it('returns zero summary when no pending commands', async () => {
     const result = await pushPendingCommands()
 
-    expect(result).toEqual({ synced: 0, conflicted: 0, failed: 0 })
+    expect(result).toEqual({ synced: 0, conflicted: 0, failed: 0, merged: 0 })
     expect(mockedEdenPostForTenant).not.toHaveBeenCalled()
   })
 
@@ -155,6 +160,122 @@ describe('pushPendingCommands', () => {
         error: 'Version mismatch',
       })
     )
+  })
+
+  describe('three-way merge on version conflict (OF-04)', () => {
+    const conflictResult = (data: Record<string, unknown>, version = 5, slug = 'post') => ({
+      results: [
+        {
+          index: 0,
+          status: 'conflict',
+          serverState: {
+            entry: { id: 'e1', collectionId: 'c1', slug, version, data },
+            version,
+            conflictingFields: Object.keys(data),
+          },
+          error: { code: 'VERSION_CONFLICT', message: 'Expected version 3 but found 5' },
+        },
+      ],
+    })
+
+    const queueUpdate = (id: number, data: Record<string, unknown>) =>
+      mockCommandQueueItems.push({
+        id,
+        envelope: {
+          type: 'updateEntry',
+          payload: { entryId: 'e1', slug: 'post', data },
+          optimisticVersion: 3,
+        },
+        status: 'pending',
+        createdAt: '2026-01-15T10:00:00.000Z',
+        base: {
+          version: 3,
+          slug: 'post',
+          data: { title: { en: 'Hi', ms: 'Hai' }, body: 'b' },
+        },
+      })
+
+    it('rebases a non-overlapping update onto the server version and re-queues it', async () => {
+      mockCollectionGet.mockResolvedValueOnce({
+        id: 'c1',
+        fields: [
+          { name: 'title', localizable: true },
+          { name: 'body', localizable: false },
+        ],
+      })
+      queueUpdate(7, { title: { en: 'Hi there', ms: 'Hai' }, body: 'b' })
+      mockedEdenPostForTenant.mockResolvedValueOnce(
+        conflictResult({ title: { en: 'Hi', ms: 'Hai semua' }, body: 'b' })
+      )
+
+      const result = await pushPendingCommands()
+
+      expect(result).toEqual({ synced: 0, conflicted: 0, failed: 0, merged: 1 })
+      expect(mockUpdate).toHaveBeenCalledWith(
+        7,
+        expect.objectContaining({
+          status: 'pending',
+          envelope: expect.objectContaining({
+            optimisticVersion: 5,
+            payload: {
+              entryId: 'e1',
+              slug: 'post',
+              data: { title: { en: 'Hi there', ms: 'Hai semua' }, body: 'b' },
+            },
+          }),
+          base: { version: 5, slug: 'post', data: { title: { en: 'Hi', ms: 'Hai semua' }, body: 'b' } },
+        })
+      )
+      expect(mockUpdate).not.toHaveBeenCalledWith(7, expect.objectContaining({ status: 'conflicted' }))
+    })
+
+    it('keeps the row conflicted when the same locale changed on both sides', async () => {
+      mockCollectionGet.mockResolvedValueOnce({
+        id: 'c1',
+        fields: [{ name: 'title', localizable: true }],
+      })
+      queueUpdate(8, { title: { en: 'Mine', ms: 'Hai' }, body: 'b' })
+      mockedEdenPostForTenant.mockResolvedValueOnce(
+        conflictResult({ title: { en: 'Theirs', ms: 'Hai' }, body: 'b' })
+      )
+
+      const result = await pushPendingCommands()
+
+      expect(result.conflicted).toBe(1)
+      expect(result.merged).toBe(0)
+      expect(mockUpdate).toHaveBeenCalledWith(8, expect.objectContaining({ status: 'conflicted' }))
+    })
+
+    it('folds compacted rows into one conflicted row for review', async () => {
+      queueUpdate(9, { title: { en: 'Mine 1', ms: 'Hai' }, body: 'b' })
+      queueUpdate(10, { title: { en: 'Mine 2', ms: 'Hai' }, body: 'b' })
+      mockedEdenPostForTenant.mockResolvedValueOnce(conflictResult({ title: 'server', body: 'b' }))
+
+      await pushPendingCommands()
+
+      expect(mockQueueDelete).toHaveBeenCalledWith(10)
+      expect(mockUpdate).toHaveBeenCalledWith(
+        9,
+        expect.objectContaining({
+          envelope: expect.objectContaining({
+            payload: expect.objectContaining({ data: { title: { en: 'Mine 2', ms: 'Hai' }, body: 'b' } }),
+          }),
+        })
+      )
+      expect(mockUpdate).toHaveBeenCalledWith(9, expect.objectContaining({ status: 'conflicted' }))
+    })
+
+    it('marks the row synced when the server already holds the merged result', async () => {
+      queueUpdate(11, { title: { en: 'Hi', ms: 'Hai' }, body: 'b' })
+      mockedEdenPostForTenant.mockResolvedValueOnce(
+        conflictResult({ title: { en: 'Hi', ms: 'Hai' }, body: 'server body' })
+      )
+
+      const result = await pushPendingCommands()
+
+      expect(result.merged).toBe(1)
+      expect(mockUpdate).toHaveBeenCalledWith(11, expect.objectContaining({ status: 'synced' }))
+    })
   })
 
   it('coalesces consecutive updateEntry commands for the same entry', async () => {
@@ -695,7 +816,7 @@ describe('sync', () => {
 
     const result = await sync()
 
-    expect(result.push).toEqual({ synced: 0, conflicted: 0, failed: 0 })
+    expect(result.push).toEqual({ synced: 0, conflicted: 0, failed: 0, merged: 0 })
     expect(result.pull).toEqual({ changesApplied: 0, newCursor: 0 })
   })
 })

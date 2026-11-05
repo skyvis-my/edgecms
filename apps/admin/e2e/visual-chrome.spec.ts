@@ -933,3 +933,120 @@ for (const viewport of [
     expect(fs.statSync(screenshotPath).size).toBeGreaterThan(1000)
   })
 }
+
+// OF-04: field-level conflict review with per-locale merge and overwrite confirmation.
+async function seedFieldConflict(page: Page) {
+  await page.evaluate(async () => {
+    await new Promise<void>((resolve, reject) => {
+      const open = indexedDB.open('edgecms')
+      open.onerror = () => reject(open.error)
+      open.onsuccess = () => {
+        const tx = open.result.transaction(['commandQueue', 'collections'], 'readwrite')
+        const now = new Date().toISOString()
+        tx.objectStore('collections').put({
+          id: 'col-of04',
+          name: 'Articles',
+          slug: 'articles',
+          singleton: false,
+          fields: [
+            { name: 'title', type: 'text', required: true, localizable: true },
+            { name: 'summary', type: 'text', required: false, localizable: false },
+            { name: 'body', type: 'richtext', required: false, localizable: false },
+          ],
+          defaultLocale: 'en',
+          supportedLocales: ['en', 'ms'],
+          createdAt: now,
+          updatedAt: now,
+        })
+        tx.objectStore('commandQueue').add({
+          envelope: {
+            type: 'updateEntry',
+            payload: {
+              entryId: 'entry-of04',
+              slug: 'harbour-guide',
+              data: {
+                title: { en: 'Harbour guide: night ferries', ms: 'Panduan pelabuhan' },
+                summary: 'Updated timetable for the late crossings.',
+                body: 'Ferries leave every 20 minutes after 9pm.',
+              },
+            },
+            optimisticVersion: 3,
+            actor: { userId: 'local', source: 'admin' },
+            timestamp: now,
+          },
+          base: {
+            version: 3,
+            slug: 'harbour-guide',
+            data: {
+              title: { en: 'Harbour guide', ms: 'Panduan pelabuhan' },
+              summary: 'Timetable for the crossings.',
+              body: 'Ferries leave every 30 minutes.',
+            },
+          },
+          serverState: {
+            entry: {
+              id: 'entry-of04',
+              collectionId: 'col-of04',
+              slug: 'harbour-guide',
+              status: 'draft',
+              version: 5,
+              data: {
+                title: { en: 'Harbour guide (2026)', ms: 'Panduan pelabuhan (2026)' },
+                summary: 'Timetable for the crossings.',
+                body: 'Ferries leave every 15 minutes in summer.',
+              },
+            },
+            version: 5,
+            conflictingFields: ['title', 'summary', 'body'],
+          },
+          error: 'Expected version 3 but found 5',
+          tenantSlug: 'acme',
+          status: 'conflicted',
+          createdAt: now,
+        })
+        tx.oncomplete = () => {
+          open.result.close()
+          resolve()
+        }
+        tx.onerror = () => reject(tx.error)
+      }
+    })
+  })
+}
+
+for (const viewport of [
+  { name: 'desktop', width: 1280, height: 900 },
+  { name: 'mobile-375', width: 375, height: 812 },
+]) {
+  test(`visual: OF-04 conflict review lists only overlapping fields and confirms overwrites (${viewport.name})`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await page.goto('/tenants/acme/sync')
+    await expect(page.getByRole('heading', { name: 'Sync Conflicts' })).toBeVisible()
+    await seedFieldConflict(page)
+    await page.reload()
+
+    await page.getByRole('button', { name: 'Review' }).click()
+    const dialog = page.getByTestId('conflict-resolver')
+    await expect(dialog).toBeVisible()
+    // title.en and body overlap; title.ms (theirs) and summary (mine) merge automatically.
+    await expect(dialog.getByTestId('conflict-field')).toHaveCount(2)
+    await expect(dialog.getByText(/2 other changes were merged automatically/)).toBeVisible()
+    await expectNoHorizontalPageScroll(page, viewport.width)
+    await page.screenshot({
+      path: path.join(SNAPSHOT_DIR, `of04-conflict-review-${viewport.name}.png`),
+      animations: 'disabled',
+    })
+
+    await dialog
+      .locator('[data-conflict-key="title@en"]')
+      .getByText('Keep mine')
+      .click()
+    await dialog.getByRole('button', { name: /Save, overwriting 1 server value/ }).click()
+    const confirm = dialog.getByRole('alertdialog')
+    await expect(confirm.getByText('Overwrite server version 5?')).toBeVisible()
+    await expect(confirm.getByRole('button', { name: 'Overwrite and sync' })).toBeFocused()
+    const screenshotPath = path.join(SNAPSHOT_DIR, `of04-conflict-confirm-${viewport.name}.png`)
+    await page.screenshot({ path: screenshotPath, animations: 'disabled' })
+    expect(fs.statSync(screenshotPath).size).toBeGreaterThan(1000)
+  })
+}
