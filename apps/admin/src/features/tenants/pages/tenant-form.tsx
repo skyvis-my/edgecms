@@ -50,6 +50,7 @@ import { triggerSync } from '@/features/sync/sync-scheduler'
 import { CANONICAL_LOCALES } from '@/lib/locales'
 import { slugify } from '@/lib/slugify'
 import { cn } from '@/lib/utils'
+import { TenantDeleteDialog } from '../components/tenant-delete-dialog'
 import {
   TENANT_USER_ROLES,
   TENANT_STATUSES,
@@ -58,7 +59,6 @@ import {
   type TenantUserRole,
   useAddTenantUser,
   useCreateTenant,
-  useDeleteTenant,
   useRemoveTenantUser,
   useUpdateTenant,
   useUpdateTenantUserRole,
@@ -117,7 +117,6 @@ export function TenantForm({ tenant, mode }: TenantFormProps) {
   const navigate = useNavigate()
   const createMutation = useCreateTenant()
   const updateMutation = useUpdateTenant()
-  const deleteMutation = useDeleteTenant()
   const addUserMutation = useAddTenantUser()
   const removeUserMutation = useRemoveTenantUser()
   const updateRoleMutation = useUpdateTenantUserRole()
@@ -264,21 +263,6 @@ export function TenantForm({ tenant, mode }: TenantFormProps) {
     } catch (error) {
       logger.error('Remove user error:', error)
       toast.error('Failed to remove user')
-    }
-  }
-
-  const handleDeleteTenant = async () => {
-    if (!tenant) return
-
-    try {
-      await deleteMutation.mutateAsync(tenant.slug)
-      toast.success('Tenant deleted successfully')
-      navigate({ to: '/admin/tenants' })
-    } catch (error) {
-      logger.error('Delete tenant error:', error)
-      toast.error('Failed to delete tenant')
-    } finally {
-      setShowDeleteConfirm(false)
     }
   }
 
@@ -659,7 +643,8 @@ export function TenantForm({ tenant, mode }: TenantFormProps) {
             <CardHeader>
               <CardTitle className='text-red-600'>Danger Zone</CardTitle>
               <CardDescription>
-                Permanently delete this tenant and all its associated data.
+                Delete this tenant and all its data. You request deletion, download an export,
+                then type the tenant slug to confirm.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -667,9 +652,8 @@ export function TenantForm({ tenant, mode }: TenantFormProps) {
                 type='button'
                 variant='destructive'
                 onClick={() => setShowDeleteConfirm(true)}
-                disabled={deleteMutation.isPending}
               >
-                {deleteMutation.isPending ? 'Deleting...' : 'Delete Tenant'}
+                Delete Tenant
               </Button>
             </CardContent>
           </Card>
@@ -712,27 +696,15 @@ export function TenantForm({ tenant, mode }: TenantFormProps) {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Delete Tenant Confirmation Dialog */}
-      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Tenant</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to permanently delete &quot;{tenant?.name}&quot;? This action
-              cannot be undone. All tenant data, users, and resources will be removed.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteTenant}
-              className='bg-red-600 hover:bg-red-700'
-            >
-              Delete Permanently
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* Delete Tenant: HS-09 request -> export -> typed confirmation */}
+      {tenant && (
+        <TenantDeleteDialog
+          open={showDeleteConfirm}
+          onOpenChange={setShowDeleteConfirm}
+          tenant={tenant}
+          onDeleted={() => navigate({ to: '/admin/tenants' })}
+        />
+      )}
     </>
   )
 }
