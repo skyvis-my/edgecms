@@ -10,6 +10,7 @@ const mockWebhooksService = {
   deleteById: vi.fn(),
   testDelivery: vi.fn(),
   getDeliveries: vi.fn(),
+  replayDelivery: vi.fn(),
 }
 
 vi.mock('cloudflare:workers', () => ({
@@ -72,6 +73,33 @@ describe('webhooksController', () => {
       expect.anything(),
       { allowTenantLifecycleEvents: true }
     )
+  })
+
+  it('POST /:webhookId/deliveries/:deliveryId/replay returns 202 and maps errors (DL-09)', async () => {
+    mockWebhooksService.replayDelivery
+      .mockResolvedValueOnce({
+        success: true,
+        data: { deliveryId: 'd1', eventId: 'e1', status: 'pending' },
+      })
+      .mockResolvedValueOnce({ success: false, error: { code: 'CONFLICT', message: 'done' } })
+      .mockResolvedValueOnce({ success: false, error: { code: 'NOT_FOUND', message: 'missing' } })
+    const replay = () =>
+      app.handle(
+        new Request('http://localhost/api/admin/webhooks/w1/deliveries/d1/replay', {
+          method: 'POST',
+        })
+      )
+
+    expect((await replay()).status).toBe(202)
+    expect(mockWebhooksService.replayDelivery).toHaveBeenLastCalledWith(
+      expect.anything(),
+      undefined,
+      'w1',
+      'd1',
+      undefined
+    )
+    expect((await replay()).status).toBe(409)
+    expect((await replay()).status).toBe(404)
   })
 
   it('POST / returns 201 on success and 400 on failure', async () => {

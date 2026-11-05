@@ -86,6 +86,7 @@ PUT    /api/tenants/:tenantSlug/admin/webhooks/:webhookId
 DELETE /api/tenants/:tenantSlug/admin/webhooks/:webhookId
 POST   /api/tenants/:tenantSlug/admin/webhooks/:webhookId/test
 GET    /api/tenants/:tenantSlug/admin/webhooks/:webhookId/deliveries?limit=50&offset=0
+POST   /api/tenants/:tenantSlug/admin/webhooks/:webhookId/deliveries/:deliveryId/replay
 ```
 
 The same routes under `/api/admin/webhooks` manage **global** webhooks (`tenantId: "global"`).
@@ -124,16 +125,28 @@ Create body (`POST`):
 `GET .../webhooks/signing` describes the scheme:
 
 ```json
-{ "algorithm": "HMAC-SHA256", "headers": ["x-edgecms-signature", "x-webhook-signature"], "format": "sha256=<hex digest>", "bodyEncoding": "application/json" }
+{
+  "algorithm": "HMAC-SHA256",
+  "headers": ["x-edgecms-signature-v1", "x-edgecms-timestamp", "x-edgecms-signature", "x-webhook-signature"],
+  "format": "sha256=<hex digest>",
+  "timestampedFormat": "t=<unix seconds>,v1=<hex HMAC of \"<t>.<raw body>\">",
+  "recommended": "x-edgecms-signature-v1; reject timestamps older than 300 seconds",
+  "bodyEncoding": "application/json"
+}
 ```
 
-The signature is an HMAC-SHA256 of the raw request body with the webhook secret. Both headers carry the same value. Verify against the raw body bytes, not a re-serialized object. Custom `headers` are applied after the signature headers, so do not name a custom header `x-edgecms-signature` or `x-webhook-signature`.
+Every delivery (queued and test) carries two signature forms, both HMAC-SHA256 with the webhook secret:
+
+- `x-edgecms-signature-v1: t=<unix seconds>,v1=<hex>` signs `<t>.<raw body>`. `x-edgecms-timestamp` repeats `t`. Use this one: check the HMAC, then reject a `t` more than 300 seconds from your clock so a captured request cannot be replayed later.
+- `x-edgecms-signature` and `x-webhook-signature` carry `sha256=<hex>` of the raw body alone. They are kept for older receivers and have no replay protection.
+
+Verify against the raw body bytes, not a re-serialized object. Custom `headers` cannot replace `Content-Type`, `User-Agent` or any signature header (names are matched case-insensitively); such entries are dropped.
 
 Delivery requests also send `Content-Type: application/json` and `User-Agent: EdgeCMS-Webhooks/1.0`.
 
 ### Test deliveries
 
-`POST .../:webhookId/test` sends `{ "event": "test", "timestamp": "...", "data": { "test": true } }` straight from the API Worker, waits for the response and returns `{ status, body, success }`. Test deliveries are **not signed** and do not go through the queue or the destination policy check. They are recorded in the delivery log with `eventType: "test"`. A network failure returns `500 DELIVERY_FAILED`.
+`POST .../:webhookId/test` sends `{ "event": "test", "timestamp": "...", "data": { "test": true } }` straight from the API Worker, waits for the response and returns `{ status, body, success }`. Test deliveries are signed like queued ones and do not go through the queue. The stored URL is checked against the current [destination policy](#destination-policy) first; a URL that now fails returns `400 VALIDATION_ERROR` and nothing is sent. Redirects are not followed: a `3xx` comes back as `success: false`. They are recorded in the delivery log with `eventType: "test"`. A network failure returns `500 DELIVERY_FAILED`.
 
 ### Delivery log
 
@@ -146,20 +159,20 @@ The path from command to HTTP request:
 1. **Outbox.** When a command succeeds, the engine writes a `webhook_outbox` row (status `pending`) in the same D1 batch as the `processed_commands` row. If the Worker stops after the commit, the event is not lost.
 2. **Queue.** After the commit the engine emits the event on the in-process event bus. The producer (`apps/api/src/webhooks/queue-producer.ts`) finds enabled webhooks subscribed to the event and in the same scope, sends one message per webhook to `WEBHOOK_QUEUE` (in batches of 100), and marks the outbox row `sent`. Subscriptions are cached for 30 seconds per isolate and cleared when a webhook changes in that isolate.
 3. **Consumer.** The queue consumer (`apps/api/src/webhooks/queue-consumer.ts`) handles up to 5 messages at a time. Before each delivery it re-reads the webhook and drops the message if the webhook is gone, disabled, in another scope, or its URL now fails the destination policy. It uses the current URL, secret, headers and limits from the database.
-4. **Request.** A `POST` with the signed body. Any `2xx` counts as delivered.
+4. **Request.** A `POST` with the signed body. Any `2xx` counts as delivered. Redirects are not followed (`redirect: "manual"`), so a `3xx` counts as a failed attempt; the destination policy only vouches for the URL you registered.
 
 If `WEBHOOK_QUEUE` is not bound, the producer is not started and events are only kept as outbox rows.
 
 ### Retries
 
-A failed attempt (non-`2xx`, network error or timeout) is retried with Cloudflare Queues `retry({ delaySeconds })`, until the attempt count reaches the webhook's `retryMaxRetries`. The delay is `10 × 3^(attempt − 1)` seconds:
+A failed attempt (non-`2xx`, network error or timeout) is retried with Cloudflare Queues `retry({ delaySeconds })`, until the attempt count reaches the webhook's `retryMaxRetries`. The delay is jittered: a random whole number of seconds between 5 and `min(300, 10 × 2^(attempt − 1))`:
 
 | After attempt | Wait |
 | --- | --- |
-| 1 | 10 s |
-| 2 | 30 s |
-| 3 | 90 s |
-| 4 | 270 s |
+| 1 | 5–10 s |
+| 2 | 5–20 s |
+| 3 | 5–40 s |
+| 4 | 5–80 s |
 
 Each attempt updates one delivery row per `(eventId, webhookId)`: `pending` while retries remain, `failed` when they run out. The queue consumers in `apps/api/wrangler.toml` set `max_retries = 5`, `max_batch_size = 10` and `max_batch_timeout = 5`. No dead-letter queue is configured.
 
@@ -167,7 +180,7 @@ Each attempt updates one delivery row per `(eventId, webhookId)`: `pending` whil
 
 Queues deliver at least once. The consumer skips a message whose `(eventId, webhookId)` delivery is already `delivered`, so a redelivered queue message is not re-sent.
 
-The outbox replay (below) sends the event with the outbox row's ID as `id`, while the live path uses a fresh event ID. If both paths send the same event, your endpoint sees two different `id` values. Deduplicate on `data.metadata.outboxEventId` when it is present, and on `id` otherwise.
+Command events use the outbox row's event ID as `id` on both the live path and the outbox replay, and repeat it as `data.metadata.outboxEventId`. If the live send succeeds but marking the row `sent` fails, the sweep can send the event again with the same `id`; deduplicate on `id`.
 
 ### Replay
 
@@ -176,16 +189,16 @@ Replay today means re-sending outbox rows that never reached the queue:
 - After each successful command the engine starts a best-effort sweep (`relayOutbox`, `apps/api/src/webhooks/outbox-relay.ts`). It picks up to 20 `pending` outbox rows older than 60 seconds, resolves subscriptions fresh, sends them to the queue and marks them `sent`. A failed send leaves the row `pending` with a 60-second backoff.
 - A sweep that drains all due rows on a schedule, or from an admin route, is not wired yet. With no command traffic, orphaned rows wait for the next command.
 
-There is no route to re-send a delivery that ended as `failed`. Use the delivery log to find it and recover from your own system.
+To re-send a delivery that ended as `failed`, call `POST .../:webhookId/deliveries/:deliveryId/replay` (same auth as the other webhook routes). It re-enqueues the stored event for the webhook's current URL, secret and headers, sets the delivery row back to `pending` and returns `202 { deliveryId, eventId, status: "pending" }`. The consumer then runs its usual scope, destination and retry checks. Errors: `404` for an unknown webhook or delivery (or one in another tenant), `409 CONFLICT` when the delivery is not `failed`, `400 VALIDATION_ERROR` for test deliveries or a payload with no matching scope, `503 QUEUE_UNAVAILABLE` when `WEBHOOK_QUEUE` is not bound. There is no bulk replay, and outbox rows are not dead-lettered: a row whose queue send keeps failing stays `pending` and is retried every 60 seconds by the next sweep.
 
 ## Destination Policy
 
-`validateWebhookDestination` (`apps/api/src/webhooks/webhook-destination-policy.ts`) runs when a webhook is created or its URL changes, and again before every queued delivery. A URL must:
+`validateWebhookDestination` (`apps/api/src/webhooks/webhook-destination-policy.ts`) runs when a webhook is created or its URL changes, and again before every queued and test delivery. A URL must:
 
 - use `https:`;
 - have no username or password in the URL;
 - use port `443` (or none);
-- not target a local or private host: `localhost`, `*.local`, `*.internal`, `10.*`, `127.*`, `169.254.*`, `172.16–31.*`, `192.168.*`, `::1`, `fc*`/`fd*`/`fe80:` IPv6, and `::ffff:` mapped addresses;
+- not target a local or private host: `localhost`, `*.localhost`, `*.local`, `*.internal` (a trailing dot is ignored), `0.0.0.0/8`, `10.*`, `100.64.0.0/10`, `127.*`, `169.254.*`, `172.16–31.*`, `192.168.*`, `::`, `::1`, `fc*`/`fd*`/`fe80:` IPv6, and `::ffff:` mapped addresses;
 - match `WEBHOOK_ALLOWED_HOSTS` when that variable is set.
 
 `WEBHOOK_ALLOWED_HOSTS` is a comma-separated list. An entry matches the host and its subdomains; a leading `*.` is optional:

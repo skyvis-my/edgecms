@@ -1,6 +1,13 @@
 import type { Database } from '@/database/db'
 import type { ServiceResult } from '@/shared/types/result'
-import { invalidateWebhookSubscriptionCache } from './queue-producer'
+import type { WebhookEvent } from './event-bus'
+import {
+  canDeliver,
+  invalidateWebhookSubscriptionCache,
+  resolveEventTenantScope,
+  type WebhookQueueMessage,
+} from './queue-producer'
+import { buildWebhookRequestHeaders, signTimestampedPayload } from './webhook-delivery.service'
 import {
   type WebhookDestinationPolicy,
   validateWebhookDestination,
@@ -305,7 +312,8 @@ export const webhooksService = {
   async testDelivery(
     db: Database,
     webhookId: string,
-    tenantId?: string
+    tenantId?: string,
+    policy: WebhookDestinationPolicy = {}
   ): Promise<ServiceResult<TestDeliveryResult>> {
     const webhook = tenantId
       ? await webhooksRepository.findById(db, webhookId, tenantId)
@@ -314,6 +322,16 @@ export const webhooksService = {
       return {
         success: false,
         error: { code: 'NOT_FOUND', message: `Webhook '${webhookId}' not found` },
+      }
+    }
+
+    // SSRF guard: the stored URL was validated at write time, but the policy
+    // (blocked ranges, WEBHOOK_ALLOWED_HOSTS) may have tightened since.
+    const destination = validateWebhookDestination(webhook.url, policy)
+    if (!destination.valid) {
+      return {
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: destination.error },
       }
     }
 
@@ -326,21 +344,23 @@ export const webhooksService = {
 
     // Send POST request to webhook URL
     try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'User-Agent': 'EdgeCMS-Webhook/1.0',
-      }
-
-      // Add custom headers if configured
-      if (webhook.headers) {
-        Object.assign(headers, webhook.headers)
-      }
+      const { headers: signingHeaders } = await signTimestampedPayload(
+        webhook.secret,
+        testPayload
+      )
+      const headers = buildWebhookRequestHeaders(
+        webhook.headers as Record<string, string> | null,
+        { 'Content-Type': 'application/json', 'User-Agent': 'EdgeCMS-Webhook/1.0' },
+        signingHeaders
+      )
 
       const response = await fetch(webhook.url, {
         method: 'POST',
         headers,
         body: JSON.stringify(testPayload),
         signal: AbortSignal.timeout(webhook.retryTimeout * 1000),
+        // SSRF guard: never follow a redirect to an unvalidated host.
+        redirect: 'manual',
       })
 
       const body = (await response.text()).slice(0, MAX_STORED_RESPONSE_BODY_BYTES)
@@ -428,6 +448,95 @@ export const webhooksService = {
         deliveries,
         total: deliveries.length,
       },
+    }
+  },
+
+  /**
+   * Replay a failed delivery (DL-09): re-enqueue the stored event for the
+   * webhook's current URL and secret. The queue consumer re-validates scope
+   * and destination and dedups on (eventId, webhookId), so only deliveries
+   * that never succeeded are replayable.
+   */
+  async replayDelivery(
+    db: Database,
+    queue: Pick<Queue<WebhookQueueMessage>, 'send'> | null | undefined,
+    webhookId: string,
+    deliveryId: string,
+    tenantId?: string
+  ): Promise<ServiceResult<{ deliveryId: string; eventId: string; status: 'pending' }>> {
+    const webhook = tenantId
+      ? await webhooksRepository.findById(db, webhookId, tenantId)
+      : await webhooksRepository.findById(db, webhookId)
+    if (!webhook) {
+      return {
+        success: false,
+        error: { code: 'NOT_FOUND', message: `Webhook '${webhookId}' not found` },
+      }
+    }
+
+    const delivery = await webhooksRepository.findDeliveryById(db, deliveryId, webhookId)
+    if (!delivery) {
+      return {
+        success: false,
+        error: { code: 'NOT_FOUND', message: `Delivery '${deliveryId}' not found` },
+      }
+    }
+    if (delivery.eventType === 'test') {
+      return {
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Test deliveries cannot be replayed' },
+      }
+    }
+    if (delivery.status !== 'failed') {
+      return {
+        success: false,
+        error: {
+          code: 'CONFLICT',
+          message: `Only failed deliveries can be replayed (status is '${delivery.status}')`,
+        },
+      }
+    }
+
+    const event = delivery.payload as unknown as WebhookEvent
+    const eventScope =
+      event && typeof event === 'object' && event.data ? resolveEventTenantScope(event) : null
+    if (eventScope === null || !canDeliver(webhook.tenantId, eventScope)) {
+      return {
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Stored delivery payload has no deliverable tenant scope',
+        },
+      }
+    }
+
+    if (!queue) {
+      return {
+        success: false,
+        error: { code: 'QUEUE_UNAVAILABLE', message: 'WEBHOOK_QUEUE binding is not configured' },
+      }
+    }
+
+    await queue.send({
+      webhookId: webhook.id,
+      eventPayload: event,
+      webhookUrl: webhook.url,
+      webhookSecret: webhook.secret,
+      webhookHeaders: (webhook.headers as Record<string, string> | null) ?? undefined,
+      maxRetries: normalizeRetryMaxRetries(webhook.retryMaxRetries),
+      timeout: webhook.retryTimeout,
+      tenantId: eventScope,
+    })
+    await webhooksRepository.updateDelivery(
+      db,
+      delivery.id,
+      { status: 'pending', nextRetryAt: new Date().toISOString() },
+      webhookId
+    )
+
+    return {
+      success: true,
+      data: { deliveryId: delivery.id, eventId: delivery.eventId, status: 'pending' },
     }
   },
 }
