@@ -5,8 +5,9 @@ import { Checkbox } from '@/components/ui/checkbox'
 import type { CollectionDefinition } from '@/features/collections/api/collections-api'
 import { toBrowserDateTime, toRelativeTime } from '@/lib/date-time'
 import { cn } from '@/lib/utils'
-import { StatusBadge } from '@/features/scheduling/components/status-badge'
 import type { Entry } from '../api/entries-api'
+import type { EntryQueueState } from '../lib/entry-status'
+import { EntryStatusIndicator } from './entry-status-indicator'
 import { EntriesRowActions } from './entries-row-actions'
 
 
@@ -26,7 +27,14 @@ function toDisplayString(value: unknown): string {
 /**
  * Dynamically generate columns based on collection fields
  */
-export function getEntriesColumns(collection: CollectionDefinition): ColumnDef<Entry>[] {
+export function getEntriesColumns(
+  collection: CollectionDefinition,
+  options: { queueByEntry?: Map<string, EntryQueueState> } = {}
+): ColumnDef<Entry>[] {
+  const queueByEntry = options.queueByEntry
+  // OF-05: below md the Entry column carries slug, status and updated time, so the
+  // duplicate columns are hidden and rows fit a 375px screen without sideways scrolling.
+  const hideBelowMd = 'max-md:hidden'
   const collectionFields = collection.fields ?? []
   const baseColumns: ColumnDef<Entry>[] = [
     {
@@ -102,10 +110,11 @@ export function getEntriesColumns(collection: CollectionDefinition): ColumnDef<E
         ? {
             className: cn(
               'drop-shadow-[0_1px_2px_rgb(0_0_0_/_0.1)] dark:drop-shadow-[0_1px_2px_rgb(255_255_255_/_0.1)]',
-              'ps-0.5 max-md:sticky start-6 @4xl/content:table-cell @4xl/content:drop-shadow-none'
+              'ps-0.5 start-6 @4xl/content:table-cell @4xl/content:drop-shadow-none',
+              hideBelowMd
             ),
           }
-        : undefined,
+        : { className: hideBelowMd },
     enableHiding: index !== 0,
   }))
 
@@ -131,8 +140,15 @@ export function getEntriesColumns(collection: CollectionDefinition): ColumnDef<E
           .join(' • ')
 
         return (
-          <div className='min-w-72 space-y-1 py-1'>
-            <div className='font-medium'>{entry.slug}</div>
+          <div className='min-w-0 space-y-1 py-1 md:min-w-72'>
+            <div className='font-medium break-all'>{entry.slug}</div>
+            <EntryStatusIndicator
+              className='md:hidden'
+              status={entry.status}
+              publishAt={entry.publishAt}
+              unpublishAt={entry.unpublishAt}
+              queue={queueByEntry?.get(entry.id)}
+            />
             <div className='flex flex-wrap items-center gap-2 text-xs text-muted-foreground'>
               <span>Version {entry.version}</span>
               <span title={toBrowserDateTime(entry.updatedAt) ?? undefined}>
@@ -153,6 +169,7 @@ export function getEntriesColumns(collection: CollectionDefinition): ColumnDef<E
       cell: ({ row }) => (
         <div className='w-fit ps-2 text-nowrap text-muted-foreground'>{row.getValue('slug')}</div>
       ),
+      meta: { className: hideBelowMd },
     },
     {
       accessorKey: 'status',
@@ -160,13 +177,15 @@ export function getEntriesColumns(collection: CollectionDefinition): ColumnDef<E
       cell: ({ row }) => {
         const entry = row.original
         return (
-          <StatusBadge
+          <EntryStatusIndicator
             status={entry.status}
-            scheduledDate={entry.publishAt}
-            unpublishDate={entry.unpublishAt}
+            publishAt={entry.publishAt}
+            unpublishAt={entry.unpublishAt}
+            queue={queueByEntry?.get(entry.id)}
           />
         )
       },
+      meta: { className: hideBelowMd },
       enableSorting: false,
     },
     {
@@ -180,6 +199,7 @@ export function getEntriesColumns(collection: CollectionDefinition): ColumnDef<E
           </div>
         )
       },
+      meta: { className: hideBelowMd },
     },
     {
       id: 'actions',

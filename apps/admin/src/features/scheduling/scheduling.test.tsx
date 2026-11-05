@@ -67,18 +67,19 @@ vi.mock('@/components/ui/select', () => ({
 }))
 
 describe('StatusBadge', () => {
-  it('renders draft status with gray color', () => {
+  // OF-05: StatusBadge delegates to the shared EntryStatusIndicator (icon + label + colour, no yellow).
+  it('renders draft status with slate color', () => {
     render(<StatusBadge status='draft' />)
     const badge = screen.getByText('Draft')
     expect(badge).toBeInTheDocument()
-    expect(badge).toHaveClass('border-gray-500')
+    expect(badge).toHaveClass('border-slate-400')
   })
 
   it('renders published status with green color', () => {
     render(<StatusBadge status='published' />)
     const badge = screen.getByText('Published')
     expect(badge).toBeInTheDocument()
-    expect(badge).toHaveClass('border-green-500')
+    expect(badge).toHaveClass('border-emerald-600')
   })
 
   it('renders scheduled status with blue color', () => {
@@ -88,11 +89,12 @@ describe('StatusBadge', () => {
     expect(badge).toHaveClass('border-blue-500')
   })
 
-  it('renders archived status with yellow color', () => {
+  it('renders archived status without yellow', () => {
     render(<StatusBadge status='archived' />)
     const badge = screen.getByText('Archived')
     expect(badge).toBeInTheDocument()
-    expect(badge).toHaveClass('border-yellow-500')
+    expect(badge).toHaveClass('border-dashed')
+    expect(badge.className).not.toMatch(/yellow|amber/)
   })
 
   it('shows scheduled date for scheduled status', () => {
@@ -100,9 +102,9 @@ describe('StatusBadge', () => {
     render(<StatusBadge status='scheduled' scheduledDate={scheduledDate.toISOString()} />)
 
     expect(screen.getByText('Scheduled')).toBeInTheDocument()
-    const relativeTime = screen.getByText(/in|ago/)
-    expect(relativeTime).toBeInTheDocument()
-    expect(relativeTime).toHaveAttribute('title', expect.stringMatching(/^2026-03-15 /))
+    const time = screen.getByText(/^Publishes 2026-03-15 /)
+    expect(time).toBeInTheDocument()
+    expect(time).toHaveAttribute('datetime', scheduledDate.toISOString())
   })
 
   it('does not show date for non-scheduled status', () => {

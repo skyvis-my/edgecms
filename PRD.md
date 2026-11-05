@@ -115,7 +115,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | **OF-02** | Offline edits become queued command envelopes and replay on reconnect. | Shipped |
 | **OF-03** | Cursor-based push/pull sync against the change log. | Shipped |
 | **OF-04** | Field-level conflict resolution with version checks; localized fields merge independently; the user confirms before a newer remote version is overwritten. | Partial |
-| **OF-05** | The admin clearly distinguishes saved, draft, published, scheduled and queued states, and works with keyboard and on narrow screens. | Partial |
+| **OF-05** | The admin clearly distinguishes saved, draft, published, scheduled and queued states, and works with keyboard and on narrow screens. One status indicator (icon + text + colour, accessible name) is used in entry list rows, the editor header and the publishing overview; it shows scheduled publish/unpublish times and a queued/conflict marker from the offline command queue. Entry list and editor fit 375px; editor actions are keyboard reachable with visible focus. Gap: no automated axe audit; entries created offline have no list row until synced; other admin pages not yet audited at 375px. | Partial |
 
 ## 7. AI and agents
 
