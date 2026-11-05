@@ -182,6 +182,69 @@ describe('assetsController', () => {
     )
   })
 
+  it('MD-03: POST /upload rejects a malformed JSON blurhash with 400 before the service runs', async () => {
+    const response = await app.handle(
+      new Request('http://localhost/api/admin/assets/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: 'image.jpg',
+          mimeType: 'image/jpeg',
+          contentBase64: btoa('hello'),
+          blurhash: '<img src=x onerror=alert(1)>',
+        }),
+      })
+    )
+
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as { success: boolean; error: { code: string } }
+    expect(body.success).toBe(false)
+    expect(body.error.code).toBe('BAD_REQUEST')
+    expect(mockService.upload).not.toHaveBeenCalled()
+  })
+
+  it('MD-03: POST /upload rejects a malformed multipart blurhash with 400', async () => {
+    const formData = new FormData()
+    formData.set('file', new File([new Uint8Array([1, 2, 3])], 'hero.jpg', { type: 'image/jpeg' }))
+    formData.set('blurhash', 'L'.repeat(500))
+
+    const response = await app.handle(
+      new Request('http://localhost/api/admin/assets/upload', { method: 'POST', body: formData })
+    )
+
+    expect(response.status).toBe(400)
+    expect(mockService.upload).not.toHaveBeenCalled()
+  })
+
+  it('MD-03: POST /upload passes a valid blurhash through (JSON and multipart)', async () => {
+    mockService.upload.mockResolvedValue({ id: 'a3', variants: [] })
+    const blurhash = 'LEHV6nWB2yk8pyo0adR*.7kCMdnj'
+
+    const jsonResponse = await app.handle(
+      new Request('http://localhost/api/admin/assets/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: 'image.jpg',
+          mimeType: 'image/jpeg',
+          contentBase64: btoa('hello'),
+          blurhash,
+        }),
+      })
+    )
+    expect(jsonResponse.status).toBe(201)
+    expect(mockService.upload.mock.calls[0]?.[2]).toEqual(expect.objectContaining({ blurhash }))
+
+    const formData = new FormData()
+    formData.set('file', new File([new Uint8Array([1, 2, 3])], 'hero.jpg', { type: 'image/jpeg' }))
+    formData.set('blurhash', blurhash)
+    const multipartResponse = await app.handle(
+      new Request('http://localhost/api/admin/assets/upload', { method: 'POST', body: formData })
+    )
+    expect(multipartResponse.status).toBe(201)
+    expect(mockService.upload.mock.calls[1]?.[2]).toEqual(expect.objectContaining({ blurhash }))
+  })
+
   it('GET /api/admin/assets/config returns default upload cap', async () => {
     const response = await app.handle(new Request('http://localhost/api/admin/assets/config'))
 

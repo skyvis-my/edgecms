@@ -91,6 +91,30 @@ describe('assetsService', () => {
     expect(result?.id).toBe('a1')
   })
 
+  it('MD-03: upload stores a valid blurhash and drops a malformed one (defense in depth)', async () => {
+    mockRepo.createAsset.mockResolvedValue({ id: 'a1' })
+    mockRepo.findById.mockResolvedValue({ id: 'a1', variants: [] })
+
+    await assetsService.upload(db, r2, {
+      filename: 'photo.jpg',
+      mimeType: 'image/jpeg',
+      contentBase64: VALID_JPEG_BASE64,
+      blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj',
+    })
+    expect(mockRepo.createAsset).toHaveBeenLastCalledWith(
+      db,
+      expect.objectContaining({ blurhash: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj' })
+    )
+
+    await assetsService.upload(db, r2, {
+      filename: 'photo.jpg',
+      mimeType: 'image/jpeg',
+      contentBase64: VALID_JPEG_BASE64,
+      blurhash: '"><script>alert(1)</script>',
+    })
+    expect(mockRepo.createAsset).toHaveBeenLastCalledWith(db, expect.objectContaining({ blurhash: null }))
+  })
+
   it('upload stores createdBy actor reference when provided', async () => {
     mockRepo.createAsset.mockResolvedValue({ id: 'a1' })
     mockRepo.findById.mockResolvedValue({ id: 'a1', variants: [] })

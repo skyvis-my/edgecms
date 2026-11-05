@@ -12,6 +12,7 @@ import {
 } from './assets.service'
 import { estimateUploadBytes, storedAssetBytes } from './storage-bytes'
 import { ImageDimensionsExceededError } from './image-dimensions'
+import { normalizeBlurhash } from './blurhash'
 import { createErrorEnvelope } from '@/shared/utils/service-response'
 import { getHostRuntime } from '@/host/host-context'
 import { respondLimitExceeded, toLimitTenant } from '@/host/limits'
@@ -127,7 +128,7 @@ function parseUploadBody(body: unknown): UploadAssetInput {
   ) {
     throw new Error('Upload payload requires filename, mimeType, and contentBase64 or contentBytes')
   }
-  return payload as UploadAssetInput
+  return { ...(payload as UploadAssetInput), blurhash: normalizeBlurhash(payload.blurhash) }
 }
 
 async function normalizeUploadInput(ctx: {
@@ -182,8 +183,7 @@ async function normalizeUploadInput(ctx: {
       typeof heightValue === 'number'
         ? heightValue
         : parseOptionalNumber(typeof heightValue === 'string' ? heightValue : undefined),
-    blurhash:
-      typeof blurhashValue === 'string' ? blurhashValue : undefined,
+    blurhash: normalizeBlurhash(blurhashValue),
     variants:
       typeof variantsValue === 'string'
         ? parseMultipartVariants(variantsValue)
