@@ -91,7 +91,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | **CM-01** | Collections define typed fields, relations, localization rules, a singleton flag and lifecycle behavior. | Shipped |
 | **CM-02** | Singleton collections hold exactly one entry (site settings, homepage, navigation). | Shipped |
 | **CM-03** | Per-field localization: each field can be localized independently, stored as `{ en: "...", fr: "..." }`, with a default and supported locales per collection. | Shipped |
-| **CM-04** | Relations: one-to-one, one-to-many, many-to-many in normalized tables, resolved at snapshot time with a bounded populate depth. Gap: public `populate` does not yet filter unpublished related entries (breaks P5). | Partial |
+| **CM-04** | Relations: one-to-one, one-to-many, many-to-many in normalized tables, resolved at snapshot time with a bounded populate depth. Public reads resolve only related entries inside their publish window (same rule as public list/get), and snapshot TTLs expire before a related entry's next scheduled transition. | Shipped |
 | **CM-05** | Entry lifecycle: `draft`, `scheduled`, `published`, `archived`, with optional `publishAt` and `unpublishAt`. | Shipped |
 | **CM-06** | Entry versions with history, diff and rollback; retention policy for old versions. | Shipped |
 | **CM-07** | Field types beyond the current matrix (see [public API field matrix](docs/public/public-api.md)) arrive only through CM-01 or a trusted plugin field (EX-02). | Planned |
