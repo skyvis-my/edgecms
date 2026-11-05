@@ -1,6 +1,7 @@
 import type { CommandContext } from '@/commands/engine'
 import type { ContentAccess } from '@/auth/content-access'
 import { executeCommand } from '@/commands/engine'
+import { assetsRepository } from '@/assets/assets.repository'
 import { collectionsRepository } from '@/collections/collections.repository'
 import type { CollectionRow } from '@/collections/collections.repository'
 import type { Database } from '@/database/db'
@@ -28,7 +29,7 @@ export {
 
 const TEXT_LIMIT = 100_000
 const FILE_LIMIT = 5_000_000
-const RETENTION_DAYS = 30
+export const AI_IMPORT_RETENTION_DAYS = 30
 const TEXT_CONTENT_TYPES = new Set([
   'text/plain',
   'text/csv',
@@ -75,7 +76,7 @@ function nowIso(): string {
 }
 
 function expiresAt(): string {
-  return new Date(Date.now() + RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString()
+  return new Date(Date.now() + AI_IMPORT_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString()
 }
 
 function assertLocale(locale: string | undefined): void {
@@ -241,14 +242,20 @@ export const aiImportService = {
     }
 
     if (input.kind === 'asset') {
+      // P2: the asset must exist, be live and belong to the batch's tenant.
+      const existingAssetId = input.existingAssetId.trim()
+      const asset = existingAssetId
+        ? await assetsRepository.findById(db, existingAssetId, tenantId)
+        : undefined
+      if (!asset) throw new Error('Asset was not found')
       return aiImportsRepository.createSource(db, {
         id: crypto.randomUUID(),
         batchId,
         tenantId,
         kind: 'asset',
-        existingAssetId: input.existingAssetId,
+        existingAssetId: asset.id,
         extractionStatus: 'ready',
-        mediaSummaryJson: { existingAssetId: input.existingAssetId },
+        mediaSummaryJson: { existingAssetId: asset.id },
         expiresAt: expiresAt(),
         createdAt: timestamp,
       })

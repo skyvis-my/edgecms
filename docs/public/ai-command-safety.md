@@ -115,7 +115,12 @@ POST  /api/tenants/:slug/admin/ai/suggestion-sets/:suggestionSetId/dry-run
 POST  /api/tenants/:slug/admin/ai/suggestion-sets/:suggestionSetId/apply
 ```
 
-Everything before `apply` writes no entries. It writes only the review records (batch, source, suggestion and suggestion-set rows, tenant-scoped) and, for file sources, the uploaded file to R2 under the tenant's `ai-imports/` prefix. These records expire after 30 days, but nothing deletes them yet.
+Everything before `apply` writes no entries. It writes only the review records (batch, source, suggestion and suggestion-set rows, tenant-scoped) and, for file sources, the uploaded file to R2 under the tenant's `ai-imports/` prefix. Sources expire 30 days after upload. The Worker's cron trigger (every minute, in the same `scheduled()` run as the webhook and side-effect sweeps) cleans them up in bounded batches of up to 100 sources and 50 batches:
+
+- An expired source loses its stored text and media summary and gets `purged_at` set. Its R2 file is deleted only when the key starts with that source's own `<tenant>/ai-imports/<batchId>/` prefix. Any other key is left in R2 and logged as `ai_import_cleanup_r2_prefix_mismatch`. If an R2 delete fails, the source stays unpurged and the next run retries it.
+- A batch not updated for 30 days, with no unpurged source left, is deleted with its sources, suggestion sets, suggestions and context-tool invocation rows. Entries already created by `apply` stay; the command log still records them.
+
+An asset source (`{ "kind": "asset", "existingAssetId": "..." }`) must name a live, not deleted, asset of the same tenant. Otherwise the route returns `400 AI_IMPORT_SOURCE_FAILED` with the message `Asset was not found`, and no source is stored.
 
 - `dry-run` runs the accepted suggestions through the command engine as dry runs. When every command passes, it returns a `previewReceipt` (see [Preview receipts](#preview-receipts)) with the `dryRunHash`. No receipt is issued when a dry-run command fails.
 - `apply` takes `{ "dryRunHash": "...", "previewReceipt": "..." }`. It runs only the stored dry-run commands, and only after it redeems the receipt. A missing receipt returns `400 AI_IMPORT_APPLY_FAILED`. A rejected receipt returns `INVALID_PREVIEW_RECEIPT` with `err.reason` set to the code from the table, and the status from the table. A set that was already applied cannot be dry-run or applied again.
