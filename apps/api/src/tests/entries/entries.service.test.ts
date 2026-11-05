@@ -889,11 +889,12 @@ describe('entriesService', () => {
   })
 
   describe('deleteById', () => {
-    it('deletes an existing entry', async () => {
+    it('deletes an existing entry and reports its collection', async () => {
+      mockEntriesRepo.findById.mockResolvedValue(makeEntryRow({ id: 'e1', collectionId: 'c1' }))
       mockEntriesRepo.deleteById.mockResolvedValue(true)
 
       const result = await entriesService.deleteById(db, 'e1')
-      expect(result).toEqual({ success: true, data: { id: 'e1' } })
+      expect(result).toEqual({ success: true, data: { id: 'e1', collectionId: 'c1' } })
     })
 
     it('returns NOT_FOUND when entry does not exist', async () => {

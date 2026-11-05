@@ -103,6 +103,8 @@ Cache-Tag: collection:<slug>,locale:<locale>[,entry:<entry id or slug>]
 Vary: Accept-Encoding
 ```
 
+Responses that include related entries (list rows, `populate` and singletons) also carry one tag per related entry (`t:<tenant id>:e:<entry id>`, or `entry:<entry id>` without a tenant). Above 50 related entries, or when the header would pass 8 KB, they carry one tag per related collection (`t:<tenant id>:c:<collection id>`) instead. Updating, publishing, unpublishing or deleting a related entry then retires the KV and edge copies of every snapshot that includes it and purges those tags from the CDN, so the parent stops showing stale or unpublished related content.
+
 Misses and validation failures set:
 
 ```text
