@@ -14,6 +14,11 @@ import {
   resolveAssetMimeType,
 } from './file-policy'
 import { buildOriginalKey, buildVariantKey } from './r2-keys'
+import {
+  assertImageWithinDimension,
+  ImageDimensionsExceededError,
+  readImageDimensions,
+} from './image-dimensions'
 import { indexAssetVector, removeAssetVectors, searchAssetVectorIds } from './vector-search'
 
 export interface UploadAssetInput {
@@ -75,6 +80,31 @@ function buildUploadTypeBlockedMessage(mimeType: string) {
   return `Asset upload type is not allowed: ${mimeType || 'unknown'}`
 }
 
+/** Bytes read from the start of a direct-upload object to find its image header. */
+const DIRECT_UPLOAD_HEADER_BYTES = 512 * 1024
+/** Largest direct-upload object read in full when its header is past the first chunk. */
+const DIRECT_UPLOAD_FULL_READ_MAX_BYTES = 32 * 1024 * 1024
+
+/**
+ * MD-05: the tenant's longest-edge limit, enforced on bytes the Worker reads.
+ * Client-sent width/height are only consulted for formats the Worker cannot
+ * read, and then only to reject, never to approve.
+ */
+function enforceUploadDimensions(
+  bytes: Uint8Array,
+  maxDimension: number,
+  claimed?: { width?: number; height?: number }
+): { width: number; height: number } | null {
+  const read = assertImageWithinDimension(bytes, maxDimension)
+  if (read) return read
+  const claimedWidth = claimed?.width ?? 0
+  const claimedHeight = claimed?.height ?? 0
+  if (maxDimension > 0 && Math.max(claimedWidth, claimedHeight) > maxDimension) {
+    throw new ImageDimensionsExceededError(claimedWidth, claimedHeight, maxDimension)
+  }
+  return null
+}
+
 function scheduleAssetVectorWork(
   promise: Promise<unknown>,
   defer: DeferAssetVectorWork | undefined
@@ -97,7 +127,7 @@ export const assetsService = {
     createdBy?: string,
     defer?: DeferAssetVectorWork,
     maxUploadBytes = DEFAULT_ASSET_UPLOAD_MAX_BYTES,
-    _maxUploadDimension = DEFAULT_ASSET_UPLOAD_MAX_DIMENSION,
+    maxUploadDimension = DEFAULT_ASSET_UPLOAD_MAX_DIMENSION,
     allowedMimeTypes = [...DEFAULT_ASSET_ALLOWED_MIME_TYPES]
   ) {
     const tenantScope = tenantId ?? 'global'
@@ -130,18 +160,39 @@ export const assetsService = {
       throw new Error(buildUploadTooLargeMessage(maxUploadBytes))
     }
 
+    const isImage = mimeType.startsWith('image/')
+
+    // MD-05: check the original and every variant that will be stored before
+    // any write, using dimensions read from the bytes themselves.
+    const readDimensions = enforceUploadDimensions(originalBytes, maxUploadDimension, input)
+    const decodedVariants = (input.variants ?? []).map((variant) => ({
+      variant,
+      bytes: variant.contentBytes ?? (variant.contentBase64 ? bytesFromBase64(variant.contentBase64) : null),
+    }))
+    const variantDimensions = new Map<(typeof decodedVariants)[number], { width: number; height: number }>()
+    if (isImage) {
+      for (const decoded of decodedVariants) {
+        if (!decoded.bytes) continue
+        const read = enforceUploadDimensions(decoded.bytes, maxUploadDimension, decoded.variant)
+        if (read) variantDimensions.set(decoded, read)
+      }
+    }
+
     await r2.put(originalKey, originalBytes, {
       httpMetadata: { contentType: mimeType },
     })
 
-    const isImage = mimeType.startsWith('image/')
+    // Server-read dimensions win. Client-sent values are kept only for
+    // formats the Worker cannot read (they already passed the limit above).
     const inferredWidth =
+      readDimensions?.width ??
       input.width ??
       input.variants?.reduce<number | undefined>(
         (max, variant) => (variant.width && (max === undefined || variant.width > max) ? variant.width : max),
         undefined
       )
     const inferredHeight =
+      readDimensions?.height ??
       input.height ??
       input.variants?.reduce<number | undefined>(
         (max, variant) => (variant.height && (max === undefined || variant.height > max) ? variant.height : max),
@@ -194,13 +245,13 @@ export const assetsService = {
       bytes: Uint8Array
     }> = []
 
-    for (const variant of input.variants ?? []) {
-      const variantBytes =
-        variant.contentBytes ?? (variant.contentBase64 ? bytesFromBase64(variant.contentBase64) : null)
+    for (const decoded of decodedVariants) {
+      const { variant, bytes: variantBytes } = decoded
       if (!isImage || !variantBytes) continue
       const objectKey = buildVariantKey(tenantScope, assetId, variant.variant, variant.format)
-      const width = variant.width ?? null
-      const height = variant.height ?? null
+      const read = variantDimensions.get(decoded)
+      const width = read?.width ?? variant.width ?? null
+      const height = read?.height ?? variant.height ?? null
 
       variantRows.push({
         id: crypto.randomUUID(),
@@ -305,18 +356,61 @@ export const assetsService = {
       size: number
       objectKey: string
     },
-    tenantId?: string
+    tenantId: string | undefined,
+    r2: R2Bucket,
+    maxUploadDimension = DEFAULT_ASSET_UPLOAD_MAX_DIMENSION
   ): Promise<AssetRow> {
     const tenantScope = tenantId ?? 'global'
+    // The key comes from the client: it must be the one the intent issued for
+    // this tenant and asset, or completion could claim another tenant's object.
+    if (!input.objectKey.startsWith(`${tenantScope}/${input.assetId}/`) || input.objectKey.includes('..')) {
+      throw new Error('Direct upload object key does not belong to this asset')
+    }
+
+    // MD-05: read the dimensions from the bytes that actually landed in R2.
+    const head = await r2.get(input.objectKey, {
+      range: { offset: 0, length: DIRECT_UPLOAD_HEADER_BYTES },
+    })
+    if (!head) {
+      throw new Error('Direct upload object not found')
+    }
+    let headerBytes = new Uint8Array(await head.arrayBuffer())
+    const objectSize = typeof head.size === 'number' ? head.size : headerBytes.byteLength
+    if (
+      readImageDimensions(headerBytes).kind === 'invalid' &&
+      objectSize > headerBytes.byteLength &&
+      objectSize <= DIRECT_UPLOAD_FULL_READ_MAX_BYTES
+    ) {
+      // Header (e.g. a JPEG SOF after large EXIF) is past the first chunk.
+      const full = await r2.get(input.objectKey)
+      if (full) headerBytes = new Uint8Array(await full.arrayBuffer())
+    }
+
+    let readDimensions: { width: number; height: number } | null
+    try {
+      readDimensions = assertImageWithinDimension(headerBytes, maxUploadDimension)
+    } catch (error) {
+      try {
+        await r2.delete(input.objectKey)
+      } catch (deleteErr) {
+        logger.warn('asset_direct_upload_reject_cleanup_failed', {
+          assetId: input.assetId,
+          objectKey: input.objectKey,
+          error: deleteErr instanceof Error ? deleteErr.message : String(deleteErr),
+        })
+      }
+      throw error
+    }
+
     const now = new Date().toISOString()
     const asset = await assetsRepository.createAsset(db, {
       id: input.assetId,
       tenantId: tenantScope,
       filename: input.filename,
       mimeType: input.mimeType,
-      size: input.size,
-      width: null,
-      height: null,
+      size: objectSize,
+      width: readDimensions?.width ?? null,
+      height: readDimensions?.height ?? null,
       blurhash: null,
       createdBy: null,
       originalKey: input.objectKey,

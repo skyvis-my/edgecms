@@ -211,6 +211,45 @@ export function toServerTiming(debugHeaders: Record<string, string>): string | u
   return `cache;desc="${source.replace(/[^a-z]/gi, '')}";dur=${duration}`
 }
 
+/**
+ * MD-03: asset bodies are chosen by `Accept`, so every asset response must
+ * vary on it. A returned `Response` keeps its own `Vary` and Elysia drops the
+ * one in `set.headers`, so fold in whatever CORS put there (`Origin`, ...)
+ * instead of losing it. Non-`Response` values (error bodies) pass through.
+ */
+export function withAssetVary<T>(value: T, setHeaders: Record<string, unknown>): T {
+  if (!(value instanceof Response)) return value
+  const tokens: string[] = []
+  const seen = new Set<string>()
+  const add = (header: unknown) => {
+    if (typeof header !== 'string') return
+    for (const raw of header.split(',')) {
+      const token = raw.trim()
+      if (!token || seen.has(token.toLowerCase())) continue
+      seen.add(token.toLowerCase())
+      tokens.push(token)
+    }
+  }
+  add('Accept')
+  add(value.headers.get('vary'))
+  add(setHeaders.Vary ?? setHeaders.vary)
+  if (seen.has('*')) return value
+  const vary = tokens.join(', ')
+  try {
+    value.headers.set('Vary', vary)
+    return value
+  } catch {
+    // Immutable headers (e.g. a fetched response): copy into a new Response.
+    const headers = new Headers(value.headers)
+    headers.set('Vary', vary)
+    return new Response(value.body, {
+      status: value.status,
+      statusText: value.statusText,
+      headers,
+    }) as T
+  }
+}
+
 export const publicController = new Elysia({ prefix: '/api/public', normalize: 'typebox' })
   .use(withTenantBindings)
   .get('/assets/:assetId/:variant/:format', {
@@ -219,7 +258,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       variant: t.String({ minLength: 1 }),
       format: t.String({ minLength: 1 }),
     }),
-  }, async (ctx) => {
+  }, async (ctx) => withAssetVary(await (async () => {
     const { params, query, set, request, db, r2, tenantCtx } = ctx
     const result = await assetsService.getPublicVariant(
       db,
@@ -325,6 +364,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
                   status: 416,
                   headers: {
                     'Content-Range': `bytes */${total}`,
+                    'Vary': 'Accept',
                     'Accept-Ranges': 'bytes',
                     'Cache-Control': 'public, max-age=31536000, immutable',
                     'CDN-Cache-Control': 'public, max-age=31536000',
@@ -342,7 +382,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
     return new Response(result.object.body, {
       headers: assetHeaders,
     })
-  })
+  })(), ctx.set.headers))
   .get('/assets/:assetId/:variant', {
     params: t.Object({
       assetId: t.String({ minLength: 1 }),
@@ -372,7 +412,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       return { error: result.error.message }
     }
 
-    return result.data
+    return withAssetVary(result.data, set.headers)
   })
   .get('/assets/:assetId', {
     params: t.Object({
@@ -402,7 +442,7 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       return { error: result.error.message }
     }
 
-    return result.data
+    return withAssetVary(result.data, set.headers)
   })
   .get('/:collectionSlug', {
     params: t.Object({

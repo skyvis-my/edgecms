@@ -18,6 +18,7 @@ vi.mock('../../assets/assets.repository', () => ({
 }))
 
 import { assetsRepository } from '../../assets/assets.repository'
+import { avifHeader, gifHeader, jpegHeader, pngHeader, toBase64, webpVp8xHeader } from './image-fixtures'
 
 const { assetsService } = await import(`../../assets/assets.service?bypass=${Date.now()}`)
 
@@ -69,7 +70,7 @@ describe('assetsService', () => {
           format: 'webp',
           width: 120,
           height: 120,
-          contentBase64: Buffer.from('RIFFxxxxWEBP').toString('base64'),
+          contentBase64: toBase64(webpVp8xHeader(120, 120)),
         },
       ],
     })
@@ -220,7 +221,7 @@ describe('assetsService', () => {
       undefined,
       undefined,
       5 * 1024 * 1024,
-      2
+      2048
     )
 
     expect(mockRepo.createVariants).toHaveBeenCalledWith(db, [])
@@ -254,6 +255,187 @@ describe('assetsService', () => {
       expect.any(Object)
     )
     expect(result?.id).toBe('a1')
+  })
+
+  describe('MD-05 server-side dimension limit', () => {
+    const upload = (
+      input: Record<string, unknown>,
+      maxDimension = 2048,
+      allowed?: string[]
+    ) =>
+      assetsService.upload(
+        db,
+        r2,
+        { filename: 'hero.png', mimeType: 'image/png', ...input },
+        'tenant-1',
+        undefined,
+        undefined,
+        undefined,
+        5 * 1024 * 1024,
+        maxDimension,
+        allowed
+      )
+
+    for (const [name, header] of [
+      ['PNG', pngHeader(2049, 100)],
+      ['JPEG', jpegHeader(100, 3000)],
+      ['GIF', gifHeader(4096, 10)],
+      ['WebP', webpVp8xHeader(2500, 2500)],
+      ['AVIF', avifHeader(8192, 4320)],
+    ] as const) {
+      it(`rejects an over-limit ${name} before anything is written to R2 or D1`, async () => {
+        await expect(upload({ contentBase64: toBase64(header) })).rejects.toThrow(
+          'Asset image dimensions exceed the maximum of 2048 px'
+        )
+        expect(r2.put).not.toHaveBeenCalled()
+        expect(mockRepo.createAsset).not.toHaveBeenCalled()
+      })
+    }
+
+    it('ignores client-sent width/height that understate the real size', async () => {
+      await expect(
+        upload({ contentBase64: toBase64(pngHeader(4000, 3000)), width: 100, height: 75 })
+      ).rejects.toThrow('Asset image dimensions exceed')
+      expect(r2.put).not.toHaveBeenCalled()
+    })
+
+    it('stores server-read dimensions instead of client-sent ones', async () => {
+      mockRepo.createAsset.mockResolvedValue({ id: 'a1' })
+      mockRepo.findById.mockResolvedValue({ id: 'a1', variants: [] })
+
+      await upload({ contentBase64: toBase64(pngHeader(1600, 900)), width: 1, height: 1 })
+
+      expect(mockRepo.createAsset).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({ width: 1600, height: 900 })
+      )
+    })
+
+    it('uses the tenant limit, not the default', async () => {
+      await expect(upload({ contentBase64: toBase64(pngHeader(1001, 10)) }, 1000)).rejects.toThrow(
+        'maximum of 1000 px'
+      )
+    })
+
+    it('checks image bytes even when the declared type is not an image', async () => {
+      await expect(
+        upload({
+          filename: 'notes.pdf',
+          mimeType: 'application/pdf',
+          contentBase64: toBase64(pngHeader(5000, 5000)),
+        })
+      ).rejects.toThrow('Asset image dimensions exceed')
+      expect(r2.put).not.toHaveBeenCalled()
+    })
+
+    it('rejects an over-limit variant even when the original is within the limit', async () => {
+      await expect(
+        upload({
+          contentBase64: toBase64(pngHeader(800, 600)),
+          variants: [
+            {
+              variant: 'thumbnail',
+              format: 'webp',
+              width: 150,
+              height: 150,
+              contentBase64: toBase64(webpVp8xHeader(9000, 9000)),
+            },
+          ],
+        })
+      ).rejects.toThrow('Asset image dimensions exceed')
+      expect(r2.put).not.toHaveBeenCalled()
+    })
+
+    it('rejects a corrupt image header as an invalid image', async () => {
+      await expect(
+        upload({ contentBase64: toBase64(pngHeader(10, 10).slice(0, 18)) })
+      ).rejects.toThrow('Invalid image')
+      expect(r2.put).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('MD-05 direct-upload completion', () => {
+    const intentKey = (tenant: string, assetId: string) => `${tenant}/${assetId}/original.png`
+    const objectFor = (data: Uint8Array) => ({
+      size: data.byteLength,
+      arrayBuffer: async () => data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+    })
+
+    it('reads the stored R2 bytes and rejects an over-limit image, deleting the object', async () => {
+      const key = intentKey('tenant-1', 'asset-1')
+      ;(r2.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(objectFor(pngHeader(4000, 10)))
+
+      await expect(
+        assetsService.confirmDirectUpload(
+          db,
+          { assetId: 'asset-1', filename: 'big.png', mimeType: 'image/png', size: 33, objectKey: key },
+          'tenant-1',
+          r2,
+          2048
+        )
+      ).rejects.toThrow('Asset image dimensions exceed the maximum of 2048 px')
+      expect(r2.get).toHaveBeenCalledWith(key, expect.anything())
+      expect(r2.delete).toHaveBeenCalledWith(key)
+      expect(mockRepo.createAsset).not.toHaveBeenCalled()
+    })
+
+    it('stores server-read dimensions for a within-limit image', async () => {
+      const key = intentKey('tenant-1', 'asset-2')
+      ;(r2.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(objectFor(pngHeader(1200, 800)))
+      mockRepo.createAsset.mockResolvedValue({ id: 'asset-2' })
+
+      await assetsService.confirmDirectUpload(
+        db,
+        { assetId: 'asset-2', filename: 'ok.png', mimeType: 'image/png', size: 33, objectKey: key },
+        'tenant-1',
+        r2,
+        2048
+      )
+      expect(mockRepo.createAsset).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({ width: 1200, height: 800, originalKey: key })
+      )
+    })
+
+    it('refuses an objectKey outside the caller tenant and asset prefix', async () => {
+      await expect(
+        assetsService.confirmDirectUpload(
+          db,
+          {
+            assetId: 'asset-3',
+            filename: 'x.png',
+            mimeType: 'image/png',
+            size: 1,
+            objectKey: 'tenant-2/asset-3/original.png',
+          },
+          'tenant-1',
+          r2,
+          2048
+        )
+      ).rejects.toThrow('Direct upload object key does not belong to this asset')
+      expect(r2.get).not.toHaveBeenCalled()
+      expect(mockRepo.createAsset).not.toHaveBeenCalled()
+    })
+
+    it('refuses completion when no object was uploaded', async () => {
+      ;(r2.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(null)
+      await expect(
+        assetsService.confirmDirectUpload(
+          db,
+          {
+            assetId: 'asset-4',
+            filename: 'x.png',
+            mimeType: 'image/png',
+            size: 1,
+            objectKey: intentKey('tenant-1', 'asset-4'),
+          },
+          'tenant-1',
+          r2,
+          2048
+        )
+      ).rejects.toThrow('Direct upload object not found')
+      expect(mockRepo.createAsset).not.toHaveBeenCalled()
+    })
   })
 
   it('getPublicVariant resolves variant and returns object', async () => {
