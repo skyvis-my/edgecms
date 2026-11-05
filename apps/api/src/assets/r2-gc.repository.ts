@@ -108,6 +108,11 @@ export const r2GcRepository = {
     await applyGcUpdate(db, objectKey, { status: 'sent', nextAttemptAt: null })
   },
 
+  /** Keep a prefix row due now: one list page was deleted and more objects remain. */
+  async markContinueByKey(db: Database, objectKey: string): Promise<void> {
+    await applyGcUpdate(db, objectKey, { status: 'pending', nextAttemptAt: null })
+  },
+
   /** Leave a key pending with a +5min backoff after a failed r2.delete. */
   async markFailedByKey(db: Database, objectKey: string): Promise<void> {
     await applyGcUpdate(db, objectKey, { status: 'pending', nextAttemptAt: backoffIso() })
@@ -154,13 +159,34 @@ async function applyGcUpdate(
 }
 
 /**
+ * HS-09: a row whose key ends in `/` is a prefix cleanup. Only a single tenant
+ * prefix (`tenants/<tenantId>/`) is ever accepted, so a bad row can never
+ * empty the bucket.
+ */
+export const TENANT_PREFIX_KEY = /^tenants\/[^/]+\/$/
+const PREFIX_LIST_LIMIT = 1000
+
+type GcBucket = Pick<R2Bucket, 'delete'> & Partial<Pick<R2Bucket, 'list'>>
+
+/** Delete one list page under a tenant prefix. Returns true once nothing is left. */
+async function deletePrefixPage(r2: GcBucket, prefix: string): Promise<boolean> {
+  if (!TENANT_PREFIX_KEY.test(prefix)) throw new Error('Refusing R2 prefix that is not a tenant prefix')
+  if (typeof r2.list !== 'function') throw new Error('R2 list is not available')
+  const page = await r2.list({ prefix, limit: PREFIX_LIST_LIMIT })
+  const keys = page.objects.map((object) => object.key).filter((key) => key.startsWith(prefix))
+  if (keys.length > 0) await r2.delete(keys)
+  return !page.truncated
+}
+
+/**
  * Sweep pending R2 deletes: claim due rows, r2.delete each (idempotent),
- * mark sent/failed. Returns counts. Never throws (r2 client errors are
- * per-key failures).
+ * mark sent/failed. Prefix rows delete one list page per sweep and stay due
+ * until the prefix is empty. Returns counts. Never throws (r2 client errors
+ * are per-key failures).
  */
 export async function sweepR2GcOutbox(
   db: Database,
-  r2: Pick<R2Bucket, 'delete'>,
+  r2: GcBucket,
   opts: { limit?: number } = {}
 ): Promise<{ deleted: number; failed: number }> {
   const limit = Math.min(100, Math.max(1, Math.floor(opts.limit ?? 50) || 50))
@@ -174,7 +200,15 @@ export async function sweepR2GcOutbox(
   if (rows.length === 0) return { deleted: 0, failed: 0 }
   const outcomes = await Promise.allSettled(
     rows.map(async (row) => {
-      await r2.delete(row.objectKey)
+      if (row.objectKey.endsWith('/')) {
+        const drained = await deletePrefixPage(r2, row.objectKey)
+        if (!drained) {
+          await r2GcRepository.markContinueByKey(db, row.objectKey)
+          return
+        }
+      } else {
+        await r2.delete(row.objectKey)
+      }
       await r2GcRepository.markSentByKey(db, row.objectKey)
     })
   )

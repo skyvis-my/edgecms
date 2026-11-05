@@ -152,3 +152,59 @@ describe('sweepR2GcOutbox', () => {
     expect(r2.delete).not.toHaveBeenCalled()
   })
 })
+
+describe('sweepR2GcOutbox tenant prefix rows (HS-09)', () => {
+  function prefixRow(objectKey: string): R2GcRow {
+    return { id: 'p', tenantId: 't1', objectKey, status: 'pending', attempts: 0, nextAttemptAt: null, createdAt: '2024-01-01' }
+  }
+
+  function dbWith(rows: R2GcRow[]) {
+    const { select } = chainableSelect(rows)
+    const { update, set } = chainableUpdate()
+    return { db: { select, update } as unknown as Database, set }
+  }
+
+  it('deletes one listing per sweep and keeps the row due while objects remain', async () => {
+    const { db, set } = dbWith([prefixRow('tenants/t1/')])
+    const list = vi.fn(async () => ({
+      objects: [{ key: 'tenants/t1/a.png' }, { key: 'tenants/t1/b.png' }, { key: 'tenants/t10/x.png' }],
+      truncated: true,
+    }))
+    const del = vi.fn(async () => undefined)
+
+    const result = await sweepR2GcOutbox(db, { list, delete: del } as never)
+
+    expect(result).toEqual({ deleted: 1, failed: 0 })
+    expect(list).toHaveBeenCalledTimes(1)
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ prefix: 'tenants/t1/' }))
+    expect(del).toHaveBeenCalledWith(['tenants/t1/a.png', 'tenants/t1/b.png'])
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'pending', nextAttemptAt: null }))
+    expect(set).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'sent' }))
+  })
+
+  it('marks the prefix row sent once the listing is not truncated', async () => {
+    const { db, set } = dbWith([prefixRow('tenants/t1/')])
+    const list = vi.fn(async () => ({ objects: [], truncated: false }))
+    const del = vi.fn(async () => undefined)
+
+    await sweepR2GcOutbox(db, { list, delete: del } as never)
+
+    expect(del).not.toHaveBeenCalled()
+    expect(set).toHaveBeenCalledWith(expect.objectContaining({ status: 'sent' }))
+  })
+
+  it('refuses prefixes that are not a single tenant prefix', async () => {
+    for (const key of ['tenants/', 'tenants/t1/assets/', '/', 'other/t1/']) {
+      const { db, set } = dbWith([prefixRow(key)])
+      const list = vi.fn(async () => ({ objects: [{ key: 'tenants/t1/a.png' }], truncated: false }))
+      const del = vi.fn(async () => undefined)
+
+      const result = await sweepR2GcOutbox(db, { list, delete: del } as never)
+
+      expect(result).toEqual({ deleted: 0, failed: 1 })
+      expect(list).not.toHaveBeenCalled()
+      expect(del).not.toHaveBeenCalled()
+      expect(set).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'sent' }))
+    }
+  })
+})
