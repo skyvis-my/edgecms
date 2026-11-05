@@ -172,9 +172,11 @@ export function storeInEdgeCache(
     if (cdnTtl === null || cdnTtl <= 0) return
     const headers = new Headers(response.headers)
     for (const name of STRIPPED_ON_STORE) headers.delete(name)
-    for (const name of Array.from(headers.keys())) {
-      if (STRIPPED_PREFIXES_ON_STORE.some((prefix) => name.startsWith(prefix))) headers.delete(name)
-    }
+    const prefixed: string[] = []
+    headers.forEach((_value, name) => {
+      if (STRIPPED_PREFIXES_ON_STORE.some((prefix) => name.startsWith(prefix))) prefixed.push(name)
+    })
+    for (const name of prefixed) headers.delete(name)
     headers.set(EDGE_CACHE_BROWSER_CC_HEADER, response.headers.get('cache-control') ?? '')
     headers.set('cache-control', `public, max-age=${cdnTtl}`)
     copy = new Response(response.clone().body, { status: 200, headers })
