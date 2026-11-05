@@ -8,6 +8,7 @@ import { entriesRepository } from '@/entries/entries.repository'
 import type { Env } from '@/env'
 import type { CommandEnvelope, CommandResult } from '@edgecms/schemas/commands'
 import { runContextTool, type ContextCitation } from './context/context-gateway'
+import { createPreviewReceipt, PreviewReceiptError, redeemPreviewReceipt } from './preview-receipt.service'
 import { aiImportsRepository, type AiImportBatch, type AiSuggestion } from './imports.repository'
 import {
   stageWordPressImportCommands,
@@ -467,6 +468,7 @@ export const aiImportService = {
   ) {
     const suggestionSet = await aiImportsRepository.findSuggestionSet(db, suggestionSetId, tenantId)
     if (!suggestionSet) throw new Error('Suggestion set was not found')
+    if (suggestionSet.status === 'applied') throw new Error('Suggestion set was already applied')
     const { rows } = await aiImportsRepository.listSuggestions(db, suggestionSet.id, tenantId, {
       perPage: 100,
       status: 'accepted',
@@ -495,7 +497,25 @@ export const aiImportService = {
       dryRunPayloadJson: commands,
       dryRunResultJson: results,
     })
-    return { commands, commandResults: results, validationErrors: [], dryRunHash }
+    // AI-08 / AI-05: apply needs a receipt for exactly these commands, bound
+    // to this reviewer and tenant. No receipt when the preview failed.
+    const previewOk = commands.length > 0 && results.every((result) => result.status !== 'failed')
+    const receipt = previewOk
+      ? await createPreviewReceipt({
+          commands,
+          userId,
+          tenantId,
+          kv,
+          explanation: `AI import suggestion set '${suggestionSet.id}'`,
+        })
+      : undefined
+    return {
+      commands,
+      commandResults: results,
+      validationErrors: [],
+      dryRunHash,
+      ...(receipt ? { previewReceipt: receipt.receiptId, expiresAt: receipt.expiresAt } : {}),
+    }
   },
 
   async applySuggestionSet(
@@ -506,10 +526,15 @@ export const aiImportService = {
     userId: string,
     tenantId?: string,
     requestMeta?: CommandContext['requestMeta'],
-    contentAccess?: ContentAccess
+    contentAccess?: ContentAccess,
+    previewReceipt?: string
   ) {
     const suggestionSet = await aiImportsRepository.findSuggestionSet(db, suggestionSetId, tenantId)
     if (!suggestionSet) throw new Error('Suggestion set was not found')
+    if (suggestionSet.status === 'applied') throw new Error('Suggestion set was already applied')
+    if (!previewReceipt) {
+      throw new Error('A preview receipt from the latest dry-run is required before apply')
+    }
     if (!suggestionSet.dryRunHash || suggestionSet.dryRunHash !== dryRunHash) {
       throw new Error('Latest dry-run hash is required before apply')
     }
@@ -520,6 +545,23 @@ export const aiImportService = {
     }))
     const currentHash = await commandHash(commands.map((command) => ({ ...command, dryRun: true })))
     if (currentHash !== dryRunHash) throw new Error('Dry-run payload is stale')
+
+    // AI-05: the receipt must cover exactly the stored dry-run commands and is
+    // claimed for single use before anything runs.
+    const verification = await redeemPreviewReceipt({
+      receiptId: previewReceipt,
+      userId,
+      tenantId,
+      kv,
+      db,
+      commandsToVerify: commands.map((command) => ({ ...command, dryRun: true })),
+    })
+    if (!verification.valid) {
+      throw new PreviewReceiptError(
+        verification.error ?? 'RECEIPT_NOT_FOUND',
+        verification.message ?? 'Preview receipt verification failed'
+      )
+    }
 
     const context: CommandContext = {
       db,
