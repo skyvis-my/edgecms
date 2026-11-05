@@ -139,9 +139,9 @@ const { token, expiresAt } = await cms.createPreviewToken({
 })
 ```
 
-This sends `POST /api/tenants/:tenantSlug/public/preview-token`. On the tenant-scoped path, a `POST` counts as a tenant admin mutation, so the caller must be signed in with a role that can mutate tenant admin routes (owner, admin or editor). Call it from server code or the admin, not from a public browser bundle.
+This sends `POST /api/tenants/:tenantSlug/public/preview-token`. The caller must be signed in with a role that can change tenant admin routes (owner, admin or editor) and must be able to read the collection or entry named. The token is bound to that user and tenant and lasts at most 1 day. Call it from server code or the admin, not from a public browser bundle. See [Preview and drafts](public-api.md#preview-and-drafts).
 
-`list`, `get` and `getSingleton` accept a `previewToken` option. The client sends it as the `previewToken` query parameter and the `x-edgecms-preview-token` header, but the public read handlers do not read either today: they return published content only. Draft content reaches a preview page through the postMessage bridge below, not through these reads. The [Preview](public-api.md#preview) rules in the Public API Guide still apply.
+`list`, `get` and `getSingleton` accept a `previewToken` option. The client sends it as the `previewToken` query parameter and the `x-edgecms-preview-token` header, but the public read handlers do not read either today: they return published content only. Draft content reaches a preview page through the postMessage bridge below, not through these reads. The [Preview and drafts](public-api.md#preview-and-drafts) rules in the Public API Guide still apply.
 
 ## Rich text
 
