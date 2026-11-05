@@ -22,7 +22,7 @@ Event names use `{entity}.{action}` (`apps/api/src/webhooks/event-bus.ts`).
 | `collection.created`, `collection.updated`, `collection.deleted` | Never today. The names are accepted for subscriptions, but no code emits them. |
 | `tenant.created`, `tenant.activated`, `tenant.suspended`, `tenant.deleted`, `tenant.limit_reached` | Tenant lifecycle; see [below](#tenant-lifecycle-events). |
 
-`cancelSchedule` and the `transaction` wrapper emit nothing; each sub-command of a transaction emits its own event. Dry runs, failed commands and changes made outside the command engine (direct CRUD routes, collection routes, version rollback) emit nothing.
+`cancelSchedule` and the `transaction` wrapper emit nothing; each sub-command of a transaction emits its own event. Dry runs, failed commands and changes made outside the command engine (direct CRUD routes, collection routes) emit nothing.
 
 ## Payload
 
