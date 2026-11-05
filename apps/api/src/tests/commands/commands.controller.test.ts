@@ -80,6 +80,31 @@ describe('commandsController', () => {
     expect(response.status).toBe(200)
   })
 
+  it('CMD-03: forwards a transaction dryRun to the engine and returns its combined diff', async () => {
+    const diff = [{ field: 'title', before: 'A', after: 'B', action: 'update', commandIndex: 0 }]
+    mockExecuteCommand.mockResolvedValueOnce({ status: 'dry_run', type: 'transaction', diff })
+
+    const response = await app.handle(
+      new Request('http://localhost/api/admin/commands', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'idempotency-key': 'k1' },
+        body: JSON.stringify({
+          ...baseBody,
+          type: 'transaction',
+          dryRun: true,
+          payload: { commands: [{ ...baseBody, type: 'updateEntry' }] },
+        }),
+      })
+    )
+
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { data: { diff: unknown } }
+    expect(body.data.diff).toEqual(diff)
+    const calls = mockExecuteCommand.mock.calls
+    const [, envelope] = calls[calls.length - 1]!
+    expect(envelope).toMatchObject({ type: 'transaction', dryRun: true })
+  })
+
   it('maps known error codes to status codes', async () => {
     const cases = [
       ['VERSION_CONFLICT', 409],
@@ -103,6 +128,33 @@ describe('commandsController', () => {
         })
       )
       expect(response.status).toBe(status)
+    }
+  })
+
+  it('returns the typed preview receipt reason with its status (AI-05)', async () => {
+    const cases = [
+      ['RECEIPT_ALREADY_USED', 409],
+      ['TENANT_MISMATCH', 403],
+      ['HASH_MISMATCH', 400],
+      ['RECEIPT_CLAIM_FAILED', 503],
+    ] as const
+
+    for (const [reason, status] of cases) {
+      mockExecuteCommand.mockResolvedValueOnce({
+        status: 'failed',
+        error: { code: 'INVALID_PREVIEW_RECEIPT', message: 'x', reason },
+      })
+      const response = await app.handle(
+        new Request('http://localhost/api/admin/commands', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(baseBody),
+        })
+      )
+      expect(response.status).toBe(status)
+      const body = (await response.json()) as { error: { code: string; details?: { reason?: string } } }
+      expect(body.error.code).toBe('INVALID_PREVIEW_RECEIPT')
+      expect(body.error.details?.reason).toBe(reason)
     }
   })
 

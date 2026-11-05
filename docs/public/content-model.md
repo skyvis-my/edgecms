@@ -158,9 +158,11 @@ GET /api/tenants/:tenantSlug/public/posts/hello-world?populate=*
 - `depth` is clamped to `1`–`3` and defaults to `1`.
 - A visited set stops circular links from looping.
 - `one-to-one` fields become one object or `null`. Other types become arrays.
-- Collection list routes do not populate.
+- Collection list routes ignore `populate` and always populate every linked field one level deep. Singleton routes populate every linked field two levels deep.
 
-Populated entries are full entry rows (`id`, `slug`, `status`, `data`, `version`, timestamps). They are scoped to the tenant but are **not** filtered by lifecycle status, so a populated draft or archived entry is returned as-is. Only link published content you are happy to expose, until this is fixed. See also the relation notes in the [public API](public-api.md) guide.
+Populated entries are full entry rows (`id`, `slug`, `status`, `data`, `version`, timestamps), scoped to the tenant. Public routes return only related entries that are publicly visible right now, using the same rule as public list and get: status `published` or `scheduled`, `publishAt` empty or in the past, and `unpublishAt` empty or in the future. Draft, archived, not-yet-live and expired related entries are left out: a `one-to-one` field becomes `null` and arrays skip them. Admin reads still return every related entry.
+
+A public snapshot's cache TTL also expires before the next `publishAt` or `unpublishAt` of any related entry it resolved, so a related entry appears or disappears on schedule (60-second floor, same as the parent collection's TTL). Editing a related entry does not purge snapshots of entries that link to it; they refresh when their TTL ends or their own collection changes. See also the relation notes in the [public API](public-api.md) guide.
 
 ## Entry Lifecycle
 
@@ -243,6 +245,8 @@ GET  /api/admin/entries/:entryId/versions/:versionId
 GET  /api/admin/entries/:entryId/versions/:versionId/diff/:targetVersionId
 POST /api/admin/entries/:entryId/versions/:versionId/rollback
 ```
+
+The same routes exist under `/api/tenants/:slug`. The entry must belong to the request's tenant (or to the global scope on the unprefixed routes); an entry from any other scope returns `404`.
 
 Rollback copies the chosen version's `data` onto the entry, bumps `version`, and writes a version row. It runs outside the command engine: it writes a `change_log` row but no `audit_log` row, emits no webhook and does not invalidate the public cache.
 

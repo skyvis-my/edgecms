@@ -23,7 +23,8 @@
       "@edgecms/schemas": ["../../packages/schemas/src/index.ts"],
       "@edgecms/schemas/*": ["../../packages/schemas/src/*"],
       "@edgecms/client": ["../../packages/client/src/index.ts"],
-      "@edgecms/client/*": ["../../packages/client/src/*"]
+      "@edgecms/client/*": ["../../packages/client/src/*"],
+      "@edgecms/plugin-sdk": ["../../packages/plugin-sdk/src/index.ts"]
     },
 
     /* Linting */

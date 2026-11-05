@@ -1,6 +1,7 @@
 import { Elysia, t } from 'elysia'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
-import { toServiceResponse } from '@/shared/utils/service-response'
+import { createErrorEnvelope, toServiceResponse } from '@/shared/utils/service-response'
+import { requestCanAccessContent } from '@/auth/content-access'
 import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import { versioningService } from './versioning.service'
 
@@ -12,6 +13,11 @@ import { versioningService } from './versioning.service'
  *
  * Registered under `/api/admin/entries/:entryId/versions` in the main app.
  */
+const CONTENT_FORBIDDEN = createErrorEnvelope(
+  'FORBIDDEN',
+  'Your role cannot access entries in this collection'
+)
+
 export const versioningController = new Elysia({ prefix: '/api/admin/entries' })
   .use(betterAuthPlugin)
   .use(withTenantBindings)
@@ -28,12 +34,22 @@ export const versioningController = new Elysia({ prefix: '/api/admin/entries' })
       page: t.Optional(t.String()),
       limit: t.Optional(t.String()),
     }),
-  }, async ({ db, params, query, set }) => {
+  }, async ({ db, params, query, request, set, tenantCtx }) => {
+    if (
+      !(await requestCanAccessContent(request, db, tenantCtx?.tenant.id, 'read', { entryIds: [params.entryId] }))
+    ) {
+      set.status = 403
+      return CONTENT_FORBIDDEN
+    }
     const page = query.page ? Number.parseInt(query.page, 10) : undefined
     const limit = query.limit ? Number.parseInt(query.limit, 10) : undefined
     return toServiceResponse(
       set,
-      await versioningService.listVersions(db, params.entryId, { page, limit })
+      await versioningService.listVersions(db, params.entryId, {
+        page,
+        limit,
+        tenantId: tenantCtx?.tenant.id,
+      })
     )
   })
 
@@ -46,10 +62,16 @@ export const versioningController = new Elysia({ prefix: '/api/admin/entries' })
       entryId: t.String({ minLength: 1 }),
       versionId: t.String({ minLength: 1 }),
     }),
-  }, async ({ db, params, set }) => {
+  }, async ({ db, params, request, set, tenantCtx }) => {
+    if (
+      !(await requestCanAccessContent(request, db, tenantCtx?.tenant.id, 'read', { entryIds: [params.entryId] }))
+    ) {
+      set.status = 403
+      return CONTENT_FORBIDDEN
+    }
     return toServiceResponse(
       set,
-      await versioningService.getVersion(db, params.entryId, params.versionId)
+      await versioningService.getVersion(db, params.entryId, params.versionId, tenantCtx?.tenant.id)
     )
   })
 
@@ -63,14 +85,21 @@ export const versioningController = new Elysia({ prefix: '/api/admin/entries' })
       versionId: t.String({ minLength: 1 }),
       targetVersionId: t.String({ minLength: 1 }),
     }),
-  }, async ({ db, params, set }) => {
+  }, async ({ db, params, request, set, tenantCtx }) => {
+    if (
+      !(await requestCanAccessContent(request, db, tenantCtx?.tenant.id, 'read', { entryIds: [params.entryId] }))
+    ) {
+      set.status = 403
+      return CONTENT_FORBIDDEN
+    }
     return toServiceResponse(
       set,
       await versioningService.diffVersions(
         db,
         params.entryId,
         params.versionId,
-        params.targetVersionId
+        params.targetVersionId,
+        tenantCtx?.tenant.id
       )
     )
   })
@@ -84,7 +113,13 @@ export const versioningController = new Elysia({ prefix: '/api/admin/entries' })
       entryId: t.String({ minLength: 1 }),
       versionId: t.String({ minLength: 1 }),
     }),
-  }, async ({ db, params, user, set, tenantCtx }) => {
+  }, async ({ db, params, request, user, set, tenantCtx }) => {
+    if (
+      !(await requestCanAccessContent(request, db, tenantCtx?.tenant.id, 'update', { entryIds: [params.entryId] }))
+    ) {
+      set.status = 403
+      return CONTENT_FORBIDDEN
+    }
     const userId = user?.id
 
     const result = await versioningService.rollback(
@@ -92,7 +127,8 @@ export const versioningController = new Elysia({ prefix: '/api/admin/entries' })
       params.entryId,
       params.versionId,
       userId,
-      tenantCtx?.tenant.slug ?? null
+      tenantCtx?.tenant.slug ?? null,
+      tenantCtx?.tenant.id
     )
 
     if (!result.success) {

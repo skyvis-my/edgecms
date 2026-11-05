@@ -19,6 +19,7 @@ import { Main } from '@/components/layout/main'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
+import { PluginPanelSlot } from '@/features/plugins/admin-contributions/admin-contributions'
 import { ServiceMatrixCard } from './components/service-matrix-card'
 import { TenantFleetSection } from './components/tenant-fleet-section'
 import { setCurrentTenantSlug, useTenants } from '@/features/tenants/api'
@@ -799,6 +800,9 @@ export function DashboardPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* HS-10: panels contributed by trusted plugins. */}
+        <PluginPanelSlot slot='dashboard' tenantSlug={null} />
 
         <TenantFleetSection
           tenants={tenants}

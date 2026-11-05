@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, vi } from 'bun:test'
 import { Elysia } from 'elysia'
 import type { TenantContext } from '../../tenants/tenant-context'
+import type { TenantRow } from '../../tenants/tenants.repository'
 
 // Mock modules using Bun's mock.module (must be before dynamic imports)
 const mockEnv: { DB: Record<string, never>; SUPER_ADMIN_EMAILS?: string } = {
@@ -55,7 +56,13 @@ mock.module('@/auth/auth.middleware', () => ({
 // Cache-busted import: @/app (loaded by app/main tests) binds the real
 // tenant.middleware; a plain import would reuse that copy with real deps.
 const { tenantMiddleware } = await import(`../../tenants/tenant.middleware?bypass=${Date.now()}`)
-const { clearTenantIsolateCache, setTenantIsolateCacheEnabled } = await import('../../tenants/tenant-cache')
+const {
+  clearTenantIsolateCache,
+  getIsolateCachedTenant,
+  setCachedTenant,
+  setTenantIsolateCacheEnabled,
+  TENANT_ISOLATE_TTL_MS,
+} = await import('../../tenants/tenant-cache')
 
 describe('Tenant Middleware', () => {
   beforeEach(() => {
@@ -443,6 +450,10 @@ describe('Tenant Middleware', () => {
     beforeEach(() => {
       setTenantIsolateCacheEnabled(true)
       clearTenantIsolateCache()
+      // Anonymous public reader: earlier tests leave a session implementation behind.
+      mockGetSession.mockReset()
+      mockGetSession.mockResolvedValue(null)
+      mockEnv.SUPER_ADMIN_EMAILS = undefined
     })
 
     afterEach(() => {
@@ -517,6 +528,110 @@ describe('Tenant Middleware', () => {
       const res3 = await app.handle(new Request('http://localhost/test/nonexistent-tenant'))
       expect(res3.status).toBe(200)
       expect(mockFindBySlug).toHaveBeenCalledTimes(2)
+    })
+
+    const publicReadApp = () =>
+      new Elysia()
+        .use(tenantMiddleware)
+        .get('/api/tenants/:tenantSlug/api/public/articles', ({ tenant }: { tenant?: TenantContext }) => ({
+          id: tenant?.tenant.id,
+        }))
+    const publicRead = (app: ReturnType<typeof publicReadApp>, slug: string) =>
+      app.handle(new Request(`http://localhost/api/tenants/${slug}/api/public/articles`))
+    const tenantRow = (status: string, slug = 'hs04') => ({
+      id: `tenant-${slug}`,
+      slug,
+      name: 'HS-04 Corp',
+      status,
+      createdAt: '2026-02-07T00:00:00Z',
+      updatedAt: '2026-02-07T00:00:00Z',
+    })
+
+    it('keeps the documented staleness bound at or under 30 seconds', () => {
+      expect(TENANT_ISOLATE_TTL_MS).toBeGreaterThan(0)
+      expect(TENANT_ISOLATE_TTL_MS).toBeLessThanOrEqual(30_000)
+    })
+
+    it('blocks a disabled tenant immediately in the isolate that changed its state', async () => {
+      const app = publicReadApp()
+      mockFindBySlug.mockResolvedValue(tenantRow('active'))
+      expect((await publicRead(app, 'hs04')).status).toBe(200)
+      expect((await publicRead(app, 'hs04')).status).toBe(200)
+      expect(mockFindBySlug).toHaveBeenCalledTimes(1)
+
+      // tenantsService.update invalidates the slug on every status change.
+      mockFindBySlug.mockResolvedValue(tenantRow('disabled'))
+      clearTenantIsolateCache('hs04')
+      const blocked = await publicRead(app, 'hs04')
+      expect(blocked.status).toBe(403)
+      expect(mockFindBySlug).toHaveBeenCalledTimes(2)
+      // The disabled row is cached too: still blocked without another D1 read.
+      expect((await publicRead(app, 'hs04')).status).toBe(403)
+      expect(mockFindBySlug).toHaveBeenCalledTimes(2)
+    })
+
+    it('stops serving a disabled tenant in other isolates once the TTL elapses', async () => {
+      const start = Date.now()
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(start)
+      try {
+        const app = publicReadApp()
+        mockFindBySlug.mockResolvedValue(tenantRow('active'))
+        expect((await publicRead(app, 'hs04')).status).toBe(200)
+
+        // Disabled elsewhere: this isolate never sees the invalidation.
+        mockFindBySlug.mockResolvedValue(tenantRow('disabled'))
+        clock.mockReturnValue(start + TENANT_ISOLATE_TTL_MS - 1)
+        expect((await publicRead(app, 'hs04')).status).toBe(200)
+
+        clock.mockReturnValue(start + TENANT_ISOLATE_TTL_MS + 1)
+        expect((await publicRead(app, 'hs04')).status).toBe(403)
+      } finally {
+        clock.mockRestore()
+      }
+    })
+
+    it('does not let a lookup that started before an invalidation re-cache the old row', async () => {
+      const app = publicReadApp()
+      let resolveStale: (row: ReturnType<typeof tenantRow>) => void = () => {}
+      mockFindBySlug.mockImplementationOnce(
+        () => new Promise((resolve) => (resolveStale = resolve))
+      )
+      const inFlight = publicRead(app, 'hs04')
+      await Promise.resolve()
+
+      // Admin disables the tenant while the read above is still waiting on D1.
+      clearTenantIsolateCache('hs04')
+      resolveStale(tenantRow('active'))
+      expect((await inFlight).status).toBe(200)
+
+      mockFindBySlug.mockResolvedValue(tenantRow('disabled'))
+      expect((await publicRead(app, 'hs04')).status).toBe(403)
+    })
+
+    it('keeps suspended tenants readable but caches nothing across tenants', async () => {
+      const app = publicReadApp()
+      mockFindBySlug.mockImplementation(async (_db: unknown, slug: string) =>
+        slug === 'acme' ? tenantRow('suspended', 'acme') : tenantRow('disabled', 'globex')
+      )
+      expect((await publicRead(app, 'acme')).status).toBe(200)
+      expect((await publicRead(app, 'globex')).status).toBe(403)
+      expect((await publicRead(app, 'acme')).status).toBe(200)
+      expect(mockFindBySlug).toHaveBeenCalledTimes(2)
+    })
+
+    it('caches a row only under its exact slug (P2)', async () => {
+      const row = tenantRow('active', 'acme') as unknown as TenantRow
+      // An id-or-slug lookup (api-security guard) resolved an id to acme's row.
+      setCachedTenant(new Request('http://localhost/x'), row.id, Promise.resolve(row))
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(getIsolateCachedTenant(row.id)).toBeUndefined()
+
+      setCachedTenant(new Request('http://localhost/y'), 'acme', Promise.resolve(row))
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(getIsolateCachedTenant('acme')).toEqual(row)
+      expect(getIsolateCachedTenant('ACME')).toBeUndefined()
     })
   })
 })

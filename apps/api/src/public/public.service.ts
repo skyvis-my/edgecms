@@ -4,6 +4,7 @@ import { kvService } from '@/cache/kv.service'
 import { snapshotService } from '@/cache/snapshot.service'
 import type { CollectionRow } from '@/collections/collections.repository'
 import type { Database } from '@/database/db'
+import { createPublicVisibility, type PublicVisibility, secondsUntilTransition } from '@/entries/public-visibility'
 import { computeDynamicTTL } from '@/scheduling/ttl.service'
 import type { ParsedFilter, ParsedSort } from '@/public/query-filter'
 
@@ -22,6 +23,22 @@ type EmbeddedSnapshotTtls = {
   browserTTL: number
   cdnTTL: number
   etag?: string
+}
+
+/**
+ * Snapshot TTL: expire before the parent collection's next scheduled
+ * transition AND before any populated related entry (possibly in another
+ * collection) enters or leaves its publish window.
+ */
+async function computeSnapshotTTL(
+  db: Database,
+  collectionId: string,
+  visibility: PublicVisibility
+): Promise<number> {
+  const dynamicTTL = await computeDynamicTTL(db, collectionId, 3600)
+  const relatedSeconds = secondsUntilTransition(visibility)
+  // Same 60s floor as computeBoundedTTL to avoid cache thrashing.
+  return relatedSeconds === null ? dynamicTTL : Math.min(dynamicTTL, Math.max(60, relatedSeconds))
 }
 
 function toHeaderTtls(dynamicTTL: number): { browserTTL: number; cdnTTL: number } {
@@ -510,6 +527,7 @@ export const publicService = {
                     status: 416,
                     headers: {
                       'Content-Range': `bytes */${total}`,
+                      'Vary': 'Accept',
                       'Accept-Ranges': 'bytes',
                       'Cache-Control': 'public, max-age=31536000, immutable',
                       'CDN-Cache-Control': 'public, max-age=31536000',
@@ -604,6 +622,7 @@ export const publicService = {
       const extraConditions = buildDrizzleConditions(gated.filters)
       const orderByClause = buildSortClause(gated.sort)
 
+      const visibility = createPublicVisibility()
       const generatedSnapshot = await snapshotService.generateListSnapshot(
         db,
         collectionSlug,
@@ -611,14 +630,15 @@ export const publicService = {
         tenantId,
         { page, perPage },
         { extraConditions, orderByClause },
-        collection
+        collection,
+        visibility
       )
 
       if (!generatedSnapshot) {
         return { success: false, error: { status: 404, message: 'Collection not found' } }
       }
 
-      const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
+      const dynamicTTL = await computeSnapshotTTL(db, collection.id, visibility)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
       const etag = generateWeakETag(cacheTag, generatedSnapshot)
       const rawJson = JSON.stringify(generatedSnapshot)
@@ -725,6 +745,7 @@ export const publicService = {
     const cacheTag = buildPublicCacheTag(collection, locale, tenantId, idOrSlug)
 
     return dedupeSnapshotRequest(versionedKey, async () => {
+      const visibility = createPublicVisibility()
       const generatedSnapshot = await snapshotService.generateEntrySnapshot(
         db,
         collectionSlug,
@@ -735,7 +756,8 @@ export const publicService = {
           populate: fieldNames,
           depth: normalizedDepth,
         },
-        collection
+        collection,
+        visibility
       )
 
       if (!generatedSnapshot) {
@@ -745,7 +767,7 @@ export const publicService = {
         }
       }
 
-      const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
+      const dynamicTTL = await computeSnapshotTTL(db, collection.id, visibility)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
       const etag = generateWeakETag(cacheTag, generatedSnapshot)
       const rawJson = JSON.stringify(generatedSnapshot)
@@ -864,6 +886,7 @@ export const publicService = {
         }
       }
 
+      const visibility = createPublicVisibility()
       const generatedSnapshot = await snapshotService.generateEntrySnapshot(
         db,
         collectionSlug,
@@ -871,13 +894,14 @@ export const publicService = {
         locale,
         tenantId,
         undefined,
-        collection
+        collection,
+        visibility
       )
       if (!generatedSnapshot) {
         return { success: false, error: { status: 404, message: 'Failed to generate snapshot' } }
       }
 
-      const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
+      const dynamicTTL = await computeSnapshotTTL(db, collection.id, visibility)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
       const etag = generateWeakETag(cacheTag, generatedSnapshot)
       const rawJson = JSON.stringify(generatedSnapshot)

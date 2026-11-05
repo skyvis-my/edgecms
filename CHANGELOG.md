@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Security
+- Global `/api/mcp` no longer accepts a caller-supplied `tenantId` and requires a deployment key or a global admin/editor role; entry version routes use the request tenant (P2). **Upgrade step:** deployment-key clients that passed `tenantId` must use `/api/tenants/:slug/api/mcp`.
+- Custom-role grants are enforced on content routes and commands; editors can no longer read webhook config or delivery logs (PL-03).
+- AI and MCP preview receipts are single-use, claimed atomically in D1 before execution, and must match the reviewed commands exactly (AI-05). Migration `0038`.
+- Public `populate` no longer returns related entries outside their publish window (CM-04).
+- Image uploads are checked against the tenant dimension limit from the file header; direct-upload completion only accepts the caller's own tenant key (MD-05).
+
+### Added
+- Cloudflare Cache API layer for anonymous public reads (DL-03).
+- Tenant offboarding: NDJSON export and confirmed, resumable deletion of shared-mode tenants with an audit receipt (HS-09). Migration `0039`.
+- Host admin contributions (navigation, panels, banners) through the plugin SDK (HS-10).
+- Unified entry status indicator with offline-queued state in the admin (OF-05).
+
+### Changed
+- Cached public reads no longer read KV for rate limiting or D1 for the tenant row while it is cached (DL-10).
+- A `transaction` dry run writes nothing and returns a combined diff and one receipt (CMD-03).
+
 ## [0.2.0] - 2026-10-22
 
 ### Security
