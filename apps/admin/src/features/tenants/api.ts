@@ -3,7 +3,6 @@ import { z } from 'zod'
 import { DEFAULT_ASSET_ALLOWED_MIME_TYPES } from '@/features/assets/file-policy'
 import {
   appendListItem,
-  filterListItems,
   mapListItems,
   patchDetail,
   restoreQuerySnapshot,
@@ -123,11 +122,6 @@ const updateTenantDescriptor: OfflineMutationDescriptor<{
   method: 'PUT',
   path: ({ slug }) => `/admin/tenants/${slug}`,
   body: ({ input }) => input,
-}
-
-const deleteTenantDescriptor: OfflineMutationDescriptor<string> = {
-  method: 'DELETE',
-  path: (slug) => `/admin/tenants/${slug}`,
 }
 
 const addTenantUserDescriptor: OfflineMutationDescriptor<{
@@ -282,29 +276,9 @@ export function useUpdateTenant() {
   })
 }
 
-/**
- * Hook to delete a tenant
- */
-export function useDeleteTenant() {
-  return useOfflineMutation<void, string, { previousTenants: Tenant[] }>({
-    descriptor: deleteTenantDescriptor,
-    runOnline: (slug) => edenDelete(`/admin/tenants/${slug}`),
-    buildOfflineResult: () => undefined,
-    onMutateOptimistic: async (queryClient, slug) => {
-      const previousTenants = await snapshotListQuery<Tenant>(queryClient, tenantsKeys.all)
-      filterListItems(queryClient, tenantsKeys.all, (tenant: Tenant) => tenant.slug !== slug)
-      return { previousTenants }
-    },
-    onRollbackOptimistic: (queryClient, context) => {
-      if (context?.previousTenants) {
-        restoreQuerySnapshot(queryClient, tenantsKeys.all, context.previousTenants)
-      }
-    },
-    onMutationSuccess: (queryClient) => {
-      queryClient.invalidateQueries({ queryKey: tenantsKeys.all })
-    },
-  })
-}
+// Tenant deletion is not an offline mutation: the direct DELETE route is
+// retired (HS-09). Use the request -> export -> confirm hooks in
+// `./offboarding-api`.
 
 /**
  * Hook to add a user to a tenant

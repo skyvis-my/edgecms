@@ -11,6 +11,8 @@ import {
   type UploadAssetInput,
 } from './assets.service'
 import { estimateUploadBytes, storedAssetBytes } from './storage-bytes'
+import { ImageDimensionsExceededError } from './image-dimensions'
+import { normalizeBlurhash } from './blurhash'
 import { createErrorEnvelope } from '@/shared/utils/service-response'
 import { getHostRuntime } from '@/host/host-context'
 import { respondLimitExceeded, toLimitTenant } from '@/host/limits'
@@ -22,6 +24,15 @@ function buildUploadTooLargeMessage(maxUploadBytes: number) {
 
 function isUploadTypeBlockedError(error: unknown): error is Error {
   return error instanceof Error && error.message.includes('Asset upload type is not allowed')
+}
+
+/** MD-05: typed 422 for an image whose server-read size is over the tenant limit. */
+function dimensionErrorEnvelope(error: ImageDimensionsExceededError) {
+  return createErrorEnvelope('IMAGE_DIMENSIONS_EXCEEDED', error.message, {
+    width: error.width,
+    height: error.height,
+    maxDimension: error.maxDimension,
+  })
 }
 
 function normalizeErrorMessage(error: unknown) {
@@ -117,7 +128,7 @@ function parseUploadBody(body: unknown): UploadAssetInput {
   ) {
     throw new Error('Upload payload requires filename, mimeType, and contentBase64 or contentBytes')
   }
-  return payload as UploadAssetInput
+  return { ...(payload as UploadAssetInput), blurhash: normalizeBlurhash(payload.blurhash) }
 }
 
 async function normalizeUploadInput(ctx: {
@@ -172,8 +183,7 @@ async function normalizeUploadInput(ctx: {
       typeof heightValue === 'number'
         ? heightValue
         : parseOptionalNumber(typeof heightValue === 'string' ? heightValue : undefined),
-    blurhash:
-      typeof blurhashValue === 'string' ? blurhashValue : undefined,
+    blurhash: normalizeBlurhash(blurhashValue),
     variants:
       typeof variantsValue === 'string'
         ? parseMultipartVariants(variantsValue)
@@ -290,6 +300,10 @@ export const assetsController = new Elysia({ prefix: '/api/admin/assets' })
             ctx.set.status = 415
             return createErrorEnvelope('UNSUPPORTED_MEDIA_TYPE', error.message)
           }
+          if (error instanceof ImageDimensionsExceededError) {
+            ctx.set.status = 422
+            return dimensionErrorEnvelope(error)
+          }
       
           const uploadError = classifyUploadServiceError(error)
           logger.error('asset_upload_failed', {
@@ -335,14 +349,31 @@ export const assetsController = new Elysia({ prefix: '/api/admin/assets' })
           size: t.Number(),
           objectKey: t.String(),
         }),
-      }, async ({ db, body, set, tenantCtx }) => {
-        const asset = await assetsService.confirmDirectUpload(
-          db,
-          body,
-          tenantCtx?.tenant.id
-        )
-        set.status = 201
-        return { success: true as const, data: asset }
+      }, async ({ db, r2, body, set, tenantCtx }) => {
+        try {
+          const asset = await assetsService.confirmDirectUpload(
+            db,
+            body,
+            tenantCtx?.tenant.id,
+            r2,
+            tenantCtx?.tenant.mediaUploadMaxDimension ?? DEFAULT_ASSET_UPLOAD_MAX_DIMENSION
+          )
+          set.status = 201
+          return { success: true as const, data: asset }
+        } catch (error) {
+          if (error instanceof ImageDimensionsExceededError) {
+            set.status = 422
+            return dimensionErrorEnvelope(error)
+          }
+          const message = normalizeErrorMessage(error)
+          if (message.startsWith('Direct upload object')) {
+            set.status = 400
+            return createErrorEnvelope('BAD_REQUEST', message)
+          }
+          const uploadError = classifyUploadServiceError(error)
+          set.status = uploadError.status
+          return createErrorEnvelope(uploadError.code, uploadError.message, uploadError.details)
+        }
       })
       .get('/', { auth: true }, async ({ db, set, tenantCtx }) => {
         if (!tenantCtx?.tenant) {

@@ -195,6 +195,21 @@ export const webhooksRepository = {
       .all()
   },
 
+  /** Find one delivery by ID, scoped to its webhook. */
+  async findDeliveryById(
+    db: Database,
+    id: string,
+    webhookId: string
+  ): Promise<WebhookDeliveryRow | undefined> {
+    const rows = await db
+      .select()
+      .from(webhookDeliveries)
+      .where(and(eq(webhookDeliveries.id, id), eq(webhookDeliveries.webhookId, webhookId)))
+      .limit(1)
+      .all()
+    return rows[0]
+  },
+
   /** Insert a new webhook delivery record. */
   async createDelivery(db: Database, data: WebhookDeliveryInsert): Promise<WebhookDeliveryRow> {
     const rows = await db.insert(webhookDeliveries).values(data).returning()

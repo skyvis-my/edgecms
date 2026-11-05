@@ -18,7 +18,9 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import { toBrowserDateTime, toRelativeTime } from '@/lib/date-time'
+import { EntryStatusIndicator } from '@/features/entries/components/entry-status-indicator'
 import { ConflictResolver } from '../components/conflict-resolver'
+import { readServerEntry } from '../field-merge'
 import { type CommandQueueItem, db } from '../local-db'
 import { triggerSync } from '../sync-scheduler'
 import { useSyncStore } from '../sync-store'
@@ -82,7 +84,8 @@ export function Conflicts() {
           <div>
             <h2 className='text-2xl font-bold tracking-tight'>Sync Conflicts</h2>
             <p className='text-muted-foreground'>
-              Resolve conflicts between local changes and server state.
+              Offline changes that overlap newer server edits. Changes to different fields or locales merge
+              automatically; only overlapping ones wait here.
             </p>
           </div>
           <Button onClick={handleManualSync} disabled={isSyncing}>
@@ -111,32 +114,40 @@ export function Conflicts() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className='w-[150px]'>Command Type</TableHead>
-                  <TableHead>Entity Info</TableHead>
-                  <TableHead className='w-[200px]'>Timestamp</TableHead>
-                  <TableHead className='w-[150px]'>Actions</TableHead>
+                  <TableHead className='hidden w-[150px] sm:table-cell'>Command</TableHead>
+                  <TableHead>Entry</TableHead>
+                  <TableHead className='hidden w-[200px] md:table-cell'>Queued</TableHead>
+                  <TableHead className='w-[110px] text-end'>Action</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {conflicts.map((conflict) => {
                   const envelope = conflict.envelope as { type?: string }
+                  const serverEntry = readServerEntry(conflict.serverState)
                   return (
                     <TableRow key={conflict.id}>
-                      <TableCell>
+                      <TableCell className='hidden sm:table-cell'>
                         <Badge variant='secondary'>{envelope.type || 'unknown'}</Badge>
                       </TableCell>
-                      <TableCell className='font-mono text-sm'>
-                        {getCommandLabel(conflict)}
+                      <TableCell className='max-w-0 whitespace-normal'>
+                        <div className='flex min-w-0 flex-col gap-1'>
+                          <span className='truncate font-mono text-sm'>{getCommandLabel(conflict)}</span>
+                          <EntryStatusIndicator
+                            variant='header'
+                            status={serverEntry?.status ?? 'draft'}
+                            queue={{ pending: 0, conflicted: 1 }}
+                          />
+                        </div>
                       </TableCell>
                       <TableCell
-                        className='text-muted-foreground text-sm'
+                        className='hidden text-muted-foreground text-sm md:table-cell'
                         title={toBrowserDateTime(conflict.createdAt) ?? undefined}
                       >
                         {toRelativeTime(conflict.createdAt)}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className='text-end'>
                         <Button variant='outline' size='sm' onClick={() => handleResolve(conflict)}>
-                          Resolve
+                          Review
                         </Button>
                       </TableCell>
                     </TableRow>

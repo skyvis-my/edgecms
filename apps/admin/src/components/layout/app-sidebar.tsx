@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/sidebar'
 import { useLayout } from '@/context/layout-provider'
 import { useCollections } from '@/features/collections/api/collections-api'
+import { PluginNavGroups } from '@/features/plugins/admin-contributions/admin-contributions'
 import { TenantSwitcher } from '@/features/tenants/components/tenant-switcher'
 import { useSession } from '@/lib/auth-client'
 import { resolveTenantSlugFromPathname } from '@/lib/tenant-route'
@@ -139,6 +140,8 @@ export function AppSidebar() {
         {navGroups.map((props, index) => (
           <NavGroup key={getNavGroupKey(props, index)} {...props} />
         ))}
+        {/* HS-10: navigation contributed by trusted plugins (build-time catalog). */}
+        <PluginNavGroups tenantSlug={activeTenantSlug} />
       </SidebarContent>
       <SidebarFooter>
         <NavUser user={sidebarUser} />

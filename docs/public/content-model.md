@@ -158,9 +158,11 @@ GET /api/tenants/:tenantSlug/public/posts/hello-world?populate=*
 - `depth` is clamped to `1`–`3` and defaults to `1`.
 - A visited set stops circular links from looping.
 - `one-to-one` fields become one object or `null`. Other types become arrays.
-- Collection list routes do not populate.
+- Collection list routes ignore `populate` and always populate every linked field one level deep. Singleton routes populate every linked field two levels deep.
 
-Populated entries are full entry rows (`id`, `slug`, `status`, `data`, `version`, timestamps). They are scoped to the tenant but are **not** filtered by lifecycle status, so a populated draft or archived entry is returned as-is. Only link published content you are happy to expose, until this is fixed. See also the relation notes in the [public API](public-api.md) guide.
+Populated entries are full entry rows (`id`, `slug`, `status`, `data`, `version`, timestamps), scoped to the tenant. Public routes return only related entries that are publicly visible right now, using the same rule as public list and get: status `published` or `scheduled`, `publishAt` empty or in the past, and `unpublishAt` empty or in the future. Draft, archived, not-yet-live and expired related entries are left out: a `one-to-one` field becomes `null` and arrays skip them. Admin reads still return every related entry.
+
+A public snapshot's cache TTL also expires before the next `publishAt` or `unpublishAt` of any related entry it resolved, so a related entry appears or disappears on schedule (60-second floor, same as the parent collection's TTL). Updating, publishing, unpublishing or deleting a related entry purges cached snapshots of entries that include it, through the same cache tags commands use (one tag per related entry, or per related collection above 50). See [cache headers](public-api.md#cache-headers). See also the relation notes in the [public API](public-api.md) guide.
 
 ## Entry Lifecycle
 
@@ -244,14 +246,18 @@ GET  /api/admin/entries/:entryId/versions/:versionId/diff/:targetVersionId
 POST /api/admin/entries/:entryId/versions/:versionId/rollback
 ```
 
-Rollback copies the chosen version's `data` onto the entry, bumps `version`, and writes a version row. It runs outside the command engine: it writes a `change_log` row but no `audit_log` row, emits no webhook and does not invalidate the public cache.
+The same routes exist under `/api/tenants/:slug`. The entry must belong to the request's tenant (or to the global scope on the unprefixed routes); an entry from any other scope returns `404`.
+
+Rollback runs through the command engine as an `updateEntry` command. The command replaces the entry's `data` with the chosen version's `data` (projected onto the current collection fields) and sends the entry's current version as `optimisticVersion`. Like any update, it bumps `version` and writes the pre-rollback `data` to `entry_versions` under the previous version number. The engine applies the caller's collection permissions, field validation, the version check, the processed-command record, the audit event, the change log, the sync event, cache invalidation and the webhook outbox row (`entry.updated`).
+
+- Response: `{ commandId, entry, newVersion, restoredFromVersionId, message }`. `newVersion` describes the entry's new current version. Its `id` is the command ID, not an `entry_versions` row ID: history holds snapshots of earlier versions only.
+- `?dryRun=true` returns `{ dryRun: true, commandId, diff, previewReceipt? }` and writes nothing.
+- A concurrent edit between the read and the write returns `409 VERSION_CONFLICT`. A version of another entry returns `404`.
+- The audit log and processed commands show the rollback as `updateEntry`. They do not record which version was restored.
 
 Retention runs after each update: versions older than 90 days are deleted, and at most 50 are kept per entry (`apps/api/src/versioning/retention.service.ts`).
 
-Known gaps:
-
-- The list, get and diff version routes do not scope by tenant.
-- Rollback writes its version row with the new version number, while normal updates write the previous number. The next update can then hit the `(entryId, version)` unique index. Test rollback-then-edit before relying on it.
+Rollbacks made before rollback used the command engine wrote a version row with the new version number. The next update keeps that row instead of failing on the `(entryId, version)` unique index.
 
 ## Deleting Entries
 

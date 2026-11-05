@@ -5,6 +5,7 @@ import { SkipToMain } from '@/components/skip-to-main'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { LayoutProvider } from '@/context/layout-provider'
 import { SearchProvider } from '@/context/search-provider'
+import { LayoutPluginBanners } from '@/features/plugins/admin-contributions/admin-contributions'
 import { SyncProvider } from '@/features/sync/sync-provider'
 import { getCookie } from '@/lib/cookies'
 import { luxuryMotion } from '@/lib/luxury-motion'
@@ -69,6 +70,8 @@ export function AuthenticatedLayout({ children }: AuthenticatedLayoutProps) {
                 luxuryMotion.shell
               )}
             >
+              {/* HS-10: banners contributed by trusted plugins. */}
+              <LayoutPluginBanners />
               {children ?? <Outlet />}
             </SidebarInset>
           </SidebarProvider>

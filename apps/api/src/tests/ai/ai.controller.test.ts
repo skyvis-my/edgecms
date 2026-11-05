@@ -217,6 +217,33 @@ describe('aiController', () => {
     })
   })
 
+  describe('POST /command preview receipt rejections (AI-05)', () => {
+    it.each([
+      ['RECEIPT_ALREADY_USED', 409],
+      ['TENANT_MISMATCH', 403],
+      ['ACTOR_MISMATCH', 403],
+      ['RECEIPT_EXPIRED', 400],
+    ] as const)('maps %s to HTTP %d with the typed code', async (code, status) => {
+      const { PreviewReceiptError } = await import('@/ai/preview-receipt.service')
+      mockExecuteGeneratedCommands.mockRejectedValueOnce(
+        new PreviewReceiptError(code, `Preview receipt verification failed: ${code}`)
+      )
+
+      const response = await app.handle(
+        new Request('http://localhost/api/admin/ai/command', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ previewReceipt: 'rcpt_x' }),
+        })
+      )
+
+      expect(response.status).toBe(status)
+      const body = (await response.json()) as AiCommandResponseBody
+      expect(body.success).toBe(false)
+      expect(body.error?.code).toBe(code)
+    })
+  })
+
   describe('POST /workflow', () => {
     it('runs named workflow and returns steps', async () => {
       mockRunAiWorkflow.mockResolvedValue({

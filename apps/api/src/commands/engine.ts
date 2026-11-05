@@ -21,7 +21,8 @@ import { scheduleDeferredWork } from './deferred-work'
 import { buildMessagesForEvent, type WebhookQueueMessage } from '@/webhooks/queue-producer'
 import { commandsRepository } from './commands.repository'
 import { computeDiff } from './diff.service'
-import { createPreviewReceipt, markPreviewReceiptConsumed, verifyPreviewReceipt } from '@/ai/preview-receipt.service'
+import { authorizeCommandContent, type ContentAccess } from '@/auth/content-access'
+import { createPreviewReceipt, redeemPreviewReceipt } from '@/ai/preview-receipt.service'
 import {
   handleBulkUpdate,
   handleCreateEntry,
@@ -81,6 +82,14 @@ export type CommandContext = {
    * request entry points. Skipped for dry runs.
    */
   hostHooks?: CommandHostHooks
+  /**
+   * PL-03: the caller's per-collection content access. Every entry point
+   * that runs commands for a user (admin commands, AI, MCP, sync, imports)
+   * sets it; each command, including every command in a transaction, is
+   * checked before it runs. System callers (the publish scheduler) leave it
+   * unset.
+   */
+  contentAccess?: ContentAccess
 }
 
 export type CommandHostHooks = {
@@ -445,36 +454,47 @@ function receiptScope(ctx: CommandContext): string | null {
   return ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : null
 }
 
-async function verifyReceiptSafely(
+/**
+ * AI-05: verifies the receipt against the exact envelopes about to run and
+ * claims it for single use before any mutation. Dry runs and envelopes
+ * without a receipt pass through.
+ */
+async function redeemReceiptForExecution(
   envelope: CommandEnvelope,
   commandsToVerify: CommandEnvelope[],
   ctx: CommandContext,
   tenantScope: string | null
-): Promise<{ valid: true } | { valid: false; message?: string }> {
+): Promise<{ valid: true } | { valid: false; reason?: string; message?: string }> {
   if (!envelope.previewReceipt || envelope.dryRun) return { valid: true }
-  const verification = await verifyPreviewReceipt({
+  const verification = await redeemPreviewReceipt({
     receiptId: envelope.previewReceipt,
     userId: envelope.actor.userId,
     tenantId: tenantScope ?? undefined,
     kv: ctx.kv,
+    db: ctx.db,
     commandsToVerify,
   })
-  return verification.valid ? { valid: true } : { valid: false, message: verification.message }
+  return verification.valid
+    ? { valid: true }
+    : { valid: false, reason: verification.error, message: verification.message }
 }
 
-async function consumeReceiptSafely(
-  receiptId: string | undefined,
-  kv: KVNamespace | undefined,
-  tenantScope: string | null
-): Promise<void> {
-  if (!receiptId) return
+/** Mint a preview receipt; a failure never blocks the dry-run diff. */
+async function createReceiptSafely(
+  commands: CommandEnvelope[],
+  userId: string,
+  ctx: CommandContext
+): Promise<string | undefined> {
   try {
-    await markPreviewReceiptConsumed(receiptId, kv, tenantScope ?? undefined)
-  } catch (receiptErr) {
-    logger.warn('preview_receipt_consumption_failed', {
-      receiptId,
-      error: receiptErr instanceof Error ? receiptErr.message : String(receiptErr),
+    const receipt = await createPreviewReceipt({
+      commands,
+      userId,
+      tenantId: receiptScope(ctx) ?? undefined,
+      kv: ctx.kv,
     })
+    return receipt.receiptId
+  } catch {
+    return undefined
   }
 }
 
@@ -568,6 +588,22 @@ function deriveWebhookEvent(
   }
 }
 
+/**
+ * Payload used for cache-tag extraction. Tags are extracted after the handler
+ * ran, so a deleted entry can no longer be looked up; fall back to the
+ * collectionId the handler reported so collection-level tags (including the
+ * related-collection fallback on populated snapshots) are still purged.
+ */
+function cacheTagPayload(
+  envelope: CommandEnvelope,
+  handlerResult: CommandHandlerResult
+): Record<string, unknown> {
+  const payload = envelope.payload as Record<string, unknown>
+  const reported = (handlerResult.data as Record<string, unknown> | undefined)?.collectionId
+  if (typeof payload.collectionId === 'string' || typeof reported !== 'string') return payload
+  return { ...payload, collectionId: reported }
+}
+
 async function handlePostExecution(
   ctx: CommandContext,
   envelope: CommandEnvelope,
@@ -576,8 +612,7 @@ async function handlePostExecution(
   tenantScope: string | null,
   opts?: { cacheTags?: string[]; outboxEventId?: string }
 ): Promise<void> {
-  // 1. Consume preview receipt upon mutation success
-  await consumeReceiptSafely(envelope.previewReceipt, ctx.kv, receiptScope(ctx))
+  // 1. Preview receipts are claimed before execution (redeemReceiptForExecution).
 
   // 2. Record change log entries for sync
   if (handlerResult.auditEntries && handlerResult.auditEntries.length > 0) {
@@ -606,7 +641,7 @@ async function handlePostExecution(
       cacheTags = await extractCacheTagsFromCommand(
         ctx.db,
         envelope.type,
-        envelope.payload,
+        cacheTagPayload(envelope, handlerResult),
         tenantScope ?? undefined
       )
     } catch (err) {
@@ -739,11 +774,24 @@ async function handlePostExecution(
  * 4. Records the command and audit entries in D1
  * 5. Returns a structured CommandResult
  */
+type SingleCommandOptions = {
+  /**
+   * Set when the command runs inside a transaction. The request-level
+   * idempotency key belongs to the transaction, so a sub-command only uses
+   * a key set on its own envelope; a dry-run transaction mints no
+   * per-command preview receipts (one receipt covers the whole transaction).
+   */
+  inTransaction?: boolean
+}
+
 async function executeSingleCommand(
   ctx: CommandContext,
-  envelope: CommandEnvelope
+  envelope: CommandEnvelope,
+  options: SingleCommandOptions = {}
 ): Promise<CommandResult> {
-  const idempotencyKey = envelope.idempotencyKey || ctx.idempotencyKey
+  const idempotencyKey = options.inTransaction
+    ? envelope.idempotencyKey
+    : envelope.idempotencyKey || ctx.idempotencyKey
   const commandId = idempotencyKey ? `idem_${idempotencyKey}` : crypto.randomUUID()
   const tenantScope = ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : null
   const pluginHookContext = buildPluginHookContext(ctx, envelope)
@@ -808,8 +856,8 @@ async function executeSingleCommand(
     return finalize(errorResult)
   }
 
-  // Verify preview receipt if supplied for execution
-  const receiptCheck = await verifyReceiptSafely(envelope, [envelope], ctx, receiptScope(ctx))
+  // Verify and claim the preview receipt before any mutation (AI-05)
+  const receiptCheck = await redeemReceiptForExecution(envelope, [envelope], ctx, receiptScope(ctx))
   if (!receiptCheck.valid) {
     const errorResult: CommandResult = {
       commandId,
@@ -818,6 +866,7 @@ async function executeSingleCommand(
       error: {
         code: 'INVALID_PREVIEW_RECEIPT',
         message: receiptCheck.message ?? 'Preview receipt verification failed',
+        ...(receiptCheck.reason ? { reason: receiptCheck.reason } : {}),
       },
       executedAt: new Date().toISOString(),
     }
@@ -834,18 +883,9 @@ async function executeSingleCommand(
       const diff = await computeDiff(ctx, envelope.type, envelope.payload)
 
       // Generate immutable preview receipt for dry-run commands
-      let previewReceiptId: string | undefined
-      try {
-        const receipt = await createPreviewReceipt({
-          commands: [envelope],
-          userId: envelope.actor.userId,
-          tenantId: receiptScope(ctx) ?? undefined,
-          kv: ctx.kv,
-        })
-        previewReceiptId = receipt.receiptId
-      } catch {
-        // Non-blocking for diff calculation
-      }
+      const previewReceiptId = options.inTransaction
+        ? undefined
+        : await createReceiptSafely([envelope], envelope.actor.userId, ctx)
 
       // Record the dry-run command
       await recordCommand(ctx.db, commandId, envelope, 'dry_run', tenantScope, {
@@ -896,7 +936,7 @@ async function executeSingleCommand(
         const tags = await extractCacheTagsFromCommand(
           ctx.db,
           envelope.type,
-          envelope.payload,
+          cacheTagPayload(envelope, handlerResult),
           tenantScope ?? undefined
         )
         precomputedCacheTags = tags
@@ -1013,7 +1053,10 @@ async function handleTransaction(
   ctx: CommandContext,
   envelope: CommandEnvelope
 ): Promise<CommandResult> {
-  const idempotencyKey = envelope.idempotencyKey || ctx.idempotencyKey
+  // CMD-03: a dry-run writes nothing, so it neither reserves nor replays the
+  // idempotency key; the real execution that follows must still run.
+  const dryRun = envelope.dryRun === true
+  const idempotencyKey = dryRun ? undefined : envelope.idempotencyKey || ctx.idempotencyKey
   const transactionId = idempotencyKey ? `idem_${idempotencyKey}` : crypto.randomUUID()
   const tenantScope = ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : null
   const pluginHookContext = buildPluginHookContext(ctx, envelope)
@@ -1093,8 +1136,8 @@ async function handleTransaction(
     }
   }
 
-  // Verify preview receipt if supplied for transaction
-  const receiptCheck = await verifyReceiptSafely(envelope, payload.commands, ctx, receiptScope(ctx))
+  // Verify and claim the transaction's preview receipt before any mutation (AI-05)
+  const receiptCheck = await redeemReceiptForExecution(envelope, payload.commands, ctx, receiptScope(ctx))
   if (!receiptCheck.valid) {
     const errorResult: CommandResult = {
       commandId: transactionId,
@@ -1103,6 +1146,7 @@ async function handleTransaction(
       error: {
         code: 'INVALID_PREVIEW_RECEIPT',
         message: receiptCheck.message ?? 'Preview receipt verification failed',
+        ...(receiptCheck.reason ? { reason: receiptCheck.reason } : {}),
       },
       executedAt: new Date().toISOString(),
     }
@@ -1121,12 +1165,13 @@ async function handleTransaction(
     // so individual commands do not prematurely consume the transaction receipt
     const enrichedEnvelope: CommandEnvelope = {
       ...subEnvelope,
-      dryRun: envelope.dryRun ? true : subEnvelope.dryRun,
+      dryRun: dryRun ? true : subEnvelope.dryRun,
+      idempotencyKey: dryRun ? undefined : subEnvelope.idempotencyKey,
       transactionId,
       previewReceipt: undefined,
     }
 
-    const result = await executeSingleCommand(ctx, enrichedEnvelope)
+    const result = await executeSingleCommand(ctx, enrichedEnvelope, { inTransaction: true })
     subResults.push(result)
 
     if (result.status === 'failed') {
@@ -1136,27 +1181,45 @@ async function handleTransaction(
   }
 
   const status = allSucceeded
-    ? envelope.dryRun
+    ? dryRun
       ? 'dry_run'
       : 'success'
     : 'failed'
 
+  // CMD-03: a dry run returns the combined diff of its sub-commands, each
+  // entry tagged with the sub-command it belongs to, plus one receipt that
+  // authorises executing exactly these sub-commands.
+  const combinedDiff = dryRun
+    ? subResults.flatMap((sub, commandIndex) =>
+        (sub.diff ?? []).map((entry) => ({ ...entry, commandIndex, commandType: sub.type }))
+      )
+    : undefined
+  const previewReceiptId =
+    dryRun && allSucceeded
+      ? await createReceiptSafely(payload.commands, envelope.actor.userId, ctx)
+      : undefined
+
   // Record the transaction itself as a processed command
-  // (compensating action note: sub-command effects persist; see saga comment above)
+  // (compensating action note: sub-command effects persist; see saga comment above).
+  // A failed dry run records nothing, matching a failed single-command dry run.
   try {
-    await recordCommand(
-      ctx.db,
-      transactionId,
-      envelope,
-      status as 'success' | 'failed' | 'dry_run',
-      tenantScope,
-      {
-        subResults: subResults as unknown as Record<string, unknown>[],
-        totalCommands: payload.commands.length,
-        completedCommands: subResults.filter((r) => r.status === 'success' || r.status === 'dry_run').length,
-        failedCommands: subResults.filter((r) => r.status === 'failed').length,
-      }
-    )
+    if (!dryRun || allSucceeded) {
+      await recordCommand(
+        ctx.db,
+        transactionId,
+        envelope,
+        status as 'success' | 'failed' | 'dry_run',
+        tenantScope,
+        {
+          subResults: subResults as unknown as Record<string, unknown>[],
+          totalCommands: payload.commands.length,
+          completedCommands: subResults.filter((r) => r.status === 'success' || r.status === 'dry_run').length,
+          failedCommands: subResults.filter((r) => r.status === 'failed').length,
+          ...(combinedDiff ? { diff: combinedDiff } : {}),
+          ...(previewReceiptId ? { previewReceipt: previewReceiptId } : {}),
+        }
+      )
+    }
   } catch (err) {
     if (idempotencyKey) {
       const cached = await checkIdempotency(ctx.db, transactionId, envelope, 'TRANSACTION_FAILED')
@@ -1166,11 +1229,6 @@ async function handleTransaction(
       transactionId,
       error: err instanceof Error ? err.message : String(err),
     })
-  }
-
-  // Consume transaction preview receipt upon overall success (non-dryRun)
-  if (allSucceeded && !envelope.dryRun) {
-    await consumeReceiptSafely(envelope.previewReceipt, ctx.kv, receiptScope(ctx))
   }
 
   return finalize({
@@ -1183,11 +1241,15 @@ async function handleTransaction(
       completedCommands: subResults.filter((r) => r.status === 'success' || r.status === 'dry_run').length,
       failedCommands: subResults.filter((r) => r.status === 'failed').length,
     },
+    ...(combinedDiff ? { diff: combinedDiff } : {}),
+    ...(previewReceiptId ? { previewReceipt: previewReceiptId } : {}),
     error: allSucceeded
       ? undefined
       : {
           code: 'TRANSACTION_FAILED',
-          message: `Transaction failed: ${subResults.filter((r) => r.status === 'failed').length} command(s) failed. Note: D1 does not support rollback — completed sub-commands were persisted.`,
+          message: dryRun
+            ? `Transaction dry run failed: ${subResults.filter((r) => r.status === 'failed').length} command(s) failed. Nothing was written.`
+            : `Transaction failed: ${subResults.filter((r) => r.status === 'failed').length} command(s) failed. Note: D1 does not support rollback — completed sub-commands were persisted.`,
         },
     executedAt: new Date().toISOString(),
   })
@@ -1214,6 +1276,29 @@ export async function executeCommand(
   ctx: CommandContext,
   envelope: CommandEnvelope
 ): Promise<CommandResult> {
+  if (ctx.contentAccess) {
+    const denied = await authorizeCommandContent(
+      ctx.contentAccess,
+      ctx.db,
+      ctx.tenantScope ?? (ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : undefined),
+      envelope
+    )
+    if (denied) {
+      logger.warn('command_forbidden', {
+        type: envelope.type,
+        userId: ctx.actor.userId,
+        source: ctx.actor.source,
+      })
+      return {
+        commandId: crypto.randomUUID(),
+        type: envelope.type,
+        status: 'failed',
+        error: denied,
+        executedAt: new Date().toISOString(),
+      }
+    }
+  }
+
   const hooks = envelope.dryRun ? undefined : ctx.hostHooks
   if (hooks?.beforeExecute) {
     const rejected = await hooks.beforeExecute(envelope)

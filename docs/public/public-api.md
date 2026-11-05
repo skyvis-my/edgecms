@@ -103,6 +103,8 @@ Cache-Tag: collection:<slug>,locale:<locale>[,entry:<entry id or slug>]
 Vary: Accept-Encoding
 ```
 
+Responses that include related entries (list rows, `populate` and singletons) also carry one tag per related entry (`t:<tenant id>:e:<entry id>`, or `entry:<entry id>` without a tenant). Above 50 related entries, or when the header would pass 8 KB, they carry one tag per related collection (`t:<tenant id>:c:<collection id>`) instead. Updating, publishing, unpublishing or deleting a related entry then retires the KV and edge copies of every snapshot that includes it and purges those tags from the CDN, so the parent stops showing stale or unpublished related content.
+
 Misses and validation failures set:
 
 ```text
@@ -122,6 +124,18 @@ CDN-Cache-Control: no-store
 OSS Redis defaults to L1+L2 (read-through / write-through). See [self-host Docker/K8s → Redis shared cache](self-host-docker-k8s.md#redis-shared-cache-multi-replica).
 
 Public read cache entries are kept per tenant, collection, requested locale and filter hash, and hold published content only.
+
+### Edge cache (Workers)
+
+On Cloudflare Workers, anonymous `GET` reads of `/api/public/:collection`, `/api/public/:collection/:entry` and `/api/public/singleton/:collection` (and their `/api/tenants/:slug/...` forms) go through the Workers Cache API (`caches.default`) before the memory, KV and D1 path.
+
+- **Key.** Request origin and path, tenant, collection, locale, the KV content version for that collection and locale, and the query string with parameters sorted. Publishing, a command that invalidates the collection, or a scheduled `publishAt`/`unpublishAt` alarm bumps the version, so older entries stop matching. Stored entries keep their `Cache-Tag`, so a zone purge by tag also removes them.
+- **TTL.** The `CDN-Cache-Control` `max-age`, which already shrinks toward the next scheduled transition. Hits return the original browser `Cache-Control`.
+- **Stored only when** the response is `200`, `Cache-Control` is `public`, the CDN `max-age` is above zero, and there is no `Set-Cookie`, `WWW-Authenticate` or `X-402-*` header. CORS, rate-limit, request-id and D1 session headers are removed before storing.
+- **Skipped for** requests with `Authorization`, `Cookie`, `X-API-Key`, `X-402-Token`, `X-402-Require`, `X-Preview-Token`, `x-d1-session` or `x-session-bookmark` headers, `preview`, `previewToken`, `token`, `paywall` or `x402` query parameters, and paid-read collections (`premium-*`, `paywall-*`, `paid-*`).
+- **Headers on a hit.** `x-edgecms-edge-cache: hit`, `x-edgecms-cache: hit`, `X-Cache-Source: edge` and `Server-Timing: cache;desc="edge";dur=<ms>`. A stored miss returns `x-edgecms-edge-cache: miss`. A matching `If-None-Match` gets `304` from the edge entry.
+
+The Cache API is per Cloudflare data centre and has no stale-while-revalidate, so each data centre fills its own copy. The version counter is read through the isolate memo (about 10 s) and KV, so an invalidation can take that long, plus KV propagation, to reach every isolate, as on the KV path. On `workers.dev` hosts and in `wrangler dev` the Cache API stores nothing. Without `caches.default` (tests, Docker/Postgres hosting) the layer does nothing.
 
 ## Revalidating your frontend
 
@@ -305,7 +319,7 @@ GET  /api/tenants/:tenantSlug/graphql
 POST /api/tenants/:tenantSlug/graphql
 ```
 
-The schema is generated per tenant from its collections: each collection gets a list field (`locale`, `page`, `perPage` up to 100, `sort`) and a single-entry field (`id` or `slug`, `locale`). Resolvers return published entries only. Queries are limited to depth 3 and complexity 50. A `GET` with no `query` (or with `Accept: text/html`) returns the GraphiQL playground; open it to see the exact field names. Its feature set does not match other CMS GraphQL APIs.
+The schema is generated per tenant from its collections: each collection gets a list field (`locale`, `page`, `perPage` up to 100, `sort`) and a single-entry field (`id` or `slug`, `locale`). Resolvers apply the same rule as public REST: only entries with a public status inside their publish window (`publishAt` reached, `unpublishAt` not reached), and a single-entry lookup by `id` only returns entries of that collection. Lists are newest first; the `sort` argument is accepted but not applied yet. Relations are returned as stored IDs, not populated. Queries are limited to depth 3 and complexity 50; a `perPage` passed as a variable counts as the maximum page size. A `GET` with no `query` (or with `Accept: text/html`) returns the GraphiQL playground; open it to see the exact field names. Its feature set does not match other CMS GraphQL APIs.
 
 The Worker serves Elysia's OpenAPI document at `/api/docs`. It covers the routes that declare schemas, not every public and admin response. A generated client for all routes needs route schema coverage, a tenant and auth review, and a decision on error envelopes first.
 

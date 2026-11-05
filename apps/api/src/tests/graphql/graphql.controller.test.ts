@@ -6,7 +6,7 @@ const mockCollectionsRepository = {
 }
 
 const mockEntriesRepository = {
-  findAll: vi.fn(),
+  findVisibleByCollection: vi.fn(),
   findById: vi.fn(),
   findByCollectionAndSlug: vi.fn(),
 }
@@ -91,7 +91,7 @@ describe('GraphQL Controller & GraphiQL Playground', () => {
       },
     ])
 
-    mockEntriesRepository.findAll.mockResolvedValue({
+    mockEntriesRepository.findVisibleByCollection.mockResolvedValue({
       rows: [
         {
           id: 'post-1',
@@ -164,6 +164,23 @@ describe('GraphQL Controller & GraphiQL Playground', () => {
     const json = (await response.json()) as any
     expect(json.errors).toBeDefined()
     expect(json.errors[0].message).toContain('depth')
+  })
+
+  it('rejects an aliased list fan-out with a variable perPage before any D1 read', async () => {
+    const aliases = Array.from({ length: 25 }, (_, i) => `a${i}: posts(perPage: $n) { id }`).join(' ')
+    const response = await app.handle(
+      new Request('http://localhost/api/tenants/acme/api/graphql', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: `query Fanout($n: Int) { ${aliases} }`, variables: { n: 100 } }),
+      })
+    )
+
+    expect(response.status).toBe(400)
+    const json = (await response.json()) as any
+    expect(json.errors[0].message).toContain('complexity')
+    expect(mockCollectionsRepository.findAll).not.toHaveBeenCalled()
+    expect(mockEntriesRepository.findVisibleByCollection).not.toHaveBeenCalled()
   })
 
   it('rejects queries with non-existent fields with status 400 and validation error', async () => {

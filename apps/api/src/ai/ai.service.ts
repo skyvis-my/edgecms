@@ -1,5 +1,6 @@
 import { generateText, jsonSchema, tool } from 'ai'
 import { type CommandContext, type CommandHostHooks, executeCommand } from '@/commands/engine'
+import type { ContentAccess } from '@/auth/content-access'
 import type { Database } from '@/database/db'
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
@@ -23,7 +24,8 @@ import {
 import type { WorkflowId } from './workflows/workflow-registry'
 import {
   createPreviewReceipt,
-  markPreviewReceiptConsumed,
+  PreviewReceiptError,
+  redeemPreviewReceipt,
   verifyPreviewReceipt,
 } from './preview-receipt.service'
 
@@ -338,6 +340,8 @@ export async function executeGeneratedCommands(options: {
   hookContext?: GenerateCommandsOptions['hookContext']
   /** HS-05/HS-06 hooks applied to each executed command. */
   commandHooks?: CommandHostHooks
+  /** PL-03: the caller's per-collection content access, checked per command. */
+  contentAccess?: ContentAccess
 }): Promise<ExecuteGeneratedCommandsResult> {
   const { prompt, previewReceipt, context, dryRun, enforcePreviewReceipt, userId, env, db, kv, metadata, hookContext } = options
 
@@ -348,15 +352,31 @@ export async function executeGeneratedCommands(options: {
   // When previewReceipt is provided for execution, verify the immutable receipt
   // and execute the exact reviewed commands without re-prompting the LLM.
   if (previewReceipt) {
-    const verification = await verifyPreviewReceipt({
-      receiptId: previewReceipt,
-      userId,
-      tenantId: metadata?.tenantId,
-      kv,
-    })
+    const receiptOptions = { receiptId: previewReceipt, userId, tenantId: metadata?.tenantId, kv }
 
+    if (dryRun) {
+      // Re-showing a preview does not spend the receipt.
+      const verification = await verifyPreviewReceipt(receiptOptions)
+      if (!verification.valid || !verification.receipt) {
+        throw new PreviewReceiptError(
+          verification.error ?? 'RECEIPT_NOT_FOUND',
+          `Preview receipt verification failed: ${verification.message ?? 'Invalid receipt'}`
+        )
+      }
+      incrementMetric('ai_command_runs_total', { status: 'dry_run' })
+      return {
+        commands: verification.receipt.commands,
+        explanation: verification.receipt.explanation ?? 'Executed reviewed preview receipt.',
+        status: 'dry_run',
+        previewReceipt,
+      }
+    }
+
+    // AI-05: claim the receipt for single use before anything runs.
+    const verification = await redeemPreviewReceipt({ ...receiptOptions, db })
     if (!verification.valid || !verification.receipt) {
-      throw new Error(
+      throw new PreviewReceiptError(
+        verification.error ?? 'RECEIPT_NOT_FOUND',
         `Preview receipt verification failed: ${verification.message ?? 'Invalid receipt'}`
       )
     }
@@ -365,17 +385,13 @@ export async function executeGeneratedCommands(options: {
     const explanation =
       verification.receipt.explanation ?? 'Executed reviewed preview receipt.'
 
-    if (dryRun) {
-      incrementMetric('ai_command_runs_total', { status: 'dry_run' })
-      return { commands: receiptCommands, explanation, status: 'dry_run', previewReceipt }
-    }
-
     const executionContext: CommandContext = {
       db,
       actor: { userId, source: 'ai' },
       kv,
       tenantScope: metadata?.tenantId,
       hostHooks: options.commandHooks,
+      contentAccess: options.contentAccess,
       requestMeta: {
         requestId: hookContext?.requestId,
         pathname: hookContext?.pathname,
@@ -385,13 +401,8 @@ export async function executeGeneratedCommands(options: {
 
     const results: CommandResult[] = []
     for (const envelope of receiptCommands) {
-      // In multi-command execution, strip previewReceipt on individual commands
-      // so executeCommand does not consume the batch receipt prematurely on command 1.
-      const envelopeToRun =
-        receiptCommands.length > 1
-          ? { ...envelope, previewReceipt: undefined }
-          : envelope
-      const result = await executeCommand(executionContext, envelopeToRun)
+      // The receipt is already redeemed above; the engine must not redeem it again.
+      const result = await executeCommand(executionContext, { ...envelope, previewReceipt: undefined })
       results.push(result)
       if (result.status === 'failed') {
         incrementMetric('ai_command_runs_total', { status: 'failed' })
@@ -404,8 +415,6 @@ export async function executeGeneratedCommands(options: {
         }
       }
     }
-
-    await markPreviewReceiptConsumed(previewReceipt, kv, metadata?.tenantId)
 
     incrementMetric('ai_command_runs_total', { status: 'success' })
     return {
@@ -467,6 +476,7 @@ export async function executeGeneratedCommands(options: {
     kv,
     tenantScope: metadata?.tenantId,
     hostHooks: options.commandHooks,
+    contentAccess: options.contentAccess,
     requestMeta: {
       requestId: hookContext?.requestId,
       pathname: hookContext?.pathname,

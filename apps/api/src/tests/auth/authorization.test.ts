@@ -101,7 +101,7 @@ describe('authorizeApiRequest', () => {
 
   it('forbids global admin reads for viewer role', () => {
     const decision = authorizeApiRequest({
-      pathname: '/api/admin/webhooks',
+      pathname: '/api/admin/collections',
       method: 'GET',
       principal: {
         actorId: 'user-1',
@@ -119,7 +119,7 @@ describe('authorizeApiRequest', () => {
 
   it('allows global admin reads for editor role', () => {
     const decision = authorizeApiRequest({
-      pathname: '/api/admin/webhooks',
+      pathname: '/api/admin/collections',
       method: 'GET',
       principal: {
         actorId: 'user-1',
@@ -283,7 +283,7 @@ describe('authorizeApiRequest', () => {
 
   it('forbids tenant admin reads for tenant viewer role', () => {
     const decision = authorizeApiRequest({
-      pathname: '/api/tenants/acme/api/admin/webhooks',
+      pathname: '/api/tenants/acme/api/admin/collections',
       method: 'GET',
       principal: {
         actorId: 'user-1',
@@ -407,5 +407,38 @@ describe('tenant audit log access (HS-12)', () => {
         authorizeApiRequest({ pathname, method: 'GET', principal: { actorId: 'u', tenantRole } })
       ).toMatchObject({ allowed: false, status: 403 })
     }
+  })
+})
+
+describe('collection export and import routes (OP-06, PL-03)', () => {
+  const exportPath = '/api/tenants/acme/api/admin/collections/posts/export'
+  const previewPath = '/api/tenants/acme/api/admin/collections/posts/import/preview'
+
+  it('are content routes: an entry:<collection> custom grant reaches them', () => {
+    const principal = { actorId: 'u', actorRole: 'viewer' as const }
+    const grants = [
+      { subject: 'entry:posts', action: 'read' },
+      { subject: 'entry:posts', action: 'create' },
+    ]
+    expect(authorizeApiRequest({ pathname: exportPath, method: 'GET', principal, customPermissions: grants })).toEqual({
+      allowed: true,
+    })
+    expect(
+      authorizeApiRequest({ pathname: previewPath, method: 'POST', principal, customPermissions: grants })
+    ).toEqual({ allowed: true })
+  })
+
+  it('let members export but not import, and deny viewers', () => {
+    const member = { actorId: 'u', tenantRole: 'member' as const }
+    expect(authorizeApiRequest({ pathname: exportPath, method: 'GET', principal: member })).toEqual({ allowed: true })
+    expect(authorizeApiRequest({ pathname: previewPath, method: 'POST', principal: member })).toMatchObject({
+      allowed: false,
+      status: 403,
+    })
+    const viewer = { actorId: 'u', tenantRole: 'viewer' as const }
+    expect(authorizeApiRequest({ pathname: exportPath, method: 'GET', principal: viewer })).toMatchObject({
+      allowed: false,
+      status: 403,
+    })
   })
 })

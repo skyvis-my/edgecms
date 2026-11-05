@@ -15,12 +15,18 @@ import { processMcpMessage, type McpJsonRpcResponse } from './mcp-server'
 import { looksLikeJwt, matchesMcpApiKey, readApiKeyHeader, readBearerToken } from './mcp-auth'
 import { parseAccessClaims, validateRequestJwt } from '@/auth/jwt'
 import { AI_DISABLED_CODE, AI_DISABLED_MESSAGE, isTenantAiEnabled } from '@/ai/ai-access'
+import { getRequestContentAccess } from '@/auth/content-access'
 
 async function resolveMcpAuth(
   request: Request,
   workerEnv: Env,
   user?: { id: string }
-): Promise<{ authenticated: boolean; actorId?: string; mfaRequired?: boolean }> {
+): Promise<{
+  authenticated: boolean
+  actorId?: string
+  mfaRequired?: boolean
+  viaDeploymentKey?: boolean
+}> {
   // 1. Session auth from betterAuthPlugin
   if (user?.id) {
     return { authenticated: true, actorId: user.id }
@@ -30,7 +36,7 @@ async function resolveMcpAuth(
   const headerKey = readApiKeyHeader(request)
   if (headerKey) {
     return matchesMcpApiKey(headerKey, workerEnv)
-      ? { authenticated: true, actorId: `mcp-key-${headerKey.slice(0, 8)}` }
+      ? { authenticated: true, actorId: `mcp-key-${headerKey.slice(0, 8)}`, viaDeploymentKey: true }
       : { authenticated: false }
   }
 
@@ -39,7 +45,7 @@ async function resolveMcpAuth(
   const bearer = readBearerToken(request)
   if (bearer) {
     if (matchesMcpApiKey(bearer, workerEnv)) {
-      return { authenticated: true, actorId: `mcp-key-${bearer.slice(0, 8)}` }
+      return { authenticated: true, actorId: `mcp-key-${bearer.slice(0, 8)}`, viaDeploymentKey: true }
     }
     if (!looksLikeJwt(bearer)) return { authenticated: false }
     const validation = await validateRequestJwt(request, {
@@ -172,6 +178,10 @@ async function handleMcpRequest(ctx: McpRequestContext) {
       pathname: requestPathname,
       method: request.method,
     },
+    // PL-03: a user's commands and entry reads get the same per-collection
+    // check as the admin routes. A deployment key is not a user and keeps
+    // full access.
+    contentAccess: auth.viaDeploymentKey ? undefined : await getRequestContentAccess(request),
   }
 
   set.headers['content-type'] = 'application/json'

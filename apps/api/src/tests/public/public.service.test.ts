@@ -610,7 +610,8 @@ describe('publicService', () => {
           extraConditions: expect.arrayContaining([]),
           orderByClause: undefined,
         },
-        expect.objectContaining({ id: 'c1', slug: 'posts' })
+        expect.objectContaining({ id: 'c1', slug: 'posts' }),
+        expect.objectContaining({ now: expect.any(String) })
       )
       expect(mockKvService.putSnapshot).toHaveBeenCalled()
       expect(mockSnapshotService.storeCacheTags).toHaveBeenCalled()
@@ -867,7 +868,8 @@ describe('publicService', () => {
           extraConditions: expect.arrayContaining([expect.any(Object)]),
           orderByClause: expect.any(Object),
         },
-        expect.objectContaining({ id: 'c1', slug: 'posts' })
+        expect.objectContaining({ id: 'c1', slug: 'posts' }),
+        expect.objectContaining({ now: expect.any(String) })
       )
     })
 
@@ -975,7 +977,8 @@ describe('publicService', () => {
         'en',
         'tenant-1',
         { populate: [], depth: 1 },
-        expect.objectContaining({ id: 'c1', slug: 'posts' })
+        expect.objectContaining({ id: 'c1', slug: 'posts' }),
+        expect.objectContaining({ now: expect.any(String) })
       )
     })
 
@@ -1005,6 +1008,35 @@ describe('publicService', () => {
       }
       expect(mockKvService.putSnapshot).toHaveBeenCalled()
       expect(mockSnapshotService.storeCacheTags).toHaveBeenCalled()
+    })
+
+    it('caps snapshot TTL at the nearest related-entry publish transition (CM-04)', async () => {
+      mockKvService.getSnapshot.mockResolvedValue(null)
+      mockPublicRepository.findCollectionBySlug.mockResolvedValue({ id: 'c1', slug: 'posts' })
+      mockComputeDynamicTTL.mockResolvedValue(3600)
+      mockSnapshotService.generateEntrySnapshot.mockImplementation(
+        async (...args: unknown[]) => {
+          const visibility = args[7] as { nearestTransitionAt: string | null }
+          visibility.nearestTransitionAt = new Date(Date.now() + 300_000).toISOString()
+          return { entry: { id: 'e1' } }
+        }
+      )
+      mockSnapshotService.generateCacheTags.mockReturnValue(['collection:c1', 'entry:e1'])
+
+      await publicService.getCollectionEntry({
+        db,
+        kv,
+        collectionSlug: 'posts',
+        idOrSlug: 'e1',
+        locale: 'en',
+        populateParam: 'author',
+        depth: 1,
+      })
+
+      const calls = mockKvService.putSnapshot.mock.calls
+      const ttl = calls[calls.length - 1]?.[3] as number
+      expect(ttl).toBeGreaterThan(290)
+      expect(ttl).toBeLessThanOrEqual(300)
     })
 
     it('returns 404 when entry snapshot generation returns null', async () => {
@@ -1061,7 +1093,8 @@ describe('publicService', () => {
         'en',
         undefined,
         { populate: ['author'], depth: 3 },
-        expect.objectContaining({ id: 'c1', slug: 'posts' })
+        expect.objectContaining({ id: 'c1', slug: 'posts' }),
+        expect.objectContaining({ now: expect.any(String) })
       )
     })
 
@@ -1094,7 +1127,8 @@ describe('publicService', () => {
         'en',
         undefined,
         { populate: ['author', 'tags'], depth: 1 },
-        expect.objectContaining({ id: 'c1', slug: 'posts' })
+        expect.objectContaining({ id: 'c1', slug: 'posts' }),
+        expect.objectContaining({ now: expect.any(String) })
       )
     })
 
@@ -1126,7 +1160,8 @@ describe('publicService', () => {
         'en',
         undefined,
         { populate: ['*'], depth: 1 },
-        expect.objectContaining({ id: 'c1', slug: 'posts' })
+        expect.objectContaining({ id: 'c1', slug: 'posts' }),
+        expect.objectContaining({ now: expect.any(String) })
       )
     })
 
@@ -1351,7 +1386,8 @@ describe('publicService', () => {
         'en',
         'tenant-1',
         undefined,
-        expect.objectContaining({ id: 'c1', slug: 'settings' })
+        expect.objectContaining({ id: 'c1', slug: 'settings' }),
+        expect.objectContaining({ now: expect.any(String) })
       )
     })
   })

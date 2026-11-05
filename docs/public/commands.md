@@ -13,7 +13,7 @@ POST /api/admin/commands
 
 Use the tenant route. The global route runs without a tenant scope: it acts on `global` content and its webhook events go to global webhooks.
 
-Auth: the route requires a signed-in user (`auth: true`) whose role can write to the admin API: editor, admin or owner on the tenant, or editor/admin on global routes. Viewers and members get `403`. There is no per-command permission check; any role that can write can send any command type. See [auth and access](auth-and-access.md) for sessions, CSRF and bearer tokens.
+Auth: the route requires a signed-in user (`auth: true`) whose role can write to the admin API: editor, admin or owner on the tenant, or editor/admin on global routes. Viewers and members get `403`. Each command is then checked against the caller's collection access before it runs: a custom role with `entry:<collectionSlug>` grants can only run commands on entries of those collections, for the actions it was granted. Each command inside a `transaction` and each entry in a `bulkUpdate` is checked, and a denied command fails with `403 FORBIDDEN`. Commands from AI, AI imports, MCP and sync get the same check. See [auth and access](auth-and-access.md) for sessions, CSRF and bearer tokens.
 
 ## The Envelope
 
@@ -123,11 +123,22 @@ What a dry run does:
 - Creates a preview receipt (stored in KV for 15 minutes) and returns its ID as `previewReceipt`.
 - Skips host limit checks and metering.
 
+A `transaction` with top-level `"dryRun": true` previews every sub-command and writes nothing: no entries, versions, audit rows, `command.executed` events, webhook outbox rows, cache purges or idempotency reservations. The result's `diff` is the combined diff of the sub-commands, and each entry carries `commandIndex` and `commandType`:
+
+```json
+[
+  { "field": "title", "after": "Second", "action": "add", "commandIndex": 0, "commandType": "createEntry" },
+  { "field": "title", "before": "Hello", "after": "Changed", "action": "update", "commandIndex": 1, "commandType": "updateEntry" }
+]
+```
+
+`data.subResults` keeps each sub-command's own diff. A successful transaction dry run returns one `previewReceipt` that covers its sub-commands; send the same transaction with that receipt to execute it. An idempotency key on a transaction dry run is ignored, so the real execution with the same key still runs. If a sub-command's diff fails, the preview stops with `TRANSACTION_FAILED` and no receipt.
+
 Limits:
 
 - Diffs are implemented for `createEntry`, `updateEntry`, `deleteEntry`, `bulkUpdate`, `updateSingleton`, `linkRelation`, `unlinkRelation`, `publishNow` and `unpublishNow`. The scheduling commands return an empty diff.
 - The diff does not run validation or lifecycle checks. A command can preview cleanly and still fail on execution.
-- The `transaction` handler does not read the top-level `dryRun`. A transaction sent with `"dryRun": true` executes its sub-commands. To preview a transaction, set `dryRun: true` on each sub-command.
+- Each sub-command's diff is computed against current data, not against the effect of earlier sub-commands in the same transaction.
 
 ### Preview receipts
 
@@ -153,7 +164,7 @@ The engine uses `idem_<key>` as the command ID and reserves it in `processed_com
 | `pending` | `CONCURRENT_REQUEST`. |
 | Different `type` or `payload` | `IDEMPOTENCY_CONFLICT`. |
 
-Keys do not expire. A replayed success returns the stored `data`, without cache purge headers. Without a key, every request runs.
+Inside a transaction the request key belongs to the transaction; a sub-command only uses a key set on its own envelope. Keys do not expire. A replayed success returns the stored `data`, without cache purge headers. Without a key, every request runs.
 
 The scheduler uses keys of the form `sched_<entryId>_<scheduledAt>_<publish|unpublish>`, so a repeated alarm does not publish twice.
 

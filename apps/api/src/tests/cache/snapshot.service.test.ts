@@ -244,7 +244,7 @@ describe('snapshotService', () => {
         3,
         new Set(),
         undefined,
-        true
+        expect.objectContaining({ now: expect.any(String), nearestTransitionAt: null })
       )
     })
 

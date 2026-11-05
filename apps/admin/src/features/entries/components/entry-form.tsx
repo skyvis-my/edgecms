@@ -16,6 +16,10 @@ import { VersionDiff } from '@/features/versioning/components/version-diff'
 import { VersionHistory } from '@/features/versioning/components/version-history'
 import { slugify } from '@/lib/slugify'
 import { useTenantStore } from '@/stores/tenant-store'
+import { getCurrentTenantSlug } from '@/lib/tenant-storage'
+import { useNavigate } from '@tanstack/react-router'
+import { ConfirmDialog } from '@/components/confirm-dialog'
+import type { ConflictBase } from '@/features/sync/field-merge'
 import {
   EDGECMS_PREVIEW_READY_TYPE,
   sendDraftPreviewUpdate,
@@ -27,6 +31,8 @@ import {
 } from 'lucide-react'
 import { EntrySchedulingPanel } from './entry-scheduling-panel'
 import { EntryPreviewPanel } from './entry-preview-panel'
+import { EntryStatusIndicator } from './entry-status-indicator'
+import { useEntryQueueState } from '../lib/use-entry-queue-state'
 import type { Entry, EntryStatus } from '../api/entries-api'
 import {
   useCancelSchedule,
@@ -88,6 +94,11 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
     formatToDatetimeLocal(entry?.unpublishAt)
   )
   const [showScheduleControls, setShowScheduleControls] = useState(false)
+  const queueByEntry = useEntryQueueState()
+  const activeTenantSlug = getCurrentTenantSlug()
+  const navigate = useNavigate()
+  const syncReviewPath = activeTenantSlug ? `/tenants/${activeTenantSlug}/sync` : '/sync'
+  const entryQueue = entry ? queueByEntry.get(entry.id) : undefined
 
   useEffect(() => {
     if (entry?.publishAt) {
@@ -100,7 +111,10 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
 
   // Track latest known version to avoid 409 conflicts between background autosave and manual save
   const currentVersionRef = useRef(entry?.version ?? 1)
+  // OF-04: the server state at currentVersionRef, sent beside queued offline updates for three-way merge.
+  const serverBaseRef = useRef<ConflictBase | undefined>(entryToConflictBase(entry))
   const [hasConflict, setHasConflict] = useState(false)
+  const [confirmOverwriteOpen, setConfirmOverwriteOpen] = useState(false)
 
   // Track active locale for editing
   const [activeLocale, setActiveLocale] = useState(collection.defaultLocale)
@@ -164,6 +178,7 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
     if (entry?.id !== prevEntryIdRef.current) {
       prevEntryIdRef.current = entry?.id
       currentVersionRef.current = entry?.version ?? 1
+      serverBaseRef.current = entryToConflictBase(entry)
       setHasConflict(false)
       return
     }
@@ -174,11 +189,12 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
           setHasConflict(true)
         } else {
           currentVersionRef.current = entry.version
+          serverBaseRef.current = entryToConflictBase(entry)
           setHasConflict(false)
         }
       }
     }
-  }, [entry?.id, entry?.version, isDirty])
+  }, [entry, isDirty])
 
   // Live Draft Preview & Real-Time PostMessage Streaming State
   const tenantSlug = useTenantStore((s) => s.tenantSlug) || 'default'
@@ -374,11 +390,16 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
             data: formData.data,
           },
           optimisticVersion: currentVersionRef.current,
+          base: serverBaseRef.current,
         })
         if (updated?.version) {
           currentVersionRef.current = updated.version
+          serverBaseRef.current = entryToConflictBase(updated)
         }
-        toast.success('Entry updated successfully')
+        // The edit is either saved or in the offline queue; either way it is no longer unsaved (OF-05).
+        form.reset(formData)
+        // A queued command has no server data; useExecuteCommand already announced the queueing.
+        if (updated) toast.success('Entry updated successfully')
       }
       if (onSaved) {
         onSaved(formData.slug)
@@ -398,6 +419,7 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
   const handleDiscardAndReload = useCallback(() => {
     if (!entry) return
     currentVersionRef.current = entry.version
+    serverBaseRef.current = entryToConflictBase(entry)
     form.reset({
       slug: entry.slug,
       status: entry.status,
@@ -409,7 +431,9 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
 
   const handleForceOverwrite = useCallback(async () => {
     if (!entry) return
+    setConfirmOverwriteOpen(false)
     currentVersionRef.current = entry.version
+    serverBaseRef.current = entryToConflictBase(entry)
     setHasConflict(false)
     await handleSubmit(onSubmit)()
   }, [entry, handleSubmit, onSubmit])
@@ -456,9 +480,11 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
               data: values.data,
             },
             optimisticVersion: currentVersionRef.current,
+            base: serverBaseRef.current,
           })
           if (updated?.version) {
             currentVersionRef.current = updated.version
+            serverBaseRef.current = entryToConflictBase(updated)
           }
           setLastAutosavedAt(new Date())
           curForm.reset(values)
@@ -567,25 +593,47 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className='space-y-6' data-mode={mode}>
-      <div className='flex items-center gap-3'>
-        <p className='text-sm font-medium'>{watch('slug') || entry?.slug || 'New entry'}</p>
-        {mode === 'edit' && entry && <p className='text-xs text-muted-foreground'>v{entry.version}</p>}
+      <div
+        data-testid='entry-form-header'
+        className='flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3'
+      >
+        <div className='flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1'>
+          <p className='max-w-full truncate text-sm font-medium'>
+            {watch('slug') || entry?.slug || 'New entry'}
+          </p>
+          {mode === 'edit' && entry && <p className='text-xs text-muted-foreground'>v{entry.version}</p>}
 
-        {/* Auto-save indicator (C-06) */}
-        {isAutosaving && (
-          <span data-testid='autosave-status' className='text-xs text-muted-foreground animate-pulse'>
-            Autosaving draft...
-          </span>
-        )}
-        {!isAutosaving && lastAutosavedAt && (
-          <span data-testid='autosave-status' className='text-xs text-muted-foreground'>
-            Draft autosaved {lastAutosavedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-          </span>
-        )}
+          <EntryStatusIndicator
+            variant='header'
+            status={entry?.status ?? 'draft'}
+            publishAt={entry?.publishAt}
+            unpublishAt={entry?.unpublishAt}
+            queue={entryQueue}
+            hasUnsavedChanges={mode === 'create' || isDirty}
+            isSaving={isSubmitting || isAutosaving}
+            showSaved={mode === 'edit'}
+          />
+
+          {/* Auto-save indicator (C-06) */}
+          {isAutosaving && (
+            <span data-testid='autosave-status' className='text-xs text-muted-foreground animate-pulse'>
+              Autosaving draft...
+            </span>
+          )}
+          {!isAutosaving && lastAutosavedAt && (
+            <span data-testid='autosave-status' className='text-xs text-muted-foreground'>
+              Draft autosaved {lastAutosavedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+        </div>
 
         {/* Publishing & Scheduling controls for edit mode (C-07) */}
         {mode === 'edit' && entry ? (
-          <div className='ml-auto flex items-center gap-2'>
+          <div
+            role='group'
+            aria-label='Entry actions'
+            className='flex flex-wrap items-center gap-2 sm:ml-auto'
+          >
             <Button
               type='button'
               variant={showLivePreview ? 'secondary' : 'outline'}
@@ -603,6 +651,9 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
               size='sm'
               className='h-8 px-2.5 text-xs'
               onClick={() => setShowScheduleControls((prev) => !prev)}
+              aria-expanded={showScheduleControls}
+              aria-controls='entry-scheduling-panel'
+              data-testid='schedule-toggle'
             >
               <Calendar className='mr-1.5 size-3.5' />
               Schedule
@@ -635,7 +686,11 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
             </Button>
           </div>
         ) : (
-          <div className='ml-auto flex items-center gap-2'>
+          <div
+            role='group'
+            aria-label='Entry actions'
+            className='flex flex-wrap items-center gap-2 sm:ml-auto'
+          >
             <Button
               type='button'
               variant={showLivePreview ? 'secondary' : 'outline'}
@@ -656,19 +711,21 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
 
       {/* Scheduled Publishing Panel (C-07) */}
       {showScheduleControls && mode === 'edit' && entry && (
-        <EntrySchedulingPanel
-          entry={entry}
-          scheduledPublishAt={scheduledPublishAt}
-          setScheduledPublishAt={setScheduledPublishAt}
-          scheduledUnpublishAt={scheduledUnpublishAt}
-          setScheduledUnpublishAt={setScheduledUnpublishAt}
-          onSchedulePublish={handleSchedulePublish}
-          onScheduleUnpublish={handleScheduleUnpublish}
-          onCancelSchedule={handleCancelSchedule}
-          isPublishPending={schedulePublishMutation.isPending}
-          isUnpublishPending={scheduleUnpublishMutation.isPending}
-          isCancelPending={cancelScheduleMutation.isPending}
-        />
+        <div id='entry-scheduling-panel'>
+          <EntrySchedulingPanel
+            entry={entry}
+            scheduledPublishAt={scheduledPublishAt}
+            setScheduledPublishAt={setScheduledPublishAt}
+            scheduledUnpublishAt={scheduledUnpublishAt}
+            setScheduledUnpublishAt={setScheduledUnpublishAt}
+            onSchedulePublish={handleSchedulePublish}
+            onScheduleUnpublish={handleScheduleUnpublish}
+            onCancelSchedule={handleCancelSchedule}
+            isPublishPending={schedulePublishMutation.isPending}
+            isUnpublishPending={scheduleUnpublishMutation.isPending}
+            isCancelPending={cancelScheduleMutation.isPending}
+          />
+        </div>
       )}
       {hasConflict && (
         <div
@@ -698,7 +755,7 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
                 type='button'
                 variant='destructive'
                 size='sm'
-                onClick={handleForceOverwrite}
+                onClick={() => setConfirmOverwriteOpen(true)}
                 disabled={isSubmitting}
                 data-testid='conflict-overwrite-button'
               >
@@ -706,6 +763,34 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
               </Button>
             </div>
           </div>
+          <ConfirmDialog
+            open={confirmOverwriteOpen}
+            onOpenChange={setConfirmOverwriteOpen}
+            destructive
+            title='Overwrite the newer server version?'
+            desc={`Version ${entry?.version ?? ''} on the server has changes you have not seen. Saving now replaces them with your edits.`}
+            confirmText='Overwrite server version'
+            handleConfirm={() => void handleForceOverwrite()}
+            isLoading={isSubmitting}
+          />
+        </div>
+      )}
+      {mode === 'edit' && (entryQueue?.conflicted ?? 0) > 0 && (
+        <div
+          role='status'
+          data-testid='sync-conflict-callout'
+          className='flex flex-col gap-2 rounded-md border border-red-600/40 bg-red-50 p-3 text-sm text-red-900 sm:flex-row sm:items-center sm:justify-between dark:border-red-400/40 dark:bg-red-950/30 dark:text-red-100'
+        >
+          <p>An offline change to this entry overlaps a newer server version. Review it before it syncs.</p>
+          <Button
+            type='button'
+            size='sm'
+            variant='outline'
+            className='shrink-0'
+            onClick={() => void navigate({ to: syncReviewPath })}
+          >
+            Review sync conflict
+          </Button>
         </div>
       )}
       {autosaveConflictWarning && (
@@ -911,4 +996,14 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
       )}
     </form>
   )
+}
+
+/** OF-04: the server snapshot an edit starts from, kept with queued offline updates. */
+function entryToConflictBase(
+  entry: Pick<Entry, 'version' | 'slug' | 'data'> | null | undefined
+): ConflictBase | undefined {
+  if (!entry || typeof entry.version !== 'number') return undefined
+  const data = entry.data
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined
+  return { version: entry.version, slug: entry.slug, data: data as Record<string, unknown> }
 }

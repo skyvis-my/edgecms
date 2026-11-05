@@ -10,8 +10,10 @@ import { type CommandContext, executeCommand } from './engine'
 import type { WaitUntilContext } from './deferred-work'
 import { getRequestPathname } from '@/shared/utils/request-url'
 import { createErrorEnvelope } from '@/shared/utils/service-response'
+import { type PreviewReceiptErrorCode, previewReceiptErrorStatus } from '@/ai/preview-receipt.service'
 import { createCommandHostHooks, getCommandLimitError } from '@/host/command-hooks'
 import { getHostRuntime } from '@/host/host-context'
+import { getRequestContentAccess } from '@/auth/content-access'
 
 /**
  * Resolve the Cloudflare execution context from the Elysia request context.
@@ -37,6 +39,7 @@ const COMMAND_ERROR_STATUS_MAP: Record<string, number> = {
   INVALID_STATUS_TRANSITION: 400,
   INVALID_PREVIEW_RECEIPT: 400,
   UNAUTHORIZED: 403,
+  FORBIDDEN: 403,
 }
 
 export function initializeWebhookProducerIfNeeded(
@@ -164,6 +167,7 @@ export const commandsController = new Elysia({ prefix: '/api/admin/commands', no
         pathname: requestPathname,
         method: elysiaCtx.request.method,
       },
+      contentAccess: await getRequestContentAccess(elysiaCtx.request),
     }
   
     // Execute command through engine
@@ -198,6 +202,12 @@ export const commandsController = new Elysia({ prefix: '/api/admin/commands', no
     if (limitError && result.error) {
       set.status = limitError.status
       return createErrorEnvelope(result.error.code, result.error.message, limitError.details)
+    }
+
+    // AI-05: receipt rejections keep their code and expose the typed reason.
+    if (result.error?.code === 'INVALID_PREVIEW_RECEIPT' && result.error.reason) {
+      set.status = previewReceiptErrorStatus(result.error.reason as PreviewReceiptErrorCode)
+      return createErrorEnvelope(result.error.code, result.error.message, { reason: result.error.reason })
     }
 
     // Error handling — map error codes to HTTP status

@@ -207,6 +207,8 @@ export const commandResult = createSchema(
       Type.Object({
         code: Type.String(),
         message: Type.String(),
+        /** Typed sub-reason, e.g. the preview receipt rejection (`HASH_MISMATCH`). */
+        reason: Type.Optional(Type.String()),
       })
     ),
     diff: Type.Optional(Type.Array(Type.Record(Type.String(), Type.Unknown()))),

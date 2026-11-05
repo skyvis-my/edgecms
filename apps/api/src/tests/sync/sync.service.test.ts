@@ -172,6 +172,43 @@ describe('sync.service', () => {
       expect(findEntryByIdFn).toHaveBeenCalledTimes(1)
     })
 
+    it('OF-04/P2: reads the conflicting entry from the sync tenant, not the global scope', async () => {
+      const conflictResult = {
+        commandId: 'c1',
+        type: 'updateEntry',
+        status: 'failed',
+        error: { code: 'VERSION_CONFLICT', message: 'Expected version 3 but found 5' },
+        executedAt: new Date().toISOString(),
+      }
+      const db = {} as never
+      const tenantLookup = vi.fn().mockResolvedValue({ id: 'e1', version: 5, data: { title: 'x' } })
+      const tenantResults = await executeSyncPushCommands({
+        commands: [{ type: 'updateEntry', payload: { entryId: 'e1', data: {} }, optimisticVersion: 3 }],
+        userId: 'u1',
+        db,
+        kv: {} as KVNamespace,
+        syncChannel: 'tenant-1',
+        executeCommandFn: vi.fn().mockResolvedValue(conflictResult),
+        findEntryByIdFn: tenantLookup,
+      })
+      expect(tenantLookup).toHaveBeenCalledWith(db, 'e1', 'tenant-1')
+      expect(tenantResults[0]?.serverState).toEqual(
+        expect.objectContaining({ version: 5, entry: expect.objectContaining({ data: { title: 'x' } }) })
+      )
+
+      const globalLookup = vi.fn().mockResolvedValue(undefined)
+      await executeSyncPushCommands({
+        commands: [{ type: 'updateEntry', payload: { entryId: 'e1', data: {} }, optimisticVersion: 3 }],
+        userId: 'u1',
+        db,
+        kv: {} as KVNamespace,
+        syncChannel: 'global',
+        executeCommandFn: vi.fn().mockResolvedValue(conflictResult),
+        findEntryByIdFn: globalLookup,
+      })
+      expect(globalLookup).toHaveBeenCalledWith(db, 'e1', undefined)
+    })
+
     it('converts thrown command errors into INTERNAL_ERROR failures', async () => {
       const results = await executeSyncPushCommands({
         commands: [{ type: 'createEntry', payload: {} }],

@@ -9,6 +9,7 @@ import { DataTable } from '@/components/data-table'
 import type { CollectionDefinition } from '@/features/collections/api/collections-api'
 import { type NavigateFn, useTableUrlState } from '@/hooks/use-table-url-state'
 import type { Entry } from '../api/entries-api'
+import { useEntryQueueState } from '../lib/use-entry-queue-state'
 import { EntriesBulkActions } from './entries-bulk-actions'
 import { getEntriesColumns } from './entries-columns'
 
@@ -21,7 +22,8 @@ type EntriesTableProps = {
 }
 
 export function EntriesTable({ data, collection, totalRows, search, navigate }: EntriesTableProps) {
-  const columns = getEntriesColumns(collection)
+  const queueByEntry = useEntryQueueState()
+  const columns = getEntriesColumns(collection, { queueByEntry })
 
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})

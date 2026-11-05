@@ -80,6 +80,7 @@ function buildApp() {
       tenantId: (ctx as { tenant?: { tenant: { id: string } } }).tenant?.tenant.id,
     }))
     .post('/api/tenants/:tenantSlug/api/admin/entries', () => ({ reached: true }))
+    .post('/api/mcp', () => ({ reached: true }))
 }
 
 async function post(path: string, headers: Record<string, string> = {}) {
@@ -144,5 +145,45 @@ describe('deployment MCP key on the tenant MCP endpoint (AI-06)', () => {
     const { status, body } = await post('/api/tenants/acme/api/mcp', { 'x-edgecms-api-key': KEY })
     expect(status).toBe(403)
     expect(body?.error?.code).toBe('TENANT_SUSPENDED')
+  })
+})
+
+function sessionFor(role: string) {
+  return {
+    user: { id: `user-${role}`, email: `${role}@example.com`, emailVerified: true, role },
+    session: { id: `session-${role}`, userId: `user-${role}` },
+  }
+}
+
+describe('global MCP endpoint /api/mcp needs a deployment key or a global admin role (P2, AI-06)', () => {
+  it('rejects calls without credentials', async () => {
+    const { status, body } = await post('/api/mcp')
+    expect(status).toBe(401)
+    expect(body?.reached).toBeUndefined()
+  })
+
+  it('rejects a signed-in user without a global admin or editor role (e.g. a tenant-only member)', async () => {
+    mockGetSession.mockResolvedValue(sessionFor('viewer'))
+    const { status, body } = await post('/api/mcp')
+    expect(status).toBe(403)
+    expect(body?.reached).toBeUndefined()
+  })
+
+  it('lets a global admin through', async () => {
+    mockGetSession.mockResolvedValue(sessionFor('admin'))
+    const { status, body } = await post('/api/mcp')
+    expect(status).toBe(200)
+    expect(body?.reached).toBe(true)
+  })
+
+  it('lets a valid deployment key through (header or bearer)', async () => {
+    expect((await post('/api/mcp', { 'x-edgecms-api-key': KEY })).body?.reached).toBe(true)
+    expect((await post('/api/mcp', { authorization: `Bearer ${KEY}` })).body?.reached).toBe(true)
+  })
+
+  it('does not let a wrong key through', async () => {
+    const { status, body } = await post('/api/mcp', { 'x-edgecms-api-key': 'wrong-key' })
+    expect(status).toBe(401)
+    expect(body?.reached).toBeUndefined()
   })
 })
