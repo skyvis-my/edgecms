@@ -64,6 +64,27 @@ Tests check that it:
 - Rejects untrusted destinations.
 - Registers no public plugin route.
 
+## Host Plan (admin contributions)
+
+Shows how a host adds a plan and usage page, a dashboard panel and a banner to the admin (HS-10). It has no API catalog entry and changes no content.
+
+Module: `examples/plugins/host-admin-contributions.plugin.ts`. A runnable React version lives in `apps/admin/src/features/plugins/admin-contributions/samples/host-plan-sample.tsx` and is off by default; start the admin with `VITE_EDGECMS_SAMPLE_HOST_PLUGIN=true` to see it. Its usage numbers are sample data.
+
+Contributes:
+
+- A `Plan & usage` page under the `Host` sidebar group, for tenant admins and owners.
+- A `Plan usage` panel on the dashboard and in settings.
+- A dismissible warning banner with a link to these docs.
+
+Tests check that it:
+
+- Passes catalog validation.
+- Hides manage-level items from tenant members and superadmin-only items from everyone else.
+- Hides contributions from a plugin the API reports as disabled.
+- Renders banner text as plain text with a safe link, and remembers dismissal.
+
+See [Admin contributions](plugin-sdk.md#admin-contributions-hs-10).
+
 ## Form Capture (not built)
 
 A form submission plugin is planned but not built, because it needs a public route and EdgeCMS does not load public plugin routes. It waits for a reviewed public plugin namespace with tenant isolation, auth policy, cache behavior and route-prefix tests.
