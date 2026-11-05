@@ -198,7 +198,7 @@ Generic hooks that let anyone run EdgeCMS as a multi-customer service, including
 | **OP-03** | `create-edgecms-app` starter that scaffolds a working consumer app. Not published to npm yet. | Partial |
 | **OP-04** | Deploy to the adopter's own Cloudflare account via the Deploy button or the [deployment runbook](docs/deployment-runbook.md), with dev, staging and production environments. | Shipped |
 | **OP-05** | Migrations use expand/contract sequencing; destructive changes need a backup and a tested restore. | Partial |
-| **OP-06** | Collection export and non-destructive import preview. | Partial |
+| **OP-06** | Collection export and non-destructive import preview. Per-collection export (schema hash, entries, relations by slug) and a two-step import: preview builds a per-entry plan, dry-runs it and mints an AI-05 receipt; execute runs only that plan, so a changed plan is refused. PL-03 grants apply. No admin screen yet; no rollback across the two command transactions. See [Data portability](docs/public/operations-security.md#collection-export-and-import). | Shipped |
 | **OP-07** | Observability: request IDs, cache metrics, scheduler alarm logs, sync logs, AI Gateway analytics. | Partial |
 | **OP-08** | `bun run check:all` is the merge gate: merge markers, types, tests, package checks, docs claims, lint. | Shipped |
 | **OP-11** | Documented Docker Compose + Kubernetes/Helm path for the OSS hosting adapters (`deploy/docker`, `deploy/k8s`, `deploy/helm/edgecms`), including optional Redis and Entra env forwarding. | Shipped |
