@@ -1207,18 +1207,15 @@ describe('executeCommand', () => {
       insertProcessedSpy.mockRestore()
     })
 
-    it('returns cached dry_run outcome when idempotency key is reused for dry run', async () => {
+    it('a keyed dry-run never reads, reserves or replays the idempotency record (CMD-03)', async () => {
+      // Previously a keyed dry-run replayed a stored 'dry_run' row, so the
+      // real execution with the same key returned the preview instead of
+      // running. A dry-run now bypasses the idempotency path entirely.
       const { commandsRepository } = await import('../../commands/commands.repository')
-      const findByIdSpy = vi.spyOn(commandsRepository, 'findById').mockResolvedValue({
-        id: 'idem_dry-run-key',
-        commandType: 'createEntry',
-        payload: { collectionId: 'c1' },
-        actor: { userId: 'user1', source: 'admin' },
-        result: { diff: [{ field: 'status', action: 'add', before: null, after: 'draft' }], previewReceipt: 'rcpt-preview-1' },
-        status: 'dry_run',
-        tenantScope: null,
-        executedAt: '2026-06-08T00:00:00.000Z',
-      })
+      const findByIdSpy = vi.spyOn(commandsRepository, 'findById')
+      const insertSpy = vi.spyOn(commandsRepository, 'insertProcessedCommand')
+      const diffEntries = [{ field: 'status', action: 'add', before: null, after: 'draft' }]
+      mockComputeDiff.mockResolvedValue(diffEntries as unknown as DiffEntry[])
 
       const result = await executeCommand(ctx, {
         type: 'createEntry',
@@ -1230,11 +1227,14 @@ describe('executeCommand', () => {
       })
 
       expect(result.status).toBe('dry_run')
-      expect(result.commandId).toBe('idem_dry-run-key')
-      expect(result.diff).toEqual([{ field: 'status', action: 'add', before: null, after: 'draft' }])
-      expect(result.previewReceipt).toBe('rcpt-preview-1')
+      expect(result.commandId).not.toBe('idem_dry-run-key')
+      expect(result.diff).toEqual(diffEntries)
+      expect(findByIdSpy).not.toHaveBeenCalled()
+      expect(insertSpy).not.toHaveBeenCalled()
+      expect(mockCreateEntry).not.toHaveBeenCalled()
 
       findByIdSpy.mockRestore()
+      insertSpy.mockRestore()
     })
   })
 })

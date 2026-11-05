@@ -145,11 +145,7 @@ describe('CMD-03 transaction dry-run', () => {
     ).toEqual({ status: 'draft', data: '{"title":"Hello"}', version: 1 })
 
     // No execution or duplicate-suppression records.
-    const processed = env.sqlite
-      .query(`SELECT id, status FROM processed_commands`)
-      .all() as Array<{ id: string; status: string }>
-    expect(processed.filter((row) => row.status !== 'dry_run')).toEqual([])
-    expect(processed.find((row) => row.id === 'idem_tx-key-1')).toBeUndefined()
+    expect(env.count('processed_commands')).toBe(0)
 
     // No cache purge.
     expect(env.deleted).toEqual([])
@@ -210,10 +206,7 @@ describe('CMD-03 transaction dry-run', () => {
     expect(result.error?.message).toContain('Nothing was written')
     expect(result.previewReceipt).toBeUndefined()
     expect(env.snapshot()).toEqual(before)
-    const processed = env.sqlite
-      .query(`SELECT status FROM processed_commands`)
-      .all() as Array<{ status: string }>
-    expect(processed.filter((row) => row.status !== 'dry_run')).toEqual([])
+    expect(env.count('processed_commands')).toBe(0)
     expect(env.deleted).toEqual([])
   })
 })

@@ -56,7 +56,7 @@ Envelopes are defined in `packages/schemas/src/commands.ts`:
 | `dryRun` | No | `true` previews without writing. |
 | `optimisticVersion` | No | Rejects the change if the entry's version has moved on. |
 | `previewReceipt` | No | Receipt from an earlier dry run. |
-| `idempotencyKey` | No | Replays with the same key return the first result. |
+| `idempotencyKey` | No | Replays of a real execution with the same key return the first result. Dry runs ignore it. |
 | `transactionId` | No | Groups commands in a transaction. |
 
 Unknown command types and missing required payload fields fail schema validation before anything runs.
