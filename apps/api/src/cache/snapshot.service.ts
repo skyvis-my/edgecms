@@ -3,6 +3,11 @@ import { collectionsRepository } from '@/collections/collections.repository'
 import type { Database } from '@/database/db'
 import { cacheTags } from '@/database/schema'
 import { entriesRepository, type EntryRow } from '@/entries/entries.repository'
+import {
+  createPublicVisibility,
+  isEntryPubliclyVisible,
+  type PublicVisibility,
+} from '@/entries/public-visibility'
 import { relationsResolver, type PopulatedEntry } from '@/relations/relations.resolver'
 import { flattenLocaleFields } from '@/shared/locale'
 
@@ -83,7 +88,8 @@ async function populateSingleEntry(
   entry: EntryRow,
   fieldNames: string[],
   maxDepth: number,
-  tenantId?: string
+  tenantId: string | undefined,
+  visibility: PublicVisibility
 ): Promise<PopulatedEntry> {
   if (typeof relationsResolver.populateMany === 'function') {
     const [populated] = await relationsResolver.populateMany(
@@ -94,35 +100,20 @@ async function populateSingleEntry(
       maxDepth,
       new Set(),
       tenantId,
-      true
+      visibility
     )
     return populated ?? entry
   }
-  return relationsResolver.populate(db, entry, fieldNames, 1, maxDepth, new Set(), tenantId, true)
-}
-
-function isEntryVisibleAtRequestTime(
-  entry: {
-    status: string
-    publishAt?: string | null
-    unpublishAt?: string | null
-  },
-  nowIso: string
-): boolean {
-  // Never expose authoring-only states publicly.
-  if (entry.status === 'draft' || entry.status === 'archived') {
-    return false
-  }
-
-  if (entry.publishAt && entry.publishAt > nowIso) {
-    return false
-  }
-
-  if (entry.unpublishAt && entry.unpublishAt <= nowIso) {
-    return false
-  }
-
-  return true
+  return relationsResolver.populate(
+    db,
+    entry,
+    fieldNames,
+    1,
+    maxDepth,
+    new Set(),
+    tenantId,
+    visibility
+  )
 }
 
 /**
@@ -159,6 +150,7 @@ export const snapshotService = {
    * @param collectionSlug - Slug of the collection to generate snapshot for
    * @param locale - Locale to flatten localized fields to
    * @param tenantId - Optional tenant ID for tenant context metadata
+   * @param visibility - Public visibility context; records related entries' nearest transition
    * @returns List snapshot structure ready for KV storage
    */
   async generateListSnapshot(
@@ -171,7 +163,8 @@ export const snapshotService = {
       extraConditions?: SQL[]
       orderByClause?: SQL
     },
-    collection?: CollectionSnapshotSeed
+    collection?: CollectionSnapshotSeed,
+    visibility: PublicVisibility = createPublicVisibility()
   ): Promise<ListSnapshot | null> {
     const collectionContext = await snapshotService.getCollectionContext(
       db,
@@ -204,11 +197,11 @@ export const snapshotService = {
             1,
             new Set(),
             tenantId,
-            true
+            visibility
           )
         : await Promise.all(
             visibleEntries.map((entry) =>
-              relationsResolver.populate(db, entry, [], 1, 1, new Set(), tenantId, true)
+              relationsResolver.populate(db, entry, [], 1, 1, new Set(), tenantId, visibility)
             )
           )
 
@@ -259,6 +252,7 @@ export const snapshotService = {
    * @param entryIdOrSlug - Entry ID or slug to generate snapshot for
    * @param locale - Locale to flatten localized fields to
    * @param tenantId - Optional tenant ID for tenant context metadata
+   * @param visibility - Public visibility context; records related entries' nearest transition
    * @returns Entry snapshot structure ready for KV storage, or null if not found
    */
   async generateEntrySnapshot(
@@ -271,7 +265,8 @@ export const snapshotService = {
       populate?: string[]
       depth?: number
     },
-    collection?: CollectionSnapshotSeed
+    collection?: CollectionSnapshotSeed,
+    visibility: PublicVisibility = createPublicVisibility()
   ): Promise<EntrySnapshot | null> {
     const collectionData = await snapshotService.getCollectionContext(
       db,
@@ -315,7 +310,7 @@ export const snapshotService = {
       return null
     }
 
-    if (!isEntryVisibleAtRequestTime(entry, new Date().toISOString())) {
+    if (!isEntryPubliclyVisible(entry, visibility.now)) {
       return null
     }
 
@@ -326,11 +321,18 @@ export const snapshotService = {
       if (requestedFields.length > 0) {
         const relationFields =
           requestedFields.length === 1 && requestedFields[0] === '*' ? [] : requestedFields
-        populated = await populateSingleEntry(db, entry, relationFields, maxDepth, tenantId)
+        populated = await populateSingleEntry(
+          db,
+          entry,
+          relationFields,
+          maxDepth,
+          tenantId,
+          visibility
+        )
       }
     } else {
       // Preserve historical behavior when no explicit query pattern is provided.
-      populated = await populateSingleEntry(db, entry, [], 2, tenantId)
+      populated = await populateSingleEntry(db, entry, [], 2, tenantId, visibility)
     }
 
     // Flatten localized fields to the target locale

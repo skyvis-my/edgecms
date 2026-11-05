@@ -231,7 +231,8 @@ describe('publicController', () => {
         populate: ['author'],
         depth: 3,
       },
-      expect.objectContaining({ id: 'c1', slug: 'posts' })
+      expect.objectContaining({ id: 'c1', slug: 'posts' }),
+      expect.objectContaining({ now: expect.any(String) })
     )
     expect(kvService.putSnapshot).toHaveBeenCalled()
     expect(snapshotService.storeCacheTags).toHaveBeenCalled()
@@ -277,7 +278,8 @@ describe('publicController', () => {
         populate: [],
         depth: 1,
       },
-      expect.objectContaining({ id: 'c1', slug: 'posts' })
+      expect.objectContaining({ id: 'c1', slug: 'posts' }),
+      expect.objectContaining({ now: expect.any(String) })
     )
     const cacheTagHeader = response.headers.get('cache-tag')
     expect(cacheTagHeader).toContain('t:tenant-a:c:c1')
@@ -329,7 +331,8 @@ describe('publicController', () => {
       undefined,
       { page: 2, perPage: 1 },
       { extraConditions: [], orderByClause: undefined },
-      expect.objectContaining({ id: 'c1', slug: 'posts' })
+      expect.objectContaining({ id: 'c1', slug: 'posts' }),
+      expect.objectContaining({ now: expect.any(String) })
     )
     expect(body.entries).toEqual([{ id: 'e3' }])
   })
@@ -361,7 +364,8 @@ describe('publicController', () => {
         extraConditions: expect.arrayContaining([expect.any(Object)]),
         orderByClause: expect.any(Object),
       },
-      expect.objectContaining({ id: 'c1', slug: 'posts' })
+      expect.objectContaining({ id: 'c1', slug: 'posts' }),
+      expect.objectContaining({ now: expect.any(String) })
     )
   })
 
