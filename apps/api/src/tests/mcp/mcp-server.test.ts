@@ -484,21 +484,46 @@ describe('Native MCP Server Adapter Gated by Command Engine (C-01)', () => {
       expect(result.content[0]!.text).toContain('tenantId override is not allowed')
     })
 
-    it('refuses tools for an override tenant whose AI switch is off', async () => {
-      const globalCtx: CommandContext = {
-        ...ctx,
-        tenantScope: undefined,
-        env: { DB: aiSwitchD1(false) } as unknown as Env,
+    it('takes the tenant from the request, never from a tenantId argument (P2, AI-06)', async () => {
+      const globalCtx: CommandContext = { ...ctx, tenantScope: undefined }
+      const reads: Array<[string, Record<string, unknown>]> = [
+        ['edgecms_list_collections', {}],
+        ['edgecms_get_schema', { collectionSlug: 'posts' }],
+        ['edgecms_list_entries', { collectionSlug: 'posts' }],
+        ['edgecms_get_entry', { entryId: 'e1' }],
+        ['edgecms_search_rag', { query: 'hello' }],
+      ]
+      for (const [name, args] of reads) {
+        const response = await processMcpMessage(globalCtx, {
+          jsonrpc: '2.0',
+          id: 42,
+          method: 'tools/call',
+          params: { name, arguments: { ...args, tenantId: 'tenant-b' } },
+        })
+        const result = response.result as { isError?: boolean; content: Array<{ text: string }> }
+        expect(result.isError).toBe(true)
+        expect(result.content[0]!.text).toContain('tenantId override is not allowed')
       }
-      const response = await processMcpMessage(globalCtx, {
+      expect(collectionsRepository.findAll).not.toHaveBeenCalled()
+      expect(collectionsRepository.findBySlug).not.toHaveBeenCalled()
+      expect(entriesRepository.findById).not.toHaveBeenCalled()
+      expect(entriesRepository.findAll).not.toHaveBeenCalled()
+    })
+
+    it('accepts a tenantId argument that names the request tenant', async () => {
+      ;(collectionsRepository.findAll as ReturnType<typeof vi.fn>).mockResolvedValue([])
+      const response = await processMcpMessage(ctx, {
         jsonrpc: '2.0',
-        id: 42,
+        id: 43,
         method: 'tools/call',
-        params: { name: 'edgecms_list_collections', arguments: { tenantId: 'ai-off' } },
+        params: { name: 'edgecms_list_collections', arguments: { tenantId: 'tenant-smoke' } },
       })
-      const result = response.result as { isError?: boolean; content: Array<{ text: string }> }
-      expect(result.isError).toBe(true)
-      expect(result.content[0]!.text).toContain('AI features are turned off')
+      expect((response.result as { isError?: boolean }).isError).toBeUndefined()
+      expect(collectionsRepository.findAll).toHaveBeenCalledWith(mockDb, 'tenant-smoke')
+    })
+
+    it('does not advertise a tenantId argument on any tool', () => {
+      for (const tool of MCP_TOOLS) expect(tool.inputSchema.properties).not.toHaveProperty('tenantId')
     })
   })
 })

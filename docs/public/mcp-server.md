@@ -225,5 +225,6 @@ curl -X POST https://<your-worker>/api/tenants/<slug>/api/mcp \
 - Commands accept `optimisticVersion` to reject stale edits.
 - Queries and changes are filtered by tenant in D1 and KV.
 - On tenant-scoped paths, every request gets `403` and JSON-RPC error `-32003` while the tenant's AI switch is off. Global paths have no tenant switch.
-- Tools accept an optional `tenantId` argument. On tenant-scoped paths it is rejected when it names another tenant. On global paths it is honored only when that tenant's AI switch is on, and it does not check the caller's membership in that tenant. Give global MCP paths only to deployment-level API keys.
+- The tenant comes only from the path. Tools take no `tenantId` argument; one that names a different tenant (or any tenant on a global path) is rejected with a tool error. To work on a tenant, call its `/api/tenants/:slug/api/mcp` path.
+- `POST /api/mcp` (global) needs a deployment key, or a user with the global `admin` or `editor` role (or a super-admin); other signed-in users get `403`.
 - A tenant that requires MFA blocks sessions without a second factor on its MCP routes and access tokens without the `mfa` claim. Deployment API keys are not user credentials and are not subject to tenant MFA, so keep them in a secret store and rotate them like any other Worker secret.

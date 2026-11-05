@@ -3,6 +3,9 @@ import type { Env } from '@/env'
 /** Tenant-scoped MCP endpoint that external MCP clients call (not the admin alias). */
 export const TENANT_MCP_PATH = /^\/api\/tenants\/[^/]+\/api\/mcp\/?$/
 
+/** Global (no tenant) MCP endpoint that external MCP clients call (not the admin alias). */
+export const GLOBAL_MCP_PATH = /^\/api\/mcp\/?$/
+
 const encoder = new TextEncoder()
 
 function timingSafeEqual(a: string, b: string): boolean {

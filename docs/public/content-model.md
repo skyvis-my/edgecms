@@ -244,6 +244,8 @@ GET  /api/admin/entries/:entryId/versions/:versionId/diff/:targetVersionId
 POST /api/admin/entries/:entryId/versions/:versionId/rollback
 ```
 
+The same routes exist under `/api/tenants/:slug`. The entry must belong to the request's tenant (or to the global scope on the unprefixed routes); an entry from any other scope returns `404`.
+
 Rollback copies the chosen version's `data` onto the entry, bumps `version`, and writes a version row. It runs outside the command engine: it writes a `change_log` row but no `audit_log` row, emits no webhook and does not invalidate the public cache.
 
 Retention runs after each update: versions older than 90 days are deleted, and at most 50 are kept per entry (`apps/api/src/versioning/retention.service.ts`).
