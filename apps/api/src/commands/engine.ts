@@ -358,7 +358,9 @@ async function checkIdempotency(
 ): Promise<CommandResult | null> {
   try {
     const existing = await commandsRepository.findById(db, commandId)
-    if (!existing) return null
+    // A 'dry_run' row is a legacy preview record, not an execution (CMD-03):
+    // it neither replays nor conflicts, and the real execution claims the key.
+    if (!existing || existing.status === 'dry_run') return null
 
     const keyName = envelope.idempotencyKey ?? commandId.replace(/^idem_/, '')
 
@@ -407,18 +409,6 @@ async function checkIdempotency(
         type: envelope.type,
         status: 'success',
         data: (existing.result as Record<string, unknown> | null) ?? undefined,
-        executedAt: existing.executedAt,
-      }
-    }
-
-    if (existing.status === 'dry_run') {
-      const storedResult = existing.result as Record<string, unknown> | null
-      return {
-        commandId,
-        type: envelope.type,
-        status: 'dry_run',
-        diff: (storedResult?.diff as Record<string, unknown>[] | undefined) ?? [],
-        previewReceipt: storedResult?.previewReceipt as string | undefined,
         executedAt: existing.executedAt,
       }
     }
@@ -789,9 +779,13 @@ async function executeSingleCommand(
   envelope: CommandEnvelope,
   options: SingleCommandOptions = {}
 ): Promise<CommandResult> {
-  const idempotencyKey = options.inTransaction
-    ? envelope.idempotencyKey
-    : envelope.idempotencyKey || ctx.idempotencyKey
+  // CMD-03/CMD-04: a dry-run writes nothing, so it never reserves, stores or
+  // replays an idempotency record; the real execution with the same key runs.
+  const idempotencyKey = envelope.dryRun
+    ? undefined
+    : options.inTransaction
+      ? envelope.idempotencyKey
+      : envelope.idempotencyKey || ctx.idempotencyKey
   const commandId = idempotencyKey ? `idem_${idempotencyKey}` : crypto.randomUUID()
   const tenantScope = ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : null
   const pluginHookContext = buildPluginHookContext(ctx, envelope)
@@ -848,9 +842,11 @@ async function executeSingleCommand(
       executedAt: new Date().toISOString(),
     }
 
-    await recordCommand(ctx.db, commandId, envelope, 'failed', tenantScope, {
-      error: errorResult.error,
-    })
+    if (!envelope.dryRun) {
+      await recordCommand(ctx.db, commandId, envelope, 'failed', tenantScope, {
+        error: errorResult.error,
+      })
+    }
     incrementMetric('command_runs_total', { type: envelope.type, status: 'failed' })
 
     return finalize(errorResult)
@@ -887,11 +883,7 @@ async function executeSingleCommand(
         ? undefined
         : await createReceiptSafely([envelope], envelope.actor.userId, ctx)
 
-      // Record the dry-run command
-      await recordCommand(ctx.db, commandId, envelope, 'dry_run', tenantScope, {
-        diff: diff as unknown as Record<string, unknown>,
-        previewReceipt: previewReceiptId,
-      })
+      // No processed_commands row: a preview is not an execution (CMD-03).
       incrementMetric('command_runs_total', { type: envelope.type, status: 'dry_run' })
 
       return finalize({
@@ -1201,9 +1193,9 @@ async function handleTransaction(
 
   // Record the transaction itself as a processed command
   // (compensating action note: sub-command effects persist; see saga comment above).
-  // A failed dry run records nothing, matching a failed single-command dry run.
+  // A dry run records nothing, matching a single-command dry run (CMD-03).
   try {
-    if (!dryRun || allSucceeded) {
+    if (!dryRun) {
       await recordCommand(
         ctx.db,
         transactionId,

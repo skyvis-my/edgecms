@@ -119,7 +119,7 @@ Set `dryRun: true` to preview a command (PRD `CMD-03`). The engine computes a fi
 
 What a dry run does:
 
-- Records a `processed_commands` row with status `dry_run`.
+- Writes no `processed_commands` row and ignores any idempotency key: it neither reserves, stores nor replays one, so the real execution with the same key still runs.
 - Creates a preview receipt (stored in KV for 15 minutes) and returns its ID as `previewReceipt`.
 - Skips host limit checks and metering.
 
@@ -160,11 +160,10 @@ The engine uses `idem_<key>` as the command ID and reserves it in `processed_com
 | --- | --- |
 | `success` | The stored result, without running again. |
 | `failed` | The stored error. |
-| `dry_run` | The stored diff and receipt. |
 | `pending` | `CONCURRENT_REQUEST`. |
 | Different `type` or `payload` | `IDEMPOTENCY_CONFLICT`. |
 
-Inside a transaction the request key belongs to the transaction; a sub-command only uses a key set on its own envelope. Keys do not expire. A replayed success returns the stored `data`, without cache purge headers. Without a key, every request runs.
+Dry runs never use the key (see [Dry Run and Diff](#dry-run-and-diff)). A `dry_run` row written by an older version is treated as absent: the real execution claims the key. Inside a transaction the request key belongs to the transaction; a sub-command only uses a key set on its own envelope. Keys do not expire. A replayed success returns the stored `data`, without cache purge headers. Without a key, every request runs.
 
 The scheduler uses keys of the form `sched_<entryId>_<scheduledAt>_<publish|unpublish>`, so a repeated alarm does not publish twice.
 
@@ -237,7 +236,7 @@ Response, `200` (diff shape from `apps/api/src/tests/commands/diff.service.test.
 {
   "success": true,
   "data": {
-    "commandId": "idem_post-42-title-v3",
+    "commandId": "<random id>",
     "type": "updateEntry",
     "status": "dry_run",
     "diff": [
@@ -249,7 +248,7 @@ Response, `200` (diff shape from `apps/api/src/tests/commands/diff.service.test.
 }
 ```
 
-Because the dry run is stored under the idempotency key, the real call needs a new key (or none). Send the same body without `dryRun`, with `"previewReceipt": "<receipt id>"` and a new `Idempotency-Key`. A stale `optimisticVersion` then returns `409 VERSION_CONFLICT`.
+The dry run ignores the idempotency key, so the real call can reuse it. Send the same body and `Idempotency-Key` without `dryRun`, with `"previewReceipt": "<receipt id>"`. It runs once and returns `idem_post-42-title-v3` as its `commandId`; a retry with the same key returns that stored result. A stale `optimisticVersion` then returns `409 VERSION_CONFLICT`.
 
 ## Direct CRUD Routes
 
