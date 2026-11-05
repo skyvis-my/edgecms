@@ -15,6 +15,7 @@ import {
 import { collectionsRepository } from '@/collections/collections.repository'
 import type { Database } from '@/database/db'
 import { entriesRepository } from '@/entries/entries.repository'
+import { isEntryPubliclyVisible } from '@/entries/public-visibility'
 import { flattenLocaleFields } from '@/shared/locale'
 import { API_VERSION } from '@/version'
 
@@ -212,15 +213,14 @@ export async function buildDynamicGraphQLSchema(
           locale: { type: GraphQLString },
         },
         resolve: async (_: unknown, args: { locale?: string }) => {
-          const { rows } = await entriesRepository.findAll(db, {
+          // Same rule as public REST (P5): status and publish window.
+          const { rows } = await entriesRepository.findVisibleByCollection(db, {
             collectionId: col.id,
-            status: 'published',
-            tenantId,
             perPage: 1,
             skipCount: true,
           })
           const entry = rows[0]
-          if (!entry || entry.status !== 'published') return null
+          if (!entry) return null
 
           const locale = args.locale || col.defaultLocale || 'en'
           const localizedData = flattenLocaleFields(entry.data, col.fields, locale, col.defaultLocale)
@@ -255,10 +255,9 @@ export async function buildDynamicGraphQLSchema(
           args: { locale?: string; page?: number; perPage?: number; sort?: string }
         ) => {
           const locale = args.locale || col.defaultLocale || 'en'
-          const { rows: entries } = await entriesRepository.findAll(db, {
+          // Same rule as public REST (P5): status and publish window.
+          const { rows: entries } = await entriesRepository.findVisibleByCollection(db, {
             collectionId: col.id,
-            status: 'published',
-            tenantId,
             page: args.page || 1,
             perPage: Math.min(args.perPage || 20, 100),
             skipCount: true,
@@ -288,7 +287,10 @@ export async function buildDynamicGraphQLSchema(
             entry = await entriesRepository.findByCollectionAndSlug(db, col.id, args.slug, tenantId)
           }
 
-          if (!entry || entry.status !== 'published') return null
+          // An id lookup is tenant-scoped but not collection-scoped.
+          if (!entry || entry.collectionId !== col.id) return null
+          // Same rule as public REST (P5): status and publish window.
+          if (!isEntryPubliclyVisible(entry, new Date().toISOString())) return null
 
           const locale = args.locale || col.defaultLocale || 'en'
           const localizedData = flattenLocaleFields(entry.data, col.fields, locale, col.defaultLocale)
