@@ -4,6 +4,7 @@ import { aiSettingsController } from '@/ai/ai-settings.controller'
 import { assetsController } from '@/assets/assets.controller'
 import { auditController } from '@/audit/audit.controller'
 import { cacheStatsController } from '@/cache/cache-stats.controller'
+import { collectionTransferController } from '@/collections/collection-transfer.controller'
 import { collectionsController } from '@/collections/collections.controller'
 import { commandsController } from '@/commands/commands.controller'
 import { entriesController } from '@/entries/entries.controller'
@@ -34,6 +35,7 @@ export function createCoreApiRoutes(options: CoreApiRoutesOptions) {
     .use(aiController)
     .use(aiSettingsController)
     .use(collectionsController)
+    .use(collectionTransferController)
     .use(commandsController)
     .use(entriesController)
     .use(options.scopedPluginsController)

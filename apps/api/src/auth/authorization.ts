@@ -103,11 +103,13 @@ function isRolesMutationPath(pathname: string, method: string): boolean {
 }
 
 /**
- * PL-03: tenant content routes (entry CRUD, versions and commands). The guard
- * checks the coarse `TenantContent` ability; handlers and the command engine
- * then check per-collection grants (see `content-access.ts`).
+ * PL-03: tenant content routes (entry CRUD, versions, commands and OP-06
+ * collection export/import). The guard checks the coarse `TenantContent`
+ * ability; handlers and the command engine then check per-collection grants
+ * (see `content-access.ts`).
  */
-const TENANT_CONTENT_PATH = /^\/api\/tenants\/[^/]+\/api\/admin\/(?:entries|commands)(?:\/|$)/
+const TENANT_CONTENT_PATH =
+  /^\/api\/tenants\/[^/]+\/api\/admin\/(?:entries|commands|collections\/[^/]+\/(?:export|import))(?:\/|$)/
 
 function isTenantContentPath(pathname: string): boolean {
   return TENANT_CONTENT_PATH.test(pathname)

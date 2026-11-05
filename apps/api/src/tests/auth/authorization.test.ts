@@ -409,3 +409,36 @@ describe('tenant audit log access (HS-12)', () => {
     }
   })
 })
+
+describe('collection export and import routes (OP-06, PL-03)', () => {
+  const exportPath = '/api/tenants/acme/api/admin/collections/posts/export'
+  const previewPath = '/api/tenants/acme/api/admin/collections/posts/import/preview'
+
+  it('are content routes: an entry:<collection> custom grant reaches them', () => {
+    const principal = { actorId: 'u', actorRole: 'viewer' as const }
+    const grants = [
+      { subject: 'entry:posts', action: 'read' },
+      { subject: 'entry:posts', action: 'create' },
+    ]
+    expect(authorizeApiRequest({ pathname: exportPath, method: 'GET', principal, customPermissions: grants })).toEqual({
+      allowed: true,
+    })
+    expect(
+      authorizeApiRequest({ pathname: previewPath, method: 'POST', principal, customPermissions: grants })
+    ).toEqual({ allowed: true })
+  })
+
+  it('let members export but not import, and deny viewers', () => {
+    const member = { actorId: 'u', tenantRole: 'member' as const }
+    expect(authorizeApiRequest({ pathname: exportPath, method: 'GET', principal: member })).toEqual({ allowed: true })
+    expect(authorizeApiRequest({ pathname: previewPath, method: 'POST', principal: member })).toMatchObject({
+      allowed: false,
+      status: 403,
+    })
+    const viewer = { actorId: 'u', tenantRole: 'viewer' as const }
+    expect(authorizeApiRequest({ pathname: exportPath, method: 'GET', principal: viewer })).toMatchObject({
+      allowed: false,
+      status: 403,
+    })
+  })
+})
