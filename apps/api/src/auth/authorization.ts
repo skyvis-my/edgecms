@@ -98,8 +98,14 @@ function isRolesMutationPath(pathname: string, method: string): boolean {
   if (SAFE_METHODS.has(method)) return false
   return (
     pathname.startsWith('/api/admin/roles') ||
-    /^\/api\/tenants\/[^/]+\/api\/admin\/roles(?:\/|$)/.test(pathname)
+    /^\/api\/tenants\/[^/]+\/api\/admin\/roles(?:\/|$)/.test(pathname) ||
+    isMemberRoleMutationPath(pathname)
   )
+}
+
+/** PL-03: assigning a member's role is a role change (owner/admin or an explicit grant). */
+function isMemberRoleMutationPath(pathname: string): boolean {
+  return /^(?:\/api\/tenants\/[^/]+)?\/api\/admin\/users\/[^/]+\/role\/?$/.test(pathname)
 }
 
 /**

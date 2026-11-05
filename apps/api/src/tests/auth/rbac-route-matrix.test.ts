@@ -90,6 +90,7 @@ const CUSTOM_ROLE_GRANTS: Record<string, Array<{ subject: string; action: string
     { subject: 'entry:blog', action: 'update' },
   ],
   'hook-manager': [{ subject: 'webhooks:*', action: 'manage' }],
+  'role-manager': [{ subject: 'TenantAdminRoles', action: 'manage' }],
   'no-grants': [],
 }
 const mockGetEffectivePermissions = vi.fn(
@@ -156,6 +157,7 @@ function buildApp() {
     .post(`${T}/roles`, { auth: true }, ok)
     .put(`${T}/roles/:id`, { auth: true }, ok)
     .delete(`${T}/roles/:id`, { auth: true }, ok)
+    .put(`${T}/users/:id/role`, { auth: true }, ok)
     .delete(`${T}/assets/:id`, { auth: true }, ok)
     .delete(`${T}/assets/:id/permanent`, { auth: true }, ok)
     .post(`${T}/assets/gc`, { auth: true }, ok)
@@ -179,6 +181,7 @@ const ROUTES: Record<string, Route> = {
   'POST roles': { method: 'POST', path: `${T}/roles` },
   'PUT roles/:id': { method: 'PUT', path: `${T}/roles/r1` },
   'DELETE roles/:id': { method: 'DELETE', path: `${T}/roles/r1` },
+  'PUT users/:id/role': { method: 'PUT', path: `${T}/users/u1/role` },
   'DELETE assets/:id (soft)': { method: 'DELETE', path: `${T}/assets/a1` },
   'DELETE assets/:id/permanent': { method: 'DELETE', path: `${T}/assets/a1/permanent` },
   'POST assets/gc': { method: 'POST', path: `${T}/assets/gc` },
@@ -208,6 +211,7 @@ const MATRIX: Record<keyof typeof ROUTES, Verdict[]> = {
   'POST roles': /*             */ [D, D, D, A, A, D, D, D],
   'PUT roles/:id': /*          */ [D, D, D, A, A, D, D, D],
   'DELETE roles/:id': /*       */ [D, D, D, A, A, D, D, D],
+  'PUT users/:id/role': /*     */ [D, D, D, A, A, D, D, D],
   'DELETE assets/:id (soft)': [D, D, A, A, A, D, D, D],
   'DELETE assets/:id/permanent': [D, D, D, A, A, D, D, D],
   'POST assets/gc': /*         */ [D, D, D, A, A, D, D, D],
@@ -272,6 +276,24 @@ describe('PL-03 role x route matrix (access token path)', () => {
       })
     })
   }
+})
+
+describe('PL-03 member role assignment needs owner/admin or an explicit grant', () => {
+  it('allows a custom role with a TenantAdminRoles grant (token path)', async () => {
+    const response = await send(buildApp(), ROUTES['PUT users/:id/role']!, {
+      token: await mintToken('role-manager'),
+    })
+    expect(response.status).toBe(200)
+  })
+
+  it('denies the same route on the global admin path to tenant-only roles', async () => {
+    const response = await send(
+      buildApp().put('/api/admin/users/:id/role', () => ({ success: true })),
+      { method: 'PUT', path: '/api/admin/users/u1/role' },
+      { token: await mintToken('admin') }
+    )
+    expect(response.status).toBe(403)
+  })
 })
 
 describe('PL-03 effective content access exposed to handlers', () => {

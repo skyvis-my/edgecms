@@ -10,6 +10,11 @@ export type AdminUser = {
   phoneNumber: string
   status: 'active' | 'inactive' | 'invited' | 'suspended'
   role: 'superadmin' | 'admin' | 'editor' | 'viewer'
+  /**
+   * Tenant listings only: the stored `tenant_users.role` (a built-in tenant
+   * role or a custom role name), so the admin can show and change it.
+   */
+  tenantRole?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -87,6 +92,7 @@ export const usersService = {
         phoneNumber: '',
         status: 'active',
         role: mapRole(resolveAdminUserRole(row.globalRole, row.tenantRole), isSuperAdmin),
+        ...(options.tenantId ? { tenantRole: row.tenantRole ?? null } : {}),
         createdAt: toIsoDate(row.createdAt),
         updatedAt: toIsoDate(row.updatedAt),
       })

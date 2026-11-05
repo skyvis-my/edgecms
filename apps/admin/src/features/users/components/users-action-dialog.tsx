@@ -15,14 +15,16 @@ import {
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { useUpdateTenantUserRole, type TenantUserRole } from '@/features/tenants/api'
-import { roles, type UserRoleOption } from '../data/data'
+import { ApiClientError } from '@/lib/api-error'
+import { useAssignMemberRole, useTenantRoles } from '../api'
+import { buildTenantRoleOptions, roles, type UserRoleOption } from '../data/data'
 import type { User } from '../data/schema'
 
 const formSchema = z.object({
@@ -48,12 +50,18 @@ export function UsersActionDialog({
   roleOptions = roles,
   tenantSlug,
 }: UserActionDialogProps) {
-  const updateRole = useUpdateTenantUserRole()
+  const assignRole = useAssignMemberRole(tenantSlug)
+  const tenantRoles = useTenantRoles(tenantSlug)
+  // In a tenant, offer the stored membership roles (built-in and this tenant's
+  // custom roles); the server re-checks every rule (PL-03).
+  const items = tenantSlug
+    ? buildTenantRoleOptions((tenantRoles.data ?? []).map((r) => r.name))
+    : roleOptions.map(({ label, value }) => ({ label, value }))
   const form = useForm<UserForm>({
     resolver: zodResolver(formSchema),
     defaultValues: {
       email: currentRow.email,
-      role: currentRow.role,
+      role: (tenantSlug ? currentRow.tenantRole : undefined) ?? currentRow.role,
     },
   })
 
@@ -64,14 +72,10 @@ export function UsersActionDialog({
     }
 
     try {
-      await updateRole.mutateAsync({
-        slug: tenantSlug,
-        userId: currentRow.id,
-        role: values.role as TenantUserRole,
-      })
-      toast.success('User updated')
-    } catch {
-      toast.error('Failed to update user')
+      await assignRole.mutateAsync({ userId: currentRow.id, role: values.role })
+      toast.success('Role updated')
+    } catch (error) {
+      toast.error(error instanceof ApiClientError ? error.message : 'Failed to update role')
       return
     }
 
@@ -130,11 +134,15 @@ export function UsersActionDialog({
                       onValueChange={field.onChange}
                       placeholder='Select a role'
                       className='col-span-4'
-                      items={roleOptions.map(({ label, value }) => ({
-                        label,
-                        value,
-                      }))}
+                      isPending={Boolean(tenantSlug) && tenantRoles.isLoading}
+                      items={items}
                     />
+                    {tenantSlug && (
+                      <FormDescription className='col-span-4 col-start-3 text-xs'>
+                        Custom roles come from this tenant&apos;s roles. Only owners can grant
+                        Owner, and a tenant keeps at least one owner.
+                      </FormDescription>
+                    )}
                     <FormMessage className='col-span-4 col-start-3' />
                   </FormItem>
                 )}
@@ -143,8 +151,8 @@ export function UsersActionDialog({
           </Form>
         </div>
         <DialogFooter>
-          <Button type='submit' form='user-form' disabled={updateRole.isPending}>
-            {updateRole.isPending ? 'Saving...' : 'Save changes'}
+          <Button type='submit' form='user-form' disabled={assignRole.isPending}>
+            {assignRole.isPending ? 'Saving...' : 'Save changes'}
           </Button>
         </DialogFooter>
       </DialogContent>

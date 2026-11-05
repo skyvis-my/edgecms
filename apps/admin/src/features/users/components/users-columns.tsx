@@ -4,7 +4,7 @@ import { LongText } from '@/components/long-text'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
 import { cn } from '@/lib/utils'
-import { callTypes, roles } from '../data/data'
+import { callTypes, customRoleIcon, roles, tenantMemberBuiltInRoles } from '../data/data'
 import type { User } from '../data/schema'
 import { DataTableRowActions } from './data-table-row-actions'
 
@@ -86,7 +86,23 @@ export const usersColumns: ColumnDef<User>[] = [
     accessorKey: 'role',
     header: ({ column }) => <DataTableColumnHeader column={column} title='Role' />,
     cell: ({ row }) => {
-      const { role } = row.original
+      const { role, tenantRole } = row.original
+      // Tenant listings carry the stored membership role, which may be a custom role.
+      if (tenantRole) {
+        const builtIn = tenantMemberBuiltInRoles.find(({ value }) => value === tenantRole)
+        const Icon = builtIn?.icon ?? customRoleIcon
+        return (
+          <div className='flex items-center gap-x-2'>
+            <Icon size={16} className='text-muted-foreground' />
+            <span className={cn('text-sm', builtIn && 'capitalize')}>{tenantRole}</span>
+            {!builtIn && (
+              <Badge variant='outline' className='px-1.5 py-0 text-[10px] font-normal'>
+                custom
+              </Badge>
+            )}
+          </div>
+        )
+      }
       const userType = roles.find(({ value }) => value === role)
 
       if (!userType) {
