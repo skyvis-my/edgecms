@@ -1,6 +1,6 @@
 # Hosting seams
 
-This guide covers the policy hooks a host passes to `createApp({ host })` to run EdgeCMS as a multi-customer service: who may create tenants, tenant states and lifecycle events, sign-up and MFA rules, usage metering, quotas and per-tenant rate limits. It is for developers composing their own Worker entry around `edgecms-api`. Background is in `PRD.md` §10.1.
+This guide covers the policy hooks a host passes to `createApp({ host })` to run EdgeCMS as a multi-customer service: who may create tenants, tenant states and lifecycle events, tenant offboarding, sign-up and MFA rules, usage metering, quotas and per-tenant rate limits. It is for developers composing their own Worker entry around `edgecms-api`. Background is in `PRD.md` §10.1.
 
 Each app instance keeps its own copy of the policies, and request input never changes them. Omitted hooks keep the framework defaults.
 
@@ -73,6 +73,31 @@ The legacy `inactive` status, and any status not listed above, behaves like `dis
 Events go to `host.onTenantEvent` and to the webhook event bus. Both are awaited inside the request, so a slow listener slows tenant changes. Enqueue the work instead of calling slow APIs. Webhook delivery uses global scope: only super-admins can subscribe a global webhook (created on `/api/admin/webhooks` without a tenant) to `tenant.*` events, because those events describe every tenant. A tenant-scoped webhook cannot subscribe to them.
 
 `tenant.limit_reached` carries `limit: { dimension, kind, limit?, used?, upgradeUrl?, period }`. The period is the denial's `period`, or the UTC day when the host gives none. A KV marker suppresses repeats across isolates, but two isolates that race can each send one, so treat delivery as at least once. A denied tenant creation has no tenant yet and sends no event.
+
+## Tenant offboarding
+
+HS-09 adds an export and a two-step, verified deletion for shared-mode tenants. All routes need a signed-in user and read the control-plane D1.
+
+| Route | Who | What |
+| --- | --- | --- |
+| `GET /api/admin/tenants/:tenantSlug/export` | Super-admin or tenant owner | Streams an NDJSON archive: collections, entries, versions, relations, schema snapshots, members, roles, media keys and webhooks. |
+| `POST /api/admin/tenants/:tenantSlug/deletion-requests` | Super-admin | Opens a deletion job and suspends the tenant. Returns `202`. |
+| `POST /api/admin/tenant-deletions/:jobId/confirm` | Super-admin | Body `{ tenantSlug, exportId }`. Starts the deletion. |
+| `POST /api/admin/tenant-deletions/:jobId/resume` | Super-admin | Continues a confirmed job that stopped. |
+| `POST /api/admin/tenant-deletions/:jobId/cancel` | Super-admin | Cancels a job before confirmation. A tenant that was `active` before the request becomes `active` again. |
+| `GET /api/admin/tenant-deletions/:jobId` | Super-admin | Job status and rows deleted per table. |
+
+- **Export.** Webhook secrets and header values are redacted. The last line is a receipt. EdgeCMS writes the matching `tenant.data_exported` entry to the global audit chain only after the whole archive is streamed, so an interrupted download gives no usable `exportId`.
+- **Confirmation.** `tenantSlug` must equal the tenant's slug exactly, and `exportId` must come from a complete export taken after the deletion request. Otherwise the response is `422` and nothing is deleted.
+- **Deletion.** EdgeCMS queues the tenant's R2 objects and the `tenants/<tenantId>/` prefix for the R2 cleanup sweeper, then deletes tenant rows in chunks of 500, children before parents, with the `tenants` row last. Each chunk and its count are written in one D1 batch. A lease stops two runs from overlapping. A run stops after a fixed budget; call `resume` until the job is `completed`.
+- **Receipt and event.** When the job completes, EdgeCMS writes one `tenant.data_deleted` entry to the global audit chain, with the per-table counts, and sends `tenant.deleted` once.
+- **Kept on purpose.** User accounts stay global; use [personal data requests](operations-security.md#personal-data-requests) for those. The audit ledger, the R2 cleanup queue and the deletion job record are kept.
+
+Limits:
+
+- Tenants in dedicated mode are refused with `409 DEDICATED_RESOURCES_UNSUPPORTED`. Delete dedicated D1, KV and R2 resources through the host's own tooling.
+- The deletion SQL uses SQLite features, so it runs on D1 only, not on the Postgres hosting path.
+- `DELETE /api/admin/tenants/:slug` is unchanged. It deletes the tenant row without confirmation and does not remove tenant data. Use the deletion job instead.
 
 ## Sign-up and email verification
 

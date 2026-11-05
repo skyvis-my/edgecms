@@ -19,6 +19,7 @@ import {
 import { rbacController } from '@/auth/rbac.controller'
 import { auditTrailPlugin } from '@/audit/audit-trail.plugin'
 import { privacyController } from '@/privacy/privacy.controller'
+import { createOffboardingController } from '@/offboarding/offboarding.controller'
 import { configureAuthPolicies } from '@/auth/auth-policies'
 import {
   isMfaVerifiedSession,
@@ -349,6 +350,9 @@ export const createApp = (options: CreateAppOptions = {}) => {
 
         // HS-13 personal data requests (global only)
         .use(privacyController)
+
+        // HS-09 tenant offboarding: export, two-step verified deletion (global only)
+        .use(createOffboardingController({ events: tenantEvents }))
 
         // Global routes (backward compatibility for single-tenant deployments)
         .use(coreRoutes)
