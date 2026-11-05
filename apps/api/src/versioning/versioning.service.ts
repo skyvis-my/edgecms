@@ -77,19 +77,20 @@ export const versioningService = {
    *
    * @param db - Database connection
    * @param entryId - Entry ID to list versions for
-   * @param options - Pagination options
+   * @param options - Pagination options and the request tenant (P2: the entry
+   *   must belong to it; omitted means the global scope)
    */
   async listVersions(
     db: Database,
     entryId: string,
-    options: { page?: number; limit?: number } = {}
+    options: { page?: number; limit?: number; tenantId?: string } = {}
   ): Promise<ServiceResult<VersionListResult>> {
     const page = Math.max(1, options.page ?? 1)
     const perPage = Math.min(100, Math.max(1, options.limit ?? 20))
     const offset = (page - 1) * perPage
 
-    // Verify entry exists
-    const entry = await versioningRepository.findEntryById(db, entryId)
+    // Verify entry exists in the request tenant
+    const entry = await versioningRepository.findEntryById(db, entryId, options.tenantId)
     if (!entry) {
       return {
         success: false,
@@ -178,14 +179,16 @@ export const versioningService = {
    * @param db - Database connection
    * @param entryId - Entry ID
    * @param versionId - Version ID to retrieve
+   * @param tenantId - Request tenant the entry must belong to (P2)
    */
   async getVersion(
     db: Database,
     entryId: string,
-    versionId: string
+    versionId: string,
+    tenantId?: string
   ): Promise<ServiceResult<EntryVersionRow>> {
-    // Verify entry exists
-    const entry = await versioningRepository.findEntryById(db, entryId)
+    // Verify entry exists in the request tenant
+    const entry = await versioningRepository.findEntryById(db, entryId, tenantId)
     if (!entry) {
       return {
         success: false,
@@ -245,17 +248,19 @@ export const versioningService = {
    * @param entryId - Entry ID
    * @param versionId1 - First version ID (older)
    * @param versionId2 - Second version ID (newer)
+   * @param tenantId - Request tenant the entry must belong to (P2)
    */
   async diffVersions(
     db: Database,
     entryId: string,
     versionId1: string,
-    versionId2: string
+    versionId2: string,
+    tenantId?: string
   ): Promise<ServiceResult<VersionDiffEntry[]>> {
     // Fetch both versions in parallel (independent indexed lookups).
     const [version1Result, version2Result] = await Promise.all([
-      versioningService.getVersion(db, entryId, versionId1),
-      versioningService.getVersion(db, entryId, versionId2),
+      versioningService.getVersion(db, entryId, versionId1, tenantId),
+      versioningService.getVersion(db, entryId, versionId2, tenantId),
     ])
     if (!version1Result.success) {
       return version1Result
@@ -280,18 +285,21 @@ export const versioningService = {
    * @param entryId - Entry ID to rollback
    * @param versionId - Version ID to rollback to
    * @param userId - User performing the rollback
+   * @param tenantScope - Change-log tenant scope (tenant slug)
+   * @param tenantId - Request tenant the entry must belong to (P2)
    */
   async rollback(
     db: Database,
     entryId: string,
     versionId: string,
     userId?: string,
-    tenantScope?: string | null
+    tenantScope?: string | null,
+    tenantId?: string
   ): Promise<ServiceResult<{ entry: EntryRow; newVersion: EntryVersionRow }>> {
     // Fetch target version + current entry in parallel (independent reads).
     const [versionResult, entry] = await Promise.all([
-      versioningService.getVersion(db, entryId, versionId),
-      versioningRepository.findEntryById(db, entryId),
+      versioningService.getVersion(db, entryId, versionId, tenantId),
+      versioningRepository.findEntryById(db, entryId, tenantId),
     ])
     if (!versionResult.success) {
       return versionResult
@@ -312,7 +320,7 @@ export const versioningService = {
     let restoredData = (targetVersion.data || {}) as Record<string, unknown>
     if (entry.collectionId) {
       try {
-        const collection = await collectionsRepository.findById(db, entry.collectionId)
+        const collection = await collectionsRepository.findById(db, entry.collectionId, tenantId)
         if (collection?.fields && Array.isArray(collection.fields)) {
           restoredData = projectEntryDataWithSchema(restoredData, collection.fields)
         }

@@ -28,12 +28,16 @@ export const versioningController = new Elysia({ prefix: '/api/admin/entries' })
       page: t.Optional(t.String()),
       limit: t.Optional(t.String()),
     }),
-  }, async ({ db, params, query, set }) => {
+  }, async ({ db, params, query, set, tenantCtx }) => {
     const page = query.page ? Number.parseInt(query.page, 10) : undefined
     const limit = query.limit ? Number.parseInt(query.limit, 10) : undefined
     return toServiceResponse(
       set,
-      await versioningService.listVersions(db, params.entryId, { page, limit })
+      await versioningService.listVersions(db, params.entryId, {
+        page,
+        limit,
+        tenantId: tenantCtx?.tenant.id,
+      })
     )
   })
 
@@ -46,10 +50,10 @@ export const versioningController = new Elysia({ prefix: '/api/admin/entries' })
       entryId: t.String({ minLength: 1 }),
       versionId: t.String({ minLength: 1 }),
     }),
-  }, async ({ db, params, set }) => {
+  }, async ({ db, params, set, tenantCtx }) => {
     return toServiceResponse(
       set,
-      await versioningService.getVersion(db, params.entryId, params.versionId)
+      await versioningService.getVersion(db, params.entryId, params.versionId, tenantCtx?.tenant.id)
     )
   })
 
@@ -63,14 +67,15 @@ export const versioningController = new Elysia({ prefix: '/api/admin/entries' })
       versionId: t.String({ minLength: 1 }),
       targetVersionId: t.String({ minLength: 1 }),
     }),
-  }, async ({ db, params, set }) => {
+  }, async ({ db, params, set, tenantCtx }) => {
     return toServiceResponse(
       set,
       await versioningService.diffVersions(
         db,
         params.entryId,
         params.versionId,
-        params.targetVersionId
+        params.targetVersionId,
+        tenantCtx?.tenant.id
       )
     )
   })
@@ -92,7 +97,8 @@ export const versioningController = new Elysia({ prefix: '/api/admin/entries' })
       params.entryId,
       params.versionId,
       userId,
-      tenantCtx?.tenant.slug ?? null
+      tenantCtx?.tenant.slug ?? null,
+      tenantCtx?.tenant.id
     )
 
     if (!result.success) {

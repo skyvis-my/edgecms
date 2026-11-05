@@ -1,5 +1,6 @@
 import { AbilityBuilder, createMongoAbility } from '@casl/ability'
 import type { ActorRole, TenantActorRole } from './rbac'
+import { GLOBAL_MCP_PATH } from '@/mcp/mcp-auth'
 
 export type AuthorizationAction = 'manage' | 'mutate' | 'read'
 export type AuthorizationSubject =
@@ -183,6 +184,18 @@ function resolveRequirement(
       subject: 'GlobalAdminUsers',
       unauthenticatedMessage: 'Authentication required',
       forbiddenMessage: 'Admin access required',
+    }
+  }
+
+  // P2 / AI-06: the global MCP endpoint reads and changes the global scope, so
+  // users need the same global role as the admin API (deployment keys skip
+  // this check in the security guard).
+  if (method === 'POST' && GLOBAL_MCP_PATH.test(pathname)) {
+    return {
+      action: 'mutate',
+      subject: 'GlobalAdminApi',
+      unauthenticatedMessage: 'Authentication required',
+      forbiddenMessage: 'Insufficient role',
     }
   }
 
