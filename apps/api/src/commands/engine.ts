@@ -21,6 +21,7 @@ import { scheduleDeferredWork } from './deferred-work'
 import { buildMessagesForEvent, type WebhookQueueMessage } from '@/webhooks/queue-producer'
 import { commandsRepository } from './commands.repository'
 import { computeDiff } from './diff.service'
+import { authorizeCommandContent, type ContentAccess } from '@/auth/content-access'
 import { createPreviewReceipt, markPreviewReceiptConsumed, verifyPreviewReceipt } from '@/ai/preview-receipt.service'
 import {
   handleBulkUpdate,
@@ -81,6 +82,14 @@ export type CommandContext = {
    * request entry points. Skipped for dry runs.
    */
   hostHooks?: CommandHostHooks
+  /**
+   * PL-03: the caller's per-collection content access. Every entry point
+   * that runs commands for a user (admin commands, AI, MCP, sync, imports)
+   * sets it; each command, including every command in a transaction, is
+   * checked before it runs. System callers (the publish scheduler) leave it
+   * unset.
+   */
+  contentAccess?: ContentAccess
 }
 
 export type CommandHostHooks = {
@@ -1214,6 +1223,29 @@ export async function executeCommand(
   ctx: CommandContext,
   envelope: CommandEnvelope
 ): Promise<CommandResult> {
+  if (ctx.contentAccess) {
+    const denied = await authorizeCommandContent(
+      ctx.contentAccess,
+      ctx.db,
+      ctx.tenantScope ?? (ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : undefined),
+      envelope
+    )
+    if (denied) {
+      logger.warn('command_forbidden', {
+        type: envelope.type,
+        userId: ctx.actor.userId,
+        source: ctx.actor.source,
+      })
+      return {
+        commandId: crypto.randomUUID(),
+        type: envelope.type,
+        status: 'failed',
+        error: denied,
+        executedAt: new Date().toISOString(),
+      }
+    }
+  }
+
   const hooks = envelope.dryRun ? undefined : ctx.hostHooks
   if (hooks?.beforeExecute) {
     const rejected = await hooks.beforeExecute(envelope)

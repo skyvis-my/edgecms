@@ -13,7 +13,7 @@ POST /api/admin/commands
 
 Use the tenant route. The global route runs without a tenant scope: it acts on `global` content and its webhook events go to global webhooks.
 
-Auth: the route requires a signed-in user (`auth: true`) whose role can write to the admin API: editor, admin or owner on the tenant, or editor/admin on global routes. Viewers and members get `403`. There is no per-command permission check; any role that can write can send any command type. See [auth and access](auth-and-access.md) for sessions, CSRF and bearer tokens.
+Auth: the route requires a signed-in user (`auth: true`) whose role can write to the admin API: editor, admin or owner on the tenant, or editor/admin on global routes. Viewers and members get `403`. Each command is then checked against the caller's collection access before it runs: a custom role with `entry:<collectionSlug>` grants can only run commands on entries of those collections, for the actions it was granted. Each command inside a `transaction` and each entry in a `bulkUpdate` is checked, and a denied command fails with `403 FORBIDDEN`. Commands from AI, AI imports, MCP and sync get the same check. See [auth and access](auth-and-access.md) for sessions, CSRF and bearer tokens.
 
 ## The Envelope
 

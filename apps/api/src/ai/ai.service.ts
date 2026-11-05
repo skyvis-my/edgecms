@@ -1,5 +1,6 @@
 import { generateText, jsonSchema, tool } from 'ai'
 import { type CommandContext, type CommandHostHooks, executeCommand } from '@/commands/engine'
+import type { ContentAccess } from '@/auth/content-access'
 import type { Database } from '@/database/db'
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
@@ -338,6 +339,8 @@ export async function executeGeneratedCommands(options: {
   hookContext?: GenerateCommandsOptions['hookContext']
   /** HS-05/HS-06 hooks applied to each executed command. */
   commandHooks?: CommandHostHooks
+  /** PL-03: the caller's per-collection content access, checked per command. */
+  contentAccess?: ContentAccess
 }): Promise<ExecuteGeneratedCommandsResult> {
   const { prompt, previewReceipt, context, dryRun, enforcePreviewReceipt, userId, env, db, kv, metadata, hookContext } = options
 
@@ -376,6 +379,7 @@ export async function executeGeneratedCommands(options: {
       kv,
       tenantScope: metadata?.tenantId,
       hostHooks: options.commandHooks,
+      contentAccess: options.contentAccess,
       requestMeta: {
         requestId: hookContext?.requestId,
         pathname: hookContext?.pathname,
@@ -467,6 +471,7 @@ export async function executeGeneratedCommands(options: {
     kv,
     tenantScope: metadata?.tenantId,
     hostHooks: options.commandHooks,
+    contentAccess: options.contentAccess,
     requestMeta: {
       requestId: hookContext?.requestId,
       pathname: hookContext?.pathname,

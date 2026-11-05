@@ -2,6 +2,7 @@ import { Elysia, t } from 'elysia'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
 import { hasSuperAdminRole, isSuperAdminEmail, parseSuperAdminEmails } from '@/auth/super-admin'
 import { executeCommand } from '@/commands/engine'
+import { getRequestContentAccess } from '@/auth/content-access'
 import type { Env } from '@/env'
 import { incrementMetric } from '@/observability/metrics'
 import {
@@ -347,6 +348,7 @@ export const syncController = new Elysia({ prefix: '/api/admin/sync' })
       kv,
       syncChannel,
       executeCommandFn: executeCommand,
+      contentAccess: await getRequestContentAccess(elysiaCtx.request),
     })
   
     incrementMetric('sync_push_total', {
