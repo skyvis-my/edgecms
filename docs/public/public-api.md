@@ -123,6 +123,18 @@ OSS Redis defaults to L1+L2 (read-through / write-through). See [self-host Docke
 
 Public read cache entries are kept per tenant, collection, requested locale and filter hash, and hold published content only.
 
+### Edge cache (Workers)
+
+On Cloudflare Workers, anonymous `GET` reads of `/api/public/:collection`, `/api/public/:collection/:entry` and `/api/public/singleton/:collection` (and their `/api/tenants/:slug/...` forms) go through the Workers Cache API (`caches.default`) before the memory, KV and D1 path.
+
+- **Key.** Request origin and path, tenant, collection, locale, the KV content version for that collection and locale, and the query string with parameters sorted. Publishing, a command that invalidates the collection, or a scheduled `publishAt`/`unpublishAt` alarm bumps the version, so older entries stop matching. Stored entries keep their `Cache-Tag`, so a zone purge by tag also removes them.
+- **TTL.** The `CDN-Cache-Control` `max-age`, which already shrinks toward the next scheduled transition. Hits return the original browser `Cache-Control`.
+- **Stored only when** the response is `200`, `Cache-Control` is `public`, the CDN `max-age` is above zero, and there is no `Set-Cookie`, `WWW-Authenticate` or `X-402-*` header. CORS, rate-limit, request-id and D1 session headers are removed before storing.
+- **Skipped for** requests with `Authorization`, `Cookie`, `X-API-Key`, `X-402-Token`, `X-402-Require`, `X-Preview-Token`, `x-d1-session` or `x-session-bookmark` headers, `preview`, `previewToken`, `token`, `paywall` or `x402` query parameters, and paid-read collections (`premium-*`, `paywall-*`, `paid-*`).
+- **Headers on a hit.** `x-edgecms-edge-cache: hit`, `x-edgecms-cache: hit`, `X-Cache-Source: edge` and `Server-Timing: cache;desc="edge";dur=<ms>`. A stored miss returns `x-edgecms-edge-cache: miss`. A matching `If-None-Match` gets `304` from the edge entry.
+
+The Cache API is per Cloudflare data centre and has no stale-while-revalidate, so each data centre fills its own copy. The version counter is read through the isolate memo (about 10 s) and KV, so an invalidation can take that long, plus KV propagation, to reach every isolate, as on the KV path. On `workers.dev` hosts and in `wrangler dev` the Cache API stores nothing. Without `caches.default` (tests, Docker/Postgres hosting) the layer does nothing.
+
 ## Revalidating your frontend
 
 Use signed webhooks to refresh frontend caches after a publish. Each delivery carries `x-edgecms-signature` and `x-webhook-signature`, both `sha256=<hex digest>`: an HMAC-SHA256 of the raw JSON body.
