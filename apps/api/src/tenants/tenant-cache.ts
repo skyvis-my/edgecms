@@ -12,10 +12,22 @@ type IsolateTenantCacheEntry = {
 }
 
 const ISOLATE_TENANT_CACHE_MAX = 200
-const ISOLATE_TENANT_TTL_MS = 20_000 // 20s for active tenant rows
+/**
+ * DL-10 / HS-04 staleness bound. A tenant row (any status) is reused from
+ * isolate memory for at most this long. The isolate that changes a tenant's
+ * state invalidates it immediately; every other isolate converges within
+ * this TTL (plus the in-flight D1 read that filled it).
+ */
+export const TENANT_ISOLATE_TTL_MS = 20_000
 const ISOLATE_NEGATIVE_TTL_MS = 5_000 // 5s for not found slugs to prevent D1 stampedes on bogus slugs
 
 const isolateTenantCache = new Map<string, IsolateTenantCacheEntry>()
+/**
+ * Bumped on every invalidation so a D1 read that started before a state
+ * change cannot write the old row back into the cache after it. One counter
+ * for all slugs: an invalidation only skips concurrent fills, never a read.
+ */
+let isolateCacheGeneration = 0
 
 let isolateTenantCacheEnabled =
   typeof process === 'undefined' || process.env.NODE_ENV !== 'test'
@@ -42,13 +54,22 @@ export function getIsolateCachedTenant(slug: string): TenantRow | null | undefin
   return entry.tenant ?? null
 }
 
-export function setIsolateCachedTenant(slug: string, tenant: TenantRow | undefined): void {
+export function setIsolateCachedTenant(
+  slug: string,
+  tenant: TenantRow | undefined,
+  generation = isolateCacheGeneration
+): void {
   if (!isolateTenantCacheEnabled) return
+  // P2: only cache a row under its own slug, never under an id or alias.
+  if (tenant && tenant.slug !== slug) return
+  // Invalidated while this lookup was in flight: the row may be stale.
+  if (generation !== isolateCacheGeneration) return
   if (isolateTenantCache.size >= ISOLATE_TENANT_CACHE_MAX) {
     const oldestKey = isolateTenantCache.keys().next().value
     if (oldestKey !== undefined) isolateTenantCache.delete(oldestKey)
   }
-  const ttl = tenant ? ISOLATE_TENANT_TTL_MS : ISOLATE_NEGATIVE_TTL_MS
+  const ttl = tenant ? TENANT_ISOLATE_TTL_MS : ISOLATE_NEGATIVE_TTL_MS
+  isolateTenantCache.delete(slug)
   isolateTenantCache.set(slug, {
     tenant,
     expiresAt: Date.now() + ttl,
@@ -56,6 +77,7 @@ export function setIsolateCachedTenant(slug: string, tenant: TenantRow | undefin
 }
 
 export function clearTenantIsolateCache(slug?: string): void {
+  isolateCacheGeneration += 1
   if (slug) {
     isolateTenantCache.delete(slug)
   } else {
@@ -103,9 +125,10 @@ export function setCachedTenant(
     requestTenantCache.set(request, map)
   }
   map.set(slug, promise)
+  const generation = isolateCacheGeneration
   promise.then(
     (tenant) => {
-      setIsolateCachedTenant(slug, tenant)
+      setIsolateCachedTenant(slug, tenant, generation)
     },
     () => {
       // Don't cache rejected queries in isolate

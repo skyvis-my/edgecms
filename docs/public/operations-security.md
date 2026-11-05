@@ -96,7 +96,9 @@ Every API request except health checks and `/api/docs` is rate limited per calle
 | `public_read` | GET `/public/*` | 300 |
 | `default` | Everything else | 120 |
 
-Over-limit requests get `429 RATE_LIMITED` with `Retry-After`. Counters live in isolate memory and KV without atomic increments, so under concurrent traffic across isolates the effective limit can be higher. Hosts can set per-tenant limits; see [Hosting seams](hosting-seams.md#per-tenant-rate-limits). Tests are in `apps/api/src/tests/auth/rate-limit.middleware.test.ts`.
+Over-limit requests get `429 RATE_LIMITED` with `Retry-After`. Counters live in isolate memory and KV without atomic increments, so under concurrent traffic across isolates the effective limit can be higher.
+
+Public reads (`GET`/`HEAD` under `/public/`) do not read KV for rate limiting, so a cached read waits on no storage round trip. By default each isolate counts public reads in memory, so the effective limit across isolates is higher than 300 per minute. To enforce it per Cloudflare location instead, add a rate-limiting binding named `PUBLIC_READ_RATE_LIMITER` in `wrangler.toml` (its `limit` and `period` replace the default policy; per-tenant host policies still use the isolate counter). Set `PUBLIC_READ_RATE_LIMIT_STORE=kv` to go back to the KV-backed counter. Tests are in `apps/api/src/tests/auth/public-read-rate-limit.test.ts`. Hosts can set per-tenant limits; see [Hosting seams](hosting-seams.md#per-tenant-rate-limits). Tests are in `apps/api/src/tests/auth/rate-limit.middleware.test.ts`.
 
 ## Security headers
 

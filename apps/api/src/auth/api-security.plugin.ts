@@ -19,6 +19,7 @@ import {
   getRateLimitKey,
   getTenantRateLimitKey,
 } from './rate-limit.middleware'
+import { consumePublicReadRateLimit } from './public-read-rate-limit'
 import type { TenantRateLimitPolicy } from '@/host/host-policies'
 import type { TenantRateLimitResolver } from '@/host/rate-limits'
 import {
@@ -264,24 +265,37 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
           tenantSlug && resolveTenantRateLimit
             ? await resolveTenantRateLimit(tenantSlug, category)
             : DEFAULT_RATE_LIMIT_POLICIES[category]
-        const rate = await consumeRateLimitDistributed(
-          getRateLimitKey(pathname, method, actorId, tenantSlug, clientIp),
-          {
-            kv: typedEnv.CACHE,
-            windowMs: rateLimitPolicy.windowMs,
-            limit: rateLimitPolicy.limit,
-            source: ctx,
-          }
-        )
-        const tenantLimit = rateLimitPolicy.tenantLimit
-        const tenantRate =
-          rate.allowed && tenantSlug && tenantLimit
-            ? await consumeRateLimitDistributed(getTenantRateLimitKey(tenantSlug, category), {
-                kv: typedEnv.CACHE,
-                windowMs: rateLimitPolicy.windowMs,
-                limit: tenantLimit,
+        const callerKey = getRateLimitKey(pathname, method, actorId, tenantSlug, clientIp)
+        // DL-10: public reads skip the KV round trip (isolate counter or binding).
+        const rate =
+          category === 'public_read'
+            ? await consumePublicReadRateLimit(callerKey, rateLimitPolicy, typedEnv, {
+                bucket: 'caller',
                 source: ctx,
               })
+            : await consumeRateLimitDistributed(callerKey, {
+                kv: typedEnv.CACHE,
+                windowMs: rateLimitPolicy.windowMs,
+                limit: rateLimitPolicy.limit,
+                source: ctx,
+              })
+        const tenantLimit = rateLimitPolicy.tenantLimit
+        const tenantKey = tenantSlug ? getTenantRateLimitKey(tenantSlug, category) : undefined
+        const tenantRate =
+          rate.allowed && tenantKey && tenantLimit
+            ? category === 'public_read'
+              ? await consumePublicReadRateLimit(
+                  tenantKey,
+                  { windowMs: rateLimitPolicy.windowMs, limit: tenantLimit },
+                  typedEnv,
+                  { bucket: 'tenant', source: ctx }
+                )
+              : await consumeRateLimitDistributed(tenantKey, {
+                  kv: typedEnv.CACHE,
+                  windowMs: rateLimitPolicy.windowMs,
+                  limit: tenantLimit,
+                  source: ctx,
+                })
             : undefined
         const denied = !rate.allowed ? rate : tenantRate && !tenantRate.allowed ? tenantRate : null
         if (denied) {

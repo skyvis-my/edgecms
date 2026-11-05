@@ -67,6 +67,10 @@ export interface Env {
   HSTS_MAX_AGE_SECONDS?: string
   HSTS_INCLUDE_SUBDOMAINS?: string
   HSTS_PRELOAD?: string
+  /** DL-10: optional Cloudflare rate-limiting binding for public reads. */
+  PUBLIC_READ_RATE_LIMITER?: import('./auth/public-read-rate-limit').RateLimitBinding
+  /** DL-10: `kv` keeps the KV-backed public-read counter (default: in-isolate). */
+  PUBLIC_READ_RATE_LIMIT_STORE?: string
 }
 
 export const envSchema = {
