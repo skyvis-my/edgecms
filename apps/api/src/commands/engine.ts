@@ -386,6 +386,81 @@ async function recordChangeLog(
 }
 
 /**
+ * CMD-04: how long a `pending` idempotency reservation blocks retries. A
+ * request that crashes mid-command leaves its reservation behind; after this
+ * lease a retry with the same key and command type may take it over. Longer
+ * than any single Worker request is expected to run.
+ */
+export const IDEMPOTENCY_PENDING_LEASE_MS = 5 * 60_000
+
+function pendingStaleBefore(): string {
+  return new Date(Date.now() - IDEMPOTENCY_PENDING_LEASE_MS).toISOString()
+}
+
+function concurrentRequestResult(commandId: string, envelope: CommandEnvelope): CommandResult {
+  const keyName = envelope.idempotencyKey ?? commandId.replace(/^idem_/, '')
+  return {
+    commandId,
+    type: envelope.type,
+    status: 'failed',
+    error: {
+      code: 'CONCURRENT_REQUEST',
+      message: `Command with idempotency key '${keyName}' is currently processing`,
+    },
+    executedAt: new Date().toISOString(),
+  }
+}
+
+/**
+ * CMD-04: replay a stored outcome, or atomically reserve the key as
+ * `pending` before any handler runs. Returns null only when this request owns
+ * the reservation and must execute. Of several simultaneous first requests
+ * exactly one wins the insert; the others re-read the row and get the
+ * winner's outcome, CONCURRENT_REQUEST or IDEMPOTENCY_CONFLICT. If the
+ * reservation cannot be written the command does not run.
+ */
+async function reserveOrReplay(
+  db: Database,
+  commandId: string,
+  envelope: CommandEnvelope,
+  tenantScope: string | null,
+  defaultFailureCode: string
+): Promise<CommandResult | null> {
+  const cached = await checkIdempotency(db, commandId, envelope, defaultFailureCode)
+  if (cached) return cached
+
+  try {
+    const reserved = await commandsRepository.reservePending({
+      db,
+      commandId,
+      envelope,
+      tenantScope,
+      now: new Date().toISOString(),
+      staleBefore: pendingStaleBefore(),
+    })
+    if (reserved) return null
+  } catch (err) {
+    logger.error('idempotency_reservation_failed', {
+      commandId,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return {
+      commandId,
+      type: envelope.type,
+      status: 'failed',
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Could not reserve the idempotency key; the command did not run',
+      },
+      executedAt: new Date().toISOString(),
+    }
+  }
+
+  const winner = await checkIdempotency(db, commandId, envelope, defaultFailureCode)
+  return winner ?? concurrentRequestResult(commandId, envelope)
+}
+
+/**
  * Check if a command has already been processed with the same idempotency key.
  * If yes, return the cached result directly. If conflicts are detected, return IDEMPOTENCY_CONFLICT.
  */
@@ -428,6 +503,10 @@ async function checkIdempotency(
         executedAt: existing.executedAt,
       }
     }
+
+    // A pending reservation past its lease belongs to a request that crashed
+    // or timed out; it does not block. reservePending decides who claims it.
+    if (existing.status === 'pending' && existing.executedAt < pendingStaleBefore()) return null
 
     if (existing.status === 'pending') {
       return {
@@ -848,30 +927,13 @@ async function executeSingleCommand(
 
   // Idempotency check: if an idempotency key was supplied and this command was already processed,
   // return the cached outcome directly without re-executing mutations.
-  // ATM-02: pre-reserve the idempotency slot with 'pending' status BEFORE
-  // running handlers, so concurrent identical requests see the reservation
-  // (CONCURRENT_REQUEST) instead of both passing the check and duplicating
-  // mutations. D1 enforces this via the primary-key constraint on
-  // processed_commands.id; collisions fall back to re-reading the winner.
+  // ATM-02/CMD-04: atomically reserve the key as 'pending' BEFORE running
+  // handlers (insert-or-fail on processed_commands.id), so of concurrent
+  // identical requests exactly one executes and the rest replay or get
+  // CONCURRENT_REQUEST.
   if (idempotencyKey) {
-    const cached = await checkIdempotency(ctx.db, commandId, envelope, 'COMMAND_FAILED')
-    if (cached) return finalize(cached)
-
-    // Pre-reserve idempotency slot with 'pending' status
-    try {
-      await commandsRepository.insertProcessedCommand({
-        db: ctx.db,
-        commandId,
-        envelope,
-        status: 'pending',
-        tenantScope,
-        result: null,
-        executedAt: new Date().toISOString(),
-      })
-    } catch {
-      const concurrent = await checkIdempotency(ctx.db, commandId, envelope, 'COMMAND_FAILED')
-      if (concurrent) return finalize(concurrent)
-    }
+    const replayed = await reserveOrReplay(ctx.db, commandId, envelope, tenantScope, 'COMMAND_FAILED')
+    if (replayed) return finalize(replayed)
   }
 
   const handler = handlers[envelope.type]
@@ -1054,8 +1116,10 @@ async function executeSingleCommand(
     })
   } catch (err) {
     if (idempotencyKey) {
+      // Only a terminal outcome already stored wins here; our own 'pending'
+      // reservation is replaced by the failure recorded below.
       const cached = await checkIdempotency(ctx.db, commandId, envelope, 'COMMAND_FAILED')
-      if (cached) return finalize(cached)
+      if (cached && cached.error?.code !== 'CONCURRENT_REQUEST') return finalize(cached)
     }
 
     const message = err instanceof Error ? err.message : 'Unknown error'
@@ -1114,27 +1178,18 @@ async function handleTransaction(
     return result
   }
 
-  // Idempotency pre-reserve for transactions (mirrors executeSingleCommand:562):
+  // Idempotency reservation for transactions (same as executeSingleCommand):
   // reserve the transactionId as 'pending' before running sub-commands so
-  // concurrent identical transactions see CONCURRENT_REQUEST instead of
-  // double-executing. PK constraint arbitrates the race.
+  // concurrent identical transactions run once.
   if (idempotencyKey) {
-    const cached = await checkIdempotency(ctx.db, transactionId, envelope, 'TRANSACTION_FAILED')
-    if (cached) return finalize(cached)
-    try {
-      await commandsRepository.insertProcessedCommand({
-        db: ctx.db,
-        commandId: transactionId,
-        envelope,
-        status: 'pending',
-        tenantScope,
-        result: null,
-        executedAt: new Date().toISOString(),
-      })
-    } catch {
-      const concurrent = await checkIdempotency(ctx.db, transactionId, envelope, 'TRANSACTION_FAILED')
-      if (concurrent) return finalize(concurrent)
-    }
+    const replayed = await reserveOrReplay(
+      ctx.db,
+      transactionId,
+      envelope,
+      tenantScope,
+      'TRANSACTION_FAILED'
+    )
+    if (replayed) return finalize(replayed)
   }
 
   const payload = envelope.payload as { commands?: CommandEnvelope[] }
@@ -1265,8 +1320,10 @@ async function handleTransaction(
     }
   } catch (err) {
     if (idempotencyKey) {
+      // Only a terminal outcome already stored wins here; our own 'pending'
+      // reservation is replaced by the failure recorded below.
       const cached = await checkIdempotency(ctx.db, transactionId, envelope, 'TRANSACTION_FAILED')
-      if (cached) return finalize(cached)
+      if (cached && cached.error?.code !== 'CONCURRENT_REQUEST') return finalize(cached)
     }
     logger.error('transaction_saga_record_failed', {
       transactionId,

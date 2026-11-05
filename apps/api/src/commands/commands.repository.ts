@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, eq, lt, or } from 'drizzle-orm'
 import type { Database } from '@/database/db'
 import { auditLog, changeLog, processedCommands } from '@/database/schema'
 import type { CommandEnvelope } from '@edgecms/schemas/commands'
@@ -18,6 +18,67 @@ export const commandsRepository = {
       .where(eq(processedCommands.id, commandId))
       .limit(1)
     return rows[0] ?? null
+  },
+
+  /**
+   * CMD-04: atomically reserve an idempotency key as `pending`.
+   *
+   * Returns true only for the one caller that now owns the key. The insert
+   * uses ON CONFLICT DO NOTHING + RETURNING, so of several simultaneous
+   * first requests exactly one gets a row back (D1, SQLite and Postgres).
+   * When the key exists, a single conditional UPDATE (compare-and-set on the
+   * row's state) lets one caller claim it if it is a legacy `dry_run`
+   * preview (CMD-03) or a `pending` reservation of the same command type
+   * whose lease expired (`executedAt` older than `staleBefore`), which a
+   * crashed request leaves behind. Every other caller gets false and must
+   * re-read the row.
+   */
+  async reservePending(params: {
+    db: Database
+    commandId: string
+    envelope: CommandEnvelope
+    tenantScope: string | null
+    now: string
+    staleBefore: string
+  }): Promise<boolean> {
+    const { db, commandId, envelope, tenantScope, now, staleBefore } = params
+    const fields = {
+      commandType: envelope.type,
+      payload: envelope.payload,
+      actor: envelope.actor,
+      result: null,
+      status: 'pending',
+      tenantScope,
+      executedAt: now,
+    }
+
+    const inserted = await db
+      .insert(processedCommands)
+      .values({ id: commandId, ...fields })
+      // No conflict target: Drizzle would emit a table-qualified column,
+      // which Postgres rejects. `id` is the table's only unique key.
+      .onConflictDoNothing()
+      .returning({ id: processedCommands.id })
+    if (inserted.length > 0) return true
+
+    const claimed = await db
+      .update(processedCommands)
+      .set(fields)
+      .where(
+        and(
+          eq(processedCommands.id, commandId),
+          or(
+            eq(processedCommands.status, 'dry_run'),
+            and(
+              eq(processedCommands.status, 'pending'),
+              eq(processedCommands.commandType, envelope.type),
+              lt(processedCommands.executedAt, staleBefore)
+            )
+          )
+        )
+      )
+      .returning({ id: processedCommands.id })
+    return claimed.length > 0
   },
 
   async insertProcessedCommand(params: {

@@ -1117,7 +1117,7 @@ describe('executeCommand', () => {
       verifyReceiptSpy.mockRestore()
     })
 
-    it('recovers gracefully and returns committed result when concurrent duplicate command hits unique constraint collision on recordCommand', async () => {
+    it('recovers gracefully and returns committed result when concurrent duplicate command loses the atomic idempotency reservation', async () => {
       const { commandsRepository } = await import('../../commands/commands.repository')
       let findCount = 0
       const findByIdSpy = vi.spyOn(commandsRepository, 'findById').mockImplementation(async () => {
@@ -1143,10 +1143,10 @@ describe('executeCommand', () => {
         auditEntries: [],
       })
 
-      // Simulate insert collision on processedCommands
+      // Another request won the atomic reservation (insert-or-fail returned no row)
       const insertProcessedSpy = vi
-        .spyOn(commandsRepository, 'insertProcessedCommand')
-        .mockRejectedValue(new Error('UNIQUE constraint failed: processed_commands.id'))
+        .spyOn(commandsRepository, 'reservePending')
+        .mockResolvedValue(false)
 
       const result = await executeCommand(ctx, {
         type: 'createEntry',
@@ -1189,8 +1189,8 @@ describe('executeCommand', () => {
       })
 
       const insertProcessedSpy = vi
-        .spyOn(commandsRepository, 'insertProcessedCommand')
-        .mockRejectedValue(new Error('UNIQUE constraint failed: processed_commands.id'))
+        .spyOn(commandsRepository, 'reservePending')
+        .mockResolvedValue(false)
 
       const result = await executeCommand(ctx, {
         type: 'createEntry',
