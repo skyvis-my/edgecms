@@ -45,6 +45,9 @@ jobs:
       - name: Check merge markers
         run: bun run check:merge-markers
 
+      - name: Check migrations
+        run: bun run check:migrations
+
       - name: Lint
         run: bun run lint
 

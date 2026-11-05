@@ -58,6 +58,7 @@
     "db:seed:smoke": "bun scripts/seed-smoke-db.ts",
     "db:studio:local": "bun run --filter edgecms-api db:studio:local",
     "check:merge-markers": "bash scripts/check-merge-markers.sh",
+    "check:migrations": "bun scripts/check-migrations.ts",
     "check:types": "bun run --filter edgecms-api typecheck && bun run --filter edgecms-admin typecheck",
     "check:tests": "bun run test:api && bun run test:admin && bun run test:scripts && bun run test:schemas && bun run test:create-app && bun run test:runtime && bun run test:plugin-sdk && bun run test:client",
     "check:lint": "bun run lint",
@@ -67,7 +68,7 @@
     "publish:packages": "bun scripts/publish-packages.ts --publish",
     "publish:packages:dry-run": "bun scripts/publish-packages.ts --dry-run",
     "check:docs": "bun scripts/docs-claim-scan.ts docs/public && bun scripts/docs-link-check.ts docs",
-    "check:all": "bun run check:merge-markers && bun run check:types && bun run check:tests && bun run check:package && bun run check:docs && bun run check:lint",
+    "check:all": "bun run check:merge-markers && bun run check:migrations && bun run check:types && bun run check:tests && bun run check:package && bun run check:docs && bun run check:lint",
     "check:all:full": "bun run check:all && bun run test:prd-smoke",
     "clean": "bun run --filter '*' clean && rm -rf node_modules"
   },
