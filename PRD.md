@@ -102,7 +102,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | --- | --- | --- |
 | **CMD-01** | All content mutations are typed commands: `createEntry`, `updateEntry`, `deleteEntry`, `bulkUpdate`, `updateSingleton`, `linkRelation`, `unlinkRelation`, `schedulePublish`, `scheduleUnpublish`, `publishNow`, `unpublishNow`, `transaction`. | Shipped |
 | **CMD-02** | Envelopes carry actor metadata, optimistic version checks, transaction grouping and dry-run mode. | Shipped |
-| **CMD-03** | Dry-run returns a diff before execution. Gap: a `transaction` ignores the top-level `dryRun` and executes its sub-commands. | Partial |
+| **CMD-03** | Dry-run returns a diff before execution. A `transaction` with top-level `dryRun` previews every sub-command, writes nothing and returns their combined diff with one preview receipt. | Shipped |
 | **CMD-04** | Durable duplicate suppression: a replayed envelope executes at most once. | Shipped |
 | **CMD-05** | Every executed command writes audit and change-log records with secrets redacted. | Shipped |
 | **CMD-06** | Post-commit side effects (webhooks, cache purge, search indexing) are recorded as committed intents and delivered asynchronously with retries. | Partial |

@@ -290,9 +290,36 @@ export async function handleMcpToolCall(
         // Execute dry-run preview through the Command Engine
         const result = await executeCommand(ctx, envelope)
 
-        // Generate an immutable preview receipt
+        // A failed preview must not mint a receipt that could later execute.
+        if (result.status !== 'dry_run') {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  { status: 'failed', commandType: type, error: result.error, data: result.data },
+                  null,
+                  2
+                ),
+              },
+            ],
+            isError: true,
+          }
+        }
+
+        // Generate an immutable preview receipt. A transaction's receipt covers
+        // its sub-commands, which edgecms_execute_command runs as one
+        // transaction and the engine verifies against the same list (CMD-03).
+        const subCommands = (payload as { commands?: unknown }).commands
+        const receiptCommands =
+          type === 'transaction' && Array.isArray(subCommands) && subCommands.length > 0
+            ? (subCommands as CommandEnvelope[]).map((cmd) => ({
+                ...cmd,
+                actor: { userId: ctx.actor.userId, source: 'ai' as const },
+              }))
+            : [envelope]
         const receipt = await createPreviewReceipt({
-          commands: [envelope],
+          commands: receiptCommands,
           userId: ctx.actor.userId,
           tenantId: ctx.tenantScope,
           kv: ctx.kv,
