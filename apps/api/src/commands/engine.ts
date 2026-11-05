@@ -1,5 +1,4 @@
-import { extractCacheTagsFromCommand, invalidateByTags } from '@/cache/invalidation.service'
-import { cdnPurgeService } from '@/cache/cdn-purge.service'
+import { extractCacheTagsFromCommand } from '@/cache/invalidation.service'
 import { logger } from '@/observability/logger'
 import type { Database } from '@/database/db'
 import type { Env } from '@/env'
@@ -18,6 +17,14 @@ import {
 import { relayOutbox } from '@/webhooks/outbox-relay'
 import { recordCommandAuditEvent } from '@/audit/audit-recorders'
 import { scheduleDeferredWork } from './deferred-work'
+import {
+  buildSideEffectIntents,
+  relaySideEffectIntents,
+  runSideEffectIntents,
+  sideEffectInsertValues,
+  type RevalidateTarget,
+  type SideEffectIntent,
+} from './side-effect-intents'
 import { buildMessagesForEvent, type WebhookQueueMessage } from '@/webhooks/queue-producer'
 import { commandsRepository } from './commands.repository'
 import { computeDiff } from './diff.service'
@@ -233,15 +240,22 @@ async function recordCommand(
   tenantScope: string | null,
   result?: Record<string, unknown> | null,
   auditEntries?: AuditEntry[],
-  outboxEntries?: OutboxEntry[]
+  outboxEntries?: OutboxEntry[],
+  sideEffects?: SideEffectIntent[]
 ): Promise<void> {
   const now = new Date().toISOString()
   const hasBatch = typeof (db as unknown as { batch?: unknown }).batch === 'function'
   const pendingOutbox = outboxEntries ?? []
+  const pendingSideEffects = sideEffects ?? []
 
-  if (hasBatch && ((auditEntries ?? []).length > 0 || pendingOutbox.length > 0)) {
+  if (
+    hasBatch &&
+    ((auditEntries ?? []).length > 0 || pendingOutbox.length > 0 || pendingSideEffects.length > 0)
+  ) {
     try {
-      const { auditLog, processedCommands, webhookOutbox } = await import('@/database/schema')
+      const { auditLog, processedCommands, sideEffectIntents, webhookOutbox } = await import(
+        '@/database/schema'
+      )
       const baseInsert = db.insert(processedCommands).values({
         id: commandId,
         commandType: envelope.type,
@@ -282,6 +296,14 @@ async function recordCommand(
       for (const entry of pendingOutbox) {
         builders.push(db.insert(webhookOutbox).values(outboxInsertValues(entry, now)))
       }
+      // CMD-06: side-effect intents commit with the command record.
+      if (pendingSideEffects.length > 0) {
+        builders.push(
+          db
+            .insert(sideEffectIntents)
+            .values(pendingSideEffects.map((intent) => sideEffectInsertValues(intent, now)))
+        )
+      }
       await (db as unknown as { batch: (q: unknown[]) => Promise<unknown> }).batch(builders)
       return
     } catch {
@@ -314,6 +336,23 @@ async function recordCommand(
       // to failed because the intent-log write failed.
       logger.warn('webhook_outbox_enqueue_failed', {
         eventId: entry.eventId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  if (pendingSideEffects.length > 0) {
+    try {
+      const { sideEffectIntents } = await import('@/database/schema')
+      await db
+        .insert(sideEffectIntents)
+        .values(pendingSideEffects.map((intent) => sideEffectInsertValues(intent, now)))
+    } catch (err) {
+      // Same best-effort rule as the outbox on drivers without db.batch: the
+      // engine still runs the intents after the commit, only without a
+      // durable retry record.
+      logger.warn('side_effect_intent_record_failed', {
+        commandId,
         error: err instanceof Error ? err.message : String(err),
       })
     }
@@ -594,13 +633,41 @@ function cacheTagPayload(
   return { ...payload, collectionId: reported }
 }
 
+/**
+ * CMD-06: the side-effect intents of one successful command. The row tenant
+ * is the handler's tenant scope (else the sync-channel scope) so offboarding
+ * deletes it with the tenant.
+ */
+function buildCommandSideEffects(
+  ctx: CommandContext,
+  envelope: CommandEnvelope,
+  commandId: string,
+  tenantScope: string | null,
+  cacheTags: string[],
+  derived: ReturnType<typeof deriveWebhookEvent>
+): SideEffectIntent[] {
+  const revalidateInfo = derived?.metadata.revalidate as Omit<RevalidateTarget, 'event'> | undefined
+  return buildSideEffectIntents({
+    commandId,
+    commandType: envelope.type,
+    tenantScope: ctx.tenantScope ?? tenantScope ?? 'global',
+    entityTenant: ctx.tenantScope,
+    payload: envelope.payload as Record<string, unknown>,
+    cacheTags,
+    revalidate:
+      derived && revalidateInfo ? { event: derived.eventType, ...revalidateInfo } : undefined,
+    env: ctx.env,
+    hasKv: Boolean(ctx.kv),
+  })
+}
+
 async function handlePostExecution(
   ctx: CommandContext,
   envelope: CommandEnvelope,
   commandId: string,
   handlerResult: CommandHandlerResult,
   tenantScope: string | null,
-  opts?: { cacheTags?: string[]; outboxEventId?: string }
+  opts?: { cacheTags?: string[]; outboxEventId?: string; sideEffects?: SideEffectIntent[] }
 ): Promise<void> {
   // 1. Preview receipts are claimed before execution (redeemReceiptForExecution).
 
@@ -641,36 +708,12 @@ async function handlePostExecution(
     }
   }
 
-  if (cacheTags.length > 0) {
-    ctx.invalidatedCacheTags = cacheTags
-    if (ctx.kv) {
-      try {
-        const { invalidatedKeys } = await invalidateByTags(ctx.db, ctx.kv, cacheTags)
-        if (invalidatedKeys.length > 0) {
-          logger.info('cache_invalidation_completed', {
-            invalidatedKeys: invalidatedKeys.length,
-            tags: cacheTags.join(', '),
-          })
-        }
-      } catch (err) {
-        logger.error('cache_invalidation_failed', {
-          error: err instanceof Error ? err.message : String(err),
-        })
-      }
-    }
-    // Deferred side effect: detached from the response via `waitUntil` when
-    // available, otherwise fire-and-forget with caught rejections. Never
-    // blocks or fails the committed mutation.
-    scheduleDeferredWork(
-      ctx,
-      cdnPurgeService.purgeCloudflareCacheTags(ctx.env, cacheTags),
-      'cdn_cache_purge'
-    )
-  }
+  if (cacheTags.length > 0) ctx.invalidatedCacheTags = cacheTags
 
   // 4. Emit webhook event (non-blocking) with revalidation metadata
+  let derived: ReturnType<typeof deriveWebhookEvent> = null
   try {
-    const derived = deriveWebhookEvent(
+    derived = deriveWebhookEvent(
       envelope,
       commandId,
       handlerResult,
@@ -679,15 +722,6 @@ async function handlePostExecution(
       opts?.outboxEventId
     )
     if (derived) {
-      const revalidateInfo = (derived.metadata.revalidate as
-        | {
-            paths: string[]
-            tags: string[]
-            entryId?: string
-            collectionSlug?: string
-          }
-        | undefined)
-
       scheduleDeferredWork(
         ctx,
         eventBus.emit(
@@ -701,24 +735,6 @@ async function handlePostExecution(
         ),
         'webhook_event_emission'
       )
-
-      if (ctx.env?.FRONTEND_REVALIDATE_URL && revalidateInfo) {
-        scheduleDeferredWork(
-          ctx,
-          cdnPurgeService.dispatchFrontendRevalidation(
-            ctx.env.FRONTEND_REVALIDATE_URL,
-            {
-              event: derived.eventType,
-              tags: revalidateInfo.tags,
-              paths: revalidateInfo.paths,
-              entryId: revalidateInfo.entryId,
-              collectionSlug: revalidateInfo.collectionSlug,
-            },
-            ctx.env.FRONTEND_REVALIDATE_SECRET
-          ),
-          'frontend_revalidation'
-        )
-      }
     }
   } catch (err) {
     logger.error('webhook_event_emission_failed', {
@@ -726,7 +742,29 @@ async function handlePostExecution(
     })
   }
 
-  // 5. Best-effort opportunistic outbox sweep: replay crash-orphaned rows
+  // 5. CMD-06 side-effect intents (recorded with the command when the tags
+  // were known before the commit). KV snapshot invalidation is awaited so
+  // reads after the response see fresh snapshots; CDN purge, frontend
+  // revalidation, RAG indexing and FTS sync run detached. Each marks its row
+  // done; failures stay pending for relaySideEffectIntents.
+  const sideEffects =
+    opts?.sideEffects ??
+    buildCommandSideEffects(ctx, envelope, commandId, tenantScope, cacheTags, derived)
+  const sideEffectDeps = { db: ctx.db, env: ctx.env, kv: ctx.kv }
+  const inlineEffects = sideEffects.filter((intent) => intent.kind === 'kv_invalidate')
+  const deferredEffects = sideEffects.filter((intent) => intent.kind !== 'kv_invalidate')
+  if (inlineEffects.length > 0) {
+    await runSideEffectIntents(sideEffectDeps, inlineEffects)
+  }
+  if (deferredEffects.length > 0) {
+    scheduleDeferredWork(
+      ctx,
+      runSideEffectIntents(sideEffectDeps, deferredEffects),
+      'side_effect_intents'
+    )
+  }
+
+  // 6. Best-effort opportunistic outbox sweep: replay crash-orphaned rows
   // (created >60s ago, still pending). Fresh rows are excluded so this never
   // double-sends what the producer listener is about to deliver.
   // Deferred via `waitUntil` when available so the sweep never adds tail
@@ -752,6 +790,14 @@ async function handlePostExecution(
       }
     })(),
     'outbox_relay_sweep'
+  )
+
+  // 7. Same opportunistic replay for side-effect intents a crash or failed
+  // call left pending (rows newer than 60s belong to in-flight requests).
+  scheduleDeferredWork(
+    ctx,
+    relaySideEffectIntents(sideEffectDeps, { limit: 20, staleOnlyMs: 60_000 }),
+    'side_effect_relay_sweep'
   )
 }
 
@@ -924,6 +970,7 @@ async function executeSingleCommand(
       const outboxEventId = crypto.randomUUID()
       let outboxEntries: OutboxEntry[] = []
       let precomputedCacheTags: string[] | undefined
+      let sideEffects: SideEffectIntent[] | undefined
       try {
         const tags = await extractCacheTagsFromCommand(
           ctx.db,
@@ -940,6 +987,8 @@ async function executeSingleCommand(
           tags,
           outboxEventId
         )
+        // CMD-06: side-effect intents commit in the same batch as the command.
+        sideEffects = buildCommandSideEffects(ctx, envelope, commandId, tenantScope, tags, derived)
         if (derived) {
           outboxEntries = [
             {
@@ -970,12 +1019,14 @@ async function executeSingleCommand(
         tenantScope,
         handlerResult.data,
         handlerResult.auditEntries,
-        outboxEntries
+        outboxEntries,
+        sideEffects
       )
 
       await handlePostExecution(ctx, envelope, commandId, handlerResult, tenantScope, {
         cacheTags: precomputedCacheTags,
         outboxEventId: outboxEntries.length > 0 ? outboxEventId : undefined,
+        sideEffects,
       })
 
       incrementMetric('command_runs_total', { type: envelope.type, status: 'success' })

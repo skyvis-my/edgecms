@@ -174,7 +174,8 @@ export const ragService = {
     db: Database,
     env: Env | undefined,
     entryId: string,
-    tenantId?: string
+    tenantId?: string,
+    opts?: { throwOnError?: boolean }
   ): Promise<boolean> {
     try {
       // HS-14: published content is not embedded for tenants with AI turned off.
@@ -225,6 +226,8 @@ export const ragService = {
         entryId,
         error: err instanceof Error ? err.message : String(err),
       })
+      // CMD-06: the side-effect intent relay needs the error to retry.
+      if (opts?.throwOnError) throw err
       return false
     }
   },

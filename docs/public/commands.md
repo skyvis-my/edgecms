@@ -204,9 +204,24 @@ For each executed command the engine writes (PRD `CMD-05`):
 - `audit_log` rows, one per changed entity;
 - `change_log` rows for sync clients;
 - a `webhook_outbox` row for the event, in the same D1 batch as the command row;
+- `side_effect_intents` rows for the post-commit side effects, in the same D1 batch (`CMD-06`);
 - a hash-chained audit event (`HS-12`).
 
-After the commit it invalidates KV snapshots by cache tag, purges Cloudflare cache tags, emits the webhook event and, when `FRONTEND_REVALIDATE_URL` is set, posts a revalidation request. These side effects never turn a committed command into a failure. See [webhooks](webhooks.md).
+The side-effect intents are:
+
+| Kind | Written when | Effect |
+| --- | --- | --- |
+| `kv_invalidate` | the command has cache tags and the `CACHE` KV namespace is bound | invalidates KV snapshots by tag (awaited before the response) |
+| `cdn_purge` | the command has cache tags and `CF_API_TOKEN` and `CLOUDFLARE_ZONE_ID` are set | purges Cloudflare cache tags |
+| `frontend_revalidate` | `FRONTEND_REVALIDATE_URL` is set | posts the revalidation request |
+| `rag_index` | `publishNow` | indexes the published entry for semantic search (skipped when AI is off for the tenant) |
+| `fts_sync` | `publishNow`, `unpublishNow`, `deleteEntry` | adds or removes the entry in the `entries_fts` index, from the entry's current state |
+
+After the commit the engine runs the intents and marks each row `done`. A failed call leaves the row `pending` with a backoff; after 8 attempts it is `failed`. A crash after the commit leaves rows `pending`. `relaySideEffectIntents` (in `apps/api/src/commands/side-effect-intents.ts`) retries pending rows; each command also runs it for rows older than 60 seconds. Every side effect is idempotent, so a retry is safe. These side effects never turn a committed command into a failure.
+
+The engine also emits the webhook event. See [webhooks](webhooks.md).
+
+Limit: the intent rows are written after the handler's own entity writes, in the command-record batch. A crash between the two commits the entity change without its intents.
 
 ## Example
 
