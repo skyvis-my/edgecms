@@ -58,7 +58,7 @@ export const app = createApp({ host })
 | `pending` | `403 TENANT_UNAVAILABLE` | `403 TENANT_UNAVAILABLE` | Allowed |
 | `disabled` | `403 TENANT_UNAVAILABLE` | `403 TENANT_UNAVAILABLE` | Allowed |
 
-The legacy `inactive` status, and any status not listed above, behaves like `disabled`. Draft preview tokens (`/public/preview-token`) are admin work, so a suspended tenant cannot issue them. Responses that a CDN or browser cached before a status change stay cached until their TTL ends.
+The legacy `inactive` status, and any status not listed above, behaves like `disabled`. Draft preview tokens (`/public/preview-token`) are admin work, so a suspended tenant cannot issue them. Responses that a CDN or browser cached before a status change stay cached until their TTL ends. Each Worker isolate also keeps the tenant row in memory for up to 20 seconds. The isolate that changes a status drops its copy at once; other isolates apply the new status within 20 seconds.
 
 ## Tenant lifecycle events
 

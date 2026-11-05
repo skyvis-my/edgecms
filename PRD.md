@@ -153,7 +153,7 @@ These apply to every change. A feature that breaks one is rejected or needs an e
 | **DL-07** | Paid public reads (x402/L402 challenge middleware) as an opt-in per-route option. | Partial |
 | **DL-08** | Signed preview tokens for draft preview inside authenticated frontends; no anonymous draft route (NG5). | Partial |
 | **DL-09** | Webhooks through an outbox and Queues, with destination policy, retries and replay. | Partial |
-| **DL-10** | A cached public read does no D1 or KV round trip before the cache: tenant resolution and rate-limit state are cached at the edge. Today every request queries the tenant row (D1) and reads the rate-limit counter (KV), which is most of the server time on a cache hit. | Planned |
+| **DL-10** | A cached public read does no D1 or KV round trip before the cache: tenant resolution and rate-limit state are cached at the edge. Tenant rows (any status) stay in isolate memory for at most 20 s; the isolate that changes a tenant's state drops it at once, so a disabled tenant is blocked there immediately and everywhere within 20 s (plus one in-flight D1 read). Public-read rate limits use an in-isolate counter (approximate across isolates) or the optional `PUBLIC_READ_RATE_LIMITER` binding; `PUBLIC_READ_RATE_LIMIT_STORE=kv` keeps the KV counter. A warm isolate reads the tenant row at most once per 20 s per slug; staging timings not yet re-measured. | Shipped |
 
 ## 10. Platform: tenants, auth, extensions
 
