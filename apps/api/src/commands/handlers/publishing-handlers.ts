@@ -1,7 +1,5 @@
 import { entriesService } from '@/entries/entries.service'
-import { ragService } from '@/ai/rag.service'
 import { validateTransition } from '@/scheduling/lifecycle.service'
-import { scheduleDeferredWork } from '../deferred-work'
 import type { CommandHandler } from '../engine'
 
 /**
@@ -43,13 +41,8 @@ export const handlePublishNow: CommandHandler = async (ctx, payload) => {
     return { success: false, error: result.error }
   }
 
-  // Non-blocking content RAG embedding indexing: deferred via `waitUntil`
-  // when available so embedding latency never delays the publish response.
-  scheduleDeferredWork(
-    ctx,
-    ragService.indexPublishedEntry(ctx.db, ctx.env, entryId, ctx.tenantScope),
-    'rag_indexing'
-  )
+  // RAG indexing and FTS sync are CMD-06 side-effect intents the engine
+  // records with the command and runs after the commit.
 
   return {
     success: true,
