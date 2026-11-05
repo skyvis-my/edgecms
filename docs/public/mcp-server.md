@@ -137,7 +137,7 @@ Semantic search over published entries, using the `ASSET_VECTORS` Vectorize inde
 
 ### Change content in two steps
 
-1. Call `edgecms_preview_command` with a command `type` and `payload`, and optionally `optimisticVersion`. It runs the command as a dry run and returns `status: "dry_run"`, the `diff`, a `previewReceipt`, its `sha256Hash` and `expiresAt`.
+1. Call `edgecms_preview_command` with a command `type` and `payload`, and optionally `optimisticVersion`. It runs the command as a dry run and returns `status: "dry_run"`, the `diff`, a `previewReceipt`, its `sha256Hash` and `expiresAt`. A `transaction` preview returns the combined diff of its sub-commands (each entry tagged with `commandIndex` and `commandType`), and its receipt covers those sub-commands. If the dry run fails, the tool returns an error and no receipt.
 
    ```json
    {

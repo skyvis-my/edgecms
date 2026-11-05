@@ -462,6 +462,25 @@ async function verifyReceiptSafely(
   return verification.valid ? { valid: true } : { valid: false, message: verification.message }
 }
 
+/** Mint a preview receipt; a failure never blocks the dry-run diff. */
+async function createReceiptSafely(
+  commands: CommandEnvelope[],
+  userId: string,
+  ctx: CommandContext
+): Promise<string | undefined> {
+  try {
+    const receipt = await createPreviewReceipt({
+      commands,
+      userId,
+      tenantId: receiptScope(ctx) ?? undefined,
+      kv: ctx.kv,
+    })
+    return receipt.receiptId
+  } catch {
+    return undefined
+  }
+}
+
 async function consumeReceiptSafely(
   receiptId: string | undefined,
   kv: KVNamespace | undefined,
@@ -739,11 +758,24 @@ async function handlePostExecution(
  * 4. Records the command and audit entries in D1
  * 5. Returns a structured CommandResult
  */
+type SingleCommandOptions = {
+  /**
+   * Set when the command runs inside a transaction. The request-level
+   * idempotency key belongs to the transaction, so a sub-command only uses
+   * a key set on its own envelope; a dry-run transaction mints no
+   * per-command preview receipts (one receipt covers the whole transaction).
+   */
+  inTransaction?: boolean
+}
+
 async function executeSingleCommand(
   ctx: CommandContext,
-  envelope: CommandEnvelope
+  envelope: CommandEnvelope,
+  options: SingleCommandOptions = {}
 ): Promise<CommandResult> {
-  const idempotencyKey = envelope.idempotencyKey || ctx.idempotencyKey
+  const idempotencyKey = options.inTransaction
+    ? envelope.idempotencyKey
+    : envelope.idempotencyKey || ctx.idempotencyKey
   const commandId = idempotencyKey ? `idem_${idempotencyKey}` : crypto.randomUUID()
   const tenantScope = ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : null
   const pluginHookContext = buildPluginHookContext(ctx, envelope)
@@ -834,18 +866,9 @@ async function executeSingleCommand(
       const diff = await computeDiff(ctx, envelope.type, envelope.payload)
 
       // Generate immutable preview receipt for dry-run commands
-      let previewReceiptId: string | undefined
-      try {
-        const receipt = await createPreviewReceipt({
-          commands: [envelope],
-          userId: envelope.actor.userId,
-          tenantId: receiptScope(ctx) ?? undefined,
-          kv: ctx.kv,
-        })
-        previewReceiptId = receipt.receiptId
-      } catch {
-        // Non-blocking for diff calculation
-      }
+      const previewReceiptId = options.inTransaction
+        ? undefined
+        : await createReceiptSafely([envelope], envelope.actor.userId, ctx)
 
       // Record the dry-run command
       await recordCommand(ctx.db, commandId, envelope, 'dry_run', tenantScope, {
@@ -1013,7 +1036,10 @@ async function handleTransaction(
   ctx: CommandContext,
   envelope: CommandEnvelope
 ): Promise<CommandResult> {
-  const idempotencyKey = envelope.idempotencyKey || ctx.idempotencyKey
+  // CMD-03: a dry-run writes nothing, so it neither reserves nor replays the
+  // idempotency key; the real execution that follows must still run.
+  const dryRun = envelope.dryRun === true
+  const idempotencyKey = dryRun ? undefined : envelope.idempotencyKey || ctx.idempotencyKey
   const transactionId = idempotencyKey ? `idem_${idempotencyKey}` : crypto.randomUUID()
   const tenantScope = ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : null
   const pluginHookContext = buildPluginHookContext(ctx, envelope)
@@ -1121,12 +1147,13 @@ async function handleTransaction(
     // so individual commands do not prematurely consume the transaction receipt
     const enrichedEnvelope: CommandEnvelope = {
       ...subEnvelope,
-      dryRun: envelope.dryRun ? true : subEnvelope.dryRun,
+      dryRun: dryRun ? true : subEnvelope.dryRun,
+      idempotencyKey: dryRun ? undefined : subEnvelope.idempotencyKey,
       transactionId,
       previewReceipt: undefined,
     }
 
-    const result = await executeSingleCommand(ctx, enrichedEnvelope)
+    const result = await executeSingleCommand(ctx, enrichedEnvelope, { inTransaction: true })
     subResults.push(result)
 
     if (result.status === 'failed') {
@@ -1136,27 +1163,45 @@ async function handleTransaction(
   }
 
   const status = allSucceeded
-    ? envelope.dryRun
+    ? dryRun
       ? 'dry_run'
       : 'success'
     : 'failed'
 
+  // CMD-03: a dry run returns the combined diff of its sub-commands, each
+  // entry tagged with the sub-command it belongs to, plus one receipt that
+  // authorises executing exactly these sub-commands.
+  const combinedDiff = dryRun
+    ? subResults.flatMap((sub, commandIndex) =>
+        (sub.diff ?? []).map((entry) => ({ ...entry, commandIndex, commandType: sub.type }))
+      )
+    : undefined
+  const previewReceiptId =
+    dryRun && allSucceeded
+      ? await createReceiptSafely(payload.commands, envelope.actor.userId, ctx)
+      : undefined
+
   // Record the transaction itself as a processed command
-  // (compensating action note: sub-command effects persist; see saga comment above)
+  // (compensating action note: sub-command effects persist; see saga comment above).
+  // A failed dry run records nothing, matching a failed single-command dry run.
   try {
-    await recordCommand(
-      ctx.db,
-      transactionId,
-      envelope,
-      status as 'success' | 'failed' | 'dry_run',
-      tenantScope,
-      {
-        subResults: subResults as unknown as Record<string, unknown>[],
-        totalCommands: payload.commands.length,
-        completedCommands: subResults.filter((r) => r.status === 'success' || r.status === 'dry_run').length,
-        failedCommands: subResults.filter((r) => r.status === 'failed').length,
-      }
-    )
+    if (!dryRun || allSucceeded) {
+      await recordCommand(
+        ctx.db,
+        transactionId,
+        envelope,
+        status as 'success' | 'failed' | 'dry_run',
+        tenantScope,
+        {
+          subResults: subResults as unknown as Record<string, unknown>[],
+          totalCommands: payload.commands.length,
+          completedCommands: subResults.filter((r) => r.status === 'success' || r.status === 'dry_run').length,
+          failedCommands: subResults.filter((r) => r.status === 'failed').length,
+          ...(combinedDiff ? { diff: combinedDiff } : {}),
+          ...(previewReceiptId ? { previewReceipt: previewReceiptId } : {}),
+        }
+      )
+    }
   } catch (err) {
     if (idempotencyKey) {
       const cached = await checkIdempotency(ctx.db, transactionId, envelope, 'TRANSACTION_FAILED')
@@ -1169,7 +1214,7 @@ async function handleTransaction(
   }
 
   // Consume transaction preview receipt upon overall success (non-dryRun)
-  if (allSucceeded && !envelope.dryRun) {
+  if (allSucceeded && !dryRun) {
     await consumeReceiptSafely(envelope.previewReceipt, ctx.kv, receiptScope(ctx))
   }
 
@@ -1183,11 +1228,15 @@ async function handleTransaction(
       completedCommands: subResults.filter((r) => r.status === 'success' || r.status === 'dry_run').length,
       failedCommands: subResults.filter((r) => r.status === 'failed').length,
     },
+    ...(combinedDiff ? { diff: combinedDiff } : {}),
+    ...(previewReceiptId ? { previewReceipt: previewReceiptId } : {}),
     error: allSucceeded
       ? undefined
       : {
           code: 'TRANSACTION_FAILED',
-          message: `Transaction failed: ${subResults.filter((r) => r.status === 'failed').length} command(s) failed. Note: D1 does not support rollback — completed sub-commands were persisted.`,
+          message: dryRun
+            ? `Transaction dry run failed: ${subResults.filter((r) => r.status === 'failed').length} command(s) failed. Nothing was written.`
+            : `Transaction failed: ${subResults.filter((r) => r.status === 'failed').length} command(s) failed. Note: D1 does not support rollback — completed sub-commands were persisted.`,
         },
     executedAt: new Date().toISOString(),
   })
