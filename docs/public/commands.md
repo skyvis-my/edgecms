@@ -217,7 +217,7 @@ The side-effect intents are:
 | `rag_index` | `publishNow` | indexes the published entry for semantic search (skipped when AI is off for the tenant) |
 | `fts_sync` | `publishNow`, `unpublishNow`, `deleteEntry` | adds or removes the entry in the `entries_fts` index, from the entry's current state |
 
-After the commit the engine runs the intents and marks each row `done`. A failed call leaves the row `pending` with a backoff; after 8 attempts it is `failed`. A crash after the commit leaves rows `pending`. `relaySideEffectIntents` (in `apps/api/src/commands/side-effect-intents.ts`) retries pending rows; each command also runs it for rows older than 60 seconds. Every side effect is idempotent, so a retry is safe. These side effects never turn a committed command into a failure.
+After the commit the engine runs the intents and marks each row `done`. A failed call leaves the row `pending` with a backoff; after 8 attempts it is `failed`. A crash after the commit leaves rows `pending`. `relaySideEffectIntents` (in `apps/api/src/commands/side-effect-intents.ts`) retries pending rows; each command also runs it for rows older than 60 seconds, and so does the Worker's one-minute cron (`scheduled()`, up to 100 rows per run). Every side effect is idempotent, so a retry is safe. These side effects never turn a committed command into a failure.
 
 The engine also emits the webhook event. See [webhooks](webhooks.md).
 

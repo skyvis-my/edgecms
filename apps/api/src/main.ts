@@ -2,6 +2,7 @@ import { createApp, warmPublicCacheInBackground } from './app'
 import { ensureWorkerBootstrapped } from './runtime/bootstrap'
 import { dispatchWebhookQueue } from '@/webhooks/queue-consumer'
 import { runScheduledOutboxSweep } from '@/webhooks/outbox-sweeper'
+import { runScheduledSideEffectSweep } from '@/commands/side-effect-sweep'
 import type { WebhookQueueMessage } from '@/webhooks/queue-producer'
 import { getRequestUrl } from '@/shared/utils/request-url'
 import type { Env } from './env'
@@ -31,6 +32,8 @@ worker.queue = async (batch: MessageBatch<WebhookQueueMessage>, env: Env, _ctx: 
 worker.scheduled = async (_controller: ScheduledController, env: Env, _ctx: ExecutionContext) => {
   await ensureWorkerBootstrapped(env)
   await runScheduledOutboxSweep(env)
+  // CMD-06: retry post-commit side-effect intents even when no command arrives.
+  await runScheduledSideEffectSweep(env)
 }
 Object.defineProperty(worker, 'fetch', {
   value: async (request: Request, ...args: [any?, any?]) => {
