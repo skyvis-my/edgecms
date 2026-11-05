@@ -74,6 +74,17 @@ max_batch_timeout = 5
 max_retries = 5
 dead_letter_queue = "edgecms-webhook-dlq"
 
+# Dead-letter consumer: records exhausted messages as 'dead' deliveries (no outbound fetch)
+[[queues.consumers]]
+queue = "edgecms-webhook-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
+# Cron trigger: scheduled() drains the webhook outbox (DL-09). Needs no IDs.
+[triggers]
+crons = ["*/1 * * * *"]
+
 # --- Environment Overrides ---
 
 [env.staging]
@@ -116,6 +127,16 @@ max_batch_timeout = 5
 max_retries = 5
 dead_letter_queue = "edgecms-webhook-dlq-staging"
 
+# Dead-letter consumer: records exhausted messages as 'dead' deliveries (no outbound fetch)
+[[env.staging.queues.consumers]]
+queue = "edgecms-webhook-dlq-staging"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
+[env.staging.triggers]
+crons = ["*/1 * * * *"]
+
 [env.production]
 name = "edgecms-api-production"
 [[env.production.d1_databases]]
@@ -150,3 +171,13 @@ max_batch_size = 10
 max_batch_timeout = 5
 max_retries = 5
 dead_letter_queue = "edgecms-webhook-dlq-production"
+
+# Dead-letter consumer: records exhausted messages as 'dead' deliveries (no outbound fetch)
+[[env.production.queues.consumers]]
+queue = "edgecms-webhook-dlq-production"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
+[env.production.triggers]
+crons = ["*/1 * * * *"]

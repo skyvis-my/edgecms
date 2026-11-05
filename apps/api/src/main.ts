@@ -1,6 +1,7 @@
 import { createApp, warmPublicCacheInBackground } from './app'
 import { ensureWorkerBootstrapped } from './runtime/bootstrap'
-import { handleQueue } from '@/webhooks/queue-consumer'
+import { dispatchWebhookQueue } from '@/webhooks/queue-consumer'
+import { runScheduledOutboxSweep } from '@/webhooks/outbox-sweeper'
 import type { WebhookQueueMessage } from '@/webhooks/queue-producer'
 import { getRequestUrl } from '@/shared/utils/request-url'
 import type { Env } from './env'
@@ -24,7 +25,12 @@ const appFetch = app.fetch as (request: Request, ...args: unknown[]) => Promise<
 const worker = Object.create(app)
 worker.queue = async (batch: MessageBatch<WebhookQueueMessage>, env: Env, _ctx: ExecutionContext) => {
   await ensureWorkerBootstrapped(env)
-  return handleQueue(batch, env)
+  return dispatchWebhookQueue(batch, env)
+}
+// DL-09: cron trigger (wrangler.toml [triggers]) drains the webhook outbox.
+worker.scheduled = async (_controller: ScheduledController, env: Env, _ctx: ExecutionContext) => {
+  await ensureWorkerBootstrapped(env)
+  await runScheduledOutboxSweep(env)
 }
 Object.defineProperty(worker, 'fetch', {
   value: async (request: Request, ...args: [any?, any?]) => {
@@ -55,7 +61,7 @@ export default worker
 export { PublishScheduler } from '@/scheduling/publish-scheduler.do'
 
 // Export queue consumer handler
-export { handleQueue as queue } from '@/webhooks/queue-consumer'
+export { dispatchWebhookQueue as queue } from '@/webhooks/queue-consumer'
 
 // Backward-compatible type export for existing imports.
 export type { Env } from './env'

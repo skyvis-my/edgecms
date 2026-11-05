@@ -117,7 +117,7 @@ async function recordDelivery(
       updateFn as (table: typeof webhookDeliveries) => {
         set: (v: Record<string, unknown>) => unknown
       }
-    )(webhookDeliveries).set({
+    ).call(orm, webhookDeliveries).set({
       eventType: values.eventType,
       payload: values.payload,
       status: values.status,
@@ -518,4 +518,103 @@ export async function handleQueue(
       msg.retry()
     }
   })
+}
+
+/**
+ * True for the webhook dead-letter queue of any environment
+ * (`edgecms-webhook-dlq`, `edgecms-webhook-dlq-staging`, ...).
+ */
+export function isWebhookDeadLetterQueue(queueName: string | null | undefined): boolean {
+  return typeof queueName === 'string' && /(^|-)dlq(-|$)/.test(queueName)
+}
+
+const DEAD_LETTER_NOTE = 'Moved to the dead-letter queue after the queue retry limit.'
+
+/**
+ * Dead-letter queue consumer (DL-09). Messages land here when the main
+ * consumer kept failing (for example it threw before recording a result)
+ * until Queues gave up. Never performs an outbound fetch: it records the
+ * (eventId, webhookId) delivery as 'dead' so an operator can see it and
+ * replay it, then acks. A delivered row is never downgraded, and messages
+ * whose webhook is gone or whose event scope does not match the webhook's
+ * tenant are dropped without a record.
+ */
+export async function handleDeadLetterQueue(
+  batch: MessageBatch<WebhookQueueMessage>,
+  env: Env
+): Promise<void> {
+  const orm = drizzle(env.DB)
+  for (const msg of batch.messages) {
+    const message = msg.body
+    try {
+      const eventId = message?.eventPayload?.id
+      if (!message?.webhookId || typeof eventId !== 'string' || !eventId) {
+        logger.warn('webhook_dlq_malformed_dropped', { messageId: msg.id })
+        msg.ack()
+        continue
+      }
+      const rows = await orm
+        .select()
+        .from(webhooks)
+        .where(eq(webhooks.id, message.webhookId))
+        .limit(1)
+        .all()
+      const webhook = rows[0]
+      const eventScope = message.eventPayload.data ? resolveEventTenantScope(message.eventPayload) : null
+      if (!webhook || eventScope === null || !canDeliver(webhook.tenantId, eventScope)) {
+        logger.warn('webhook_dlq_scope_mismatch_dropped', {
+          webhookId: message.webhookId,
+          eventId,
+          webhookTenantId: webhook?.tenantId ?? null,
+          resolvedEventScope: eventScope,
+        })
+        msg.ack()
+        continue
+      }
+
+      const existing = await findExistingDelivery(orm, eventId, message.webhookId)
+      if (existing?.status === 'delivered') {
+        msg.ack()
+        continue
+      }
+
+      const now = new Date().toISOString()
+      await recordDelivery(orm, {
+        id: existing?.id ?? crypto.randomUUID(),
+        webhookId: message.webhookId,
+        eventId,
+        eventType: message.eventPayload.event,
+        payload: message.eventPayload as unknown as Record<string, unknown>,
+        status: 'dead',
+        attempts: Math.max(existing?.attempts ?? 0, msg.attempts || 0),
+        lastAttemptAt: existing?.lastAttemptAt ?? now,
+        nextRetryAt: null,
+        responseStatus: existing?.responseStatus ?? 0,
+        responseBody: existing?.responseBody ?? DEAD_LETTER_NOTE,
+        createdAt: now,
+      })
+      logger.error('webhook_delivery_dead_lettered', {
+        webhookId: message.webhookId,
+        eventId,
+        attempts: msg.attempts,
+      })
+      msg.ack()
+    } catch (error) {
+      logger.error('webhook_dlq_processing_failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      msg.retry()
+    }
+  }
+}
+
+/** Route a queue batch: dead-letter batches are recorded, others delivered. */
+export async function dispatchWebhookQueue(
+  batch: MessageBatch<WebhookQueueMessage>,
+  env: Env
+): Promise<void> {
+  if (isWebhookDeadLetterQueue(batch.queue)) {
+    return handleDeadLetterQueue(batch, env)
+  }
+  return handleQueue(batch, env)
 }
