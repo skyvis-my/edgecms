@@ -64,6 +64,7 @@ export const TENANT_DELETION_ORDER: readonly TenantScopedRule[] = [
   },
   { table: 'webhooks', kind: 'tenant', column: 'tenant_id' },
   { table: 'webhook_outbox', kind: 'tenant', column: 'tenant_scope' },
+  { table: 'side_effect_intents', kind: 'tenant', column: 'tenant_scope' },
   // Command log and sync feed (change_log and audit_log reference commands).
   { table: 'change_log', kind: 'tenant', column: 'tenantScope' },
   {

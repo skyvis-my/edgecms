@@ -35,6 +35,7 @@ function tenantSeedSql(t: string, slug: string, extraEntries: number): string {
     INSERT INTO webhooks (id, url, events, secret, headers, created_at, updated_at, tenant_id) VALUES ('${t}-wh', 'https://hooks.example.com/${t}', '["entry.created"]', 'whsec-${t}-signing', '{"Authorization":"Bearer hook-token-${t}"}', '${NOW}', '${NOW}', '${t}');
     INSERT INTO webhook_deliveries (id, webhook_id, event_id, event_type, payload, created_at) VALUES ('${t}-wd', '${t}-wh', 'ev-${t}', 'entry.created', '{}', '${NOW}');
     INSERT INTO webhook_outbox (id, event_id, event_type, payload, tenant_scope, created_at) VALUES ('${t}-wo', 'ob-${t}', 'entry.created', '{}', '${t}', '${NOW}');
+    INSERT INTO side_effect_intents (id, command_id, tenant_scope, kind, payload, created_at) VALUES ('${t}-sei', '${t}-cmd', '${t}', 'cdn_purge', '{"tags":[]}', '${NOW}');
     INSERT INTO processed_commands (id, commandType, actor, status, executedAt, tenantScope) VALUES ('${t}-cmd', 'updateEntry', '{"userId":"owner-${t}","source":"user"}', 'success', '${NOW}', '${t}');
     INSERT INTO audit_log (id, commandId, entityType, entityId, action, timestamp) VALUES ('${t}-al', '${t}-cmd', 'entry', '${t}-e1', 'update', '${NOW}');
     INSERT INTO change_log (id, entityType, entityId, commandId, changeType, timestamp, tenantScope) VALUES ('${t}-cl', 'entry', '${t}-e1', '${t}-cmd', 'update', '${NOW}', '${t}');
