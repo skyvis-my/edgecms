@@ -21,7 +21,11 @@ import {
   validateWebhookDestination,
 } from './webhook-destination-policy'
 import { isUniqueConstraintViolation } from './outbox.repository'
-import { calculateJitteredBackoffDelay, signPayload } from './webhook-delivery.service'
+import {
+  buildWebhookRequestHeaders,
+  calculateJitteredBackoffDelay,
+  signTimestampedPayload,
+} from './webhook-delivery.service'
 
 const QUEUE_MAX_RETRIES = 5
 const MIN_WEBHOOK_TIMEOUT_SECONDS = 5
@@ -160,7 +164,10 @@ async function deliverWebhook(message: WebhookQueueMessage): Promise<{
   body: string
 }> {
   try {
-    const signingHeaders = await signPayload(message.webhookSecret, message.eventPayload)
+    const { headers: signingHeaders } = await signTimestampedPayload(
+      message.webhookSecret,
+      message.eventPayload
+    )
 
     if (message.dryRun) {
       return {
@@ -170,13 +177,15 @@ async function deliverWebhook(message: WebhookQueueMessage): Promise<{
       }
     }
 
-    // Build headers
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      'User-Agent': 'EdgeCMS-Webhooks/1.0',
-      ...signingHeaders,
-      ...message.webhookHeaders,
-    }
+    // Custom headers never override content type or signature headers.
+    const headers = buildWebhookRequestHeaders(
+      message.webhookHeaders,
+      {
+        'Content-Type': 'application/json',
+        'User-Agent': 'EdgeCMS-Webhooks/1.0',
+      },
+      signingHeaders
+    )
 
     // Make HTTP POST request with timeout
     const controller = new AbortController()
@@ -188,6 +197,9 @@ async function deliverWebhook(message: WebhookQueueMessage): Promise<{
         headers,
         body: JSON.stringify(message.eventPayload),
         signal: controller.signal,
+        // SSRF guard: the destination policy validated this URL only. A 3xx
+        // to a private host must not be followed; it counts as a failure.
+        redirect: 'manual',
       })
     } finally {
       clearTimeout(timeoutId)

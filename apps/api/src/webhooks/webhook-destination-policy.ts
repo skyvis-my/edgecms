@@ -9,7 +9,8 @@ function normalizeHost(hostname: string): string {
   if (lowered.startsWith('[') && lowered.endsWith(']')) {
     return lowered.slice(1, -1)
   }
-  return lowered
+  // A trailing dot names the same DNS host ("localhost." == "localhost").
+  return lowered.replace(/\.+$/, '')
 }
 
 function normalizeAllowedHost(hostname: string): string | null {
@@ -35,6 +36,10 @@ function isAllowedHost(hostname: string, allowedHosts: string[]): boolean {
 function isPrivateOrLocalHost(hostname: string): boolean {
   const normalizedHost = normalizeHost(hostname)
   const isPrivateIpv4 =
+    // 0.0.0.0/8 ("this network"; 0.0.0.0 reaches localhost on many stacks).
+    /^0\.\d+\.\d+\.\d+$/.test(normalizedHost) ||
+    // 100.64.0.0/10 carrier-grade NAT / shared address space.
+    /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/.test(normalizedHost) ||
     normalizedHost.startsWith('10.') ||
     normalizedHost.startsWith('127.') ||
     normalizedHost.startsWith('169.254.') ||
@@ -42,6 +47,7 @@ function isPrivateOrLocalHost(hostname: string): boolean {
     normalizedHost.startsWith('192.168.')
   const isIpv6LocalOrPrivate =
     normalizedHost === '::1' ||
+    normalizedHost === '::' ||
     normalizedHost.startsWith('fc') ||
     normalizedHost.startsWith('fd') ||
     normalizedHost.startsWith('fe80:')
@@ -54,6 +60,7 @@ function isPrivateOrLocalHost(hostname: string): boolean {
     normalizedHost.startsWith('::ffff:169.254.')
   const isLocalHost =
     normalizedHost === 'localhost' ||
+    normalizedHost.endsWith('.localhost') ||
     normalizedHost.endsWith('.local') ||
     normalizedHost.endsWith('.internal')
 
