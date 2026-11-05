@@ -248,14 +248,16 @@ POST /api/admin/entries/:entryId/versions/:versionId/rollback
 
 The same routes exist under `/api/tenants/:slug`. The entry must belong to the request's tenant (or to the global scope on the unprefixed routes); an entry from any other scope returns `404`.
 
-Rollback copies the chosen version's `data` onto the entry, bumps `version`, and writes a version row. It runs outside the command engine: it writes a `change_log` row but no `audit_log` row, emits no webhook and does not invalidate the public cache.
+Rollback runs through the command engine as an `updateEntry` command. The command replaces the entry's `data` with the chosen version's `data` (projected onto the current collection fields) and sends the entry's current version as `optimisticVersion`. Like any update, it bumps `version` and writes the pre-rollback `data` to `entry_versions` under the previous version number. The engine applies the caller's collection permissions, field validation, the version check, the processed-command record, the audit event, the change log, the sync event, cache invalidation and the webhook outbox row (`entry.updated`).
+
+- Response: `{ commandId, entry, newVersion, restoredFromVersionId, message }`. `newVersion` describes the entry's new current version. Its `id` is the command ID, not an `entry_versions` row ID: history holds snapshots of earlier versions only.
+- `?dryRun=true` returns `{ dryRun: true, commandId, diff, previewReceipt? }` and writes nothing.
+- A concurrent edit between the read and the write returns `409 VERSION_CONFLICT`. A version of another entry returns `404`.
+- The audit log and processed commands show the rollback as `updateEntry`. They do not record which version was restored.
 
 Retention runs after each update: versions older than 90 days are deleted, and at most 50 are kept per entry (`apps/api/src/versioning/retention.service.ts`).
 
-Known gaps:
-
-- The list, get and diff version routes do not scope by tenant.
-- Rollback writes its version row with the new version number, while normal updates write the previous number. The next update can then hit the `(entryId, version)` unique index. Test rollback-then-edit before relying on it.
+Rollbacks made before rollback used the command engine wrote a version row with the new version number. The next update keeps that row instead of failing on the `(entryId, version)` unique index.
 
 ## Deleting Entries
 

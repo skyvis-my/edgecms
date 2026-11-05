@@ -16,6 +16,11 @@ mock.module('../../commands/commands.repository', () => ({
   },
 }))
 
+const mockExecuteCommand = mock()
+mock.module('../../commands/engine', () => ({
+  executeCommand: mockExecuteCommand,
+}))
+
 const { versioningService } = await import(
   `../../versioning/versioning.service?bypass=${Date.now()}`
 )
@@ -48,6 +53,7 @@ describe('versioningService', () => {
     Object.values(mockCommandsRepo).forEach((m) => {
       m.mockClear()
     })
+    mockExecuteCommand.mockReset()
 
     // Default: changelog writes succeed
     mockCommandsRepo.insertChangeLogEntries.mockResolvedValue(undefined)
@@ -314,322 +320,125 @@ describe('versioningService', () => {
   })
 
   describe('rollback', () => {
-    it('creates new version and updates entry with historical data', async () => {
-      const entry = makeEntry({
-        id: 'entry1',
-        version: 3,
-        data: { title: 'Current' },
-      })
-      const targetVersion = makeVersion({
-        id: 'v1',
-        entryId: 'entry1',
-        version: 1,
-        data: { title: 'Original' },
-      })
-      const newVersionRecord = makeVersion({
-        id: 'mock-uuid',
-        entryId: 'entry1',
-        version: 4,
-        data: { title: 'Original' },
-      })
-      const updatedEntry = makeEntry({
-        id: 'entry1',
-        version: 4,
-        data: { title: 'Original' },
+    const actor = { userId: 'user123', source: 'admin' as const }
+    const ctx = () => ({ db, actor, tenantScope: 'tenant-a', syncChannel: 'tenant-a' })
+
+    function arrange() {
+      mockRepo.findEntryById.mockResolvedValue(
+        makeEntry({ id: 'entry1', collectionId: '', version: 3, data: { title: 'Current' } })
+      )
+      mockRepo.findVersions.mockResolvedValue([
+        makeVersion({ id: 'v1', entryId: 'entry1', version: 1, data: { title: 'Original' } }),
+      ])
+    }
+
+    it('runs an updateEntry command with the version data and the current version', async () => {
+      arrange()
+      mockExecuteCommand.mockResolvedValue({
+        commandId: 'cmd-1',
+        type: 'updateEntry',
+        status: 'success',
+        data: makeEntry({
+          id: 'entry1',
+          version: 4,
+          data: { title: 'Original' },
+          updatedAt: '2024-02-01T00:00:00.000Z',
+        }),
+        executedAt: '2024-02-01T00:00:00.000Z',
       })
 
-      mockRepo.findEntryById.mockResolvedValue(entry)
-      mockRepo.findVersions.mockResolvedValue([targetVersion])
-      mockRepo.createVersion.mockResolvedValue(newVersionRecord)
-      mockRepo.updateEntry.mockResolvedValue(updatedEntry)
+      const result = await versioningService.rollback(ctx(), 'entry1', 'v1', { tenantId: 'tenant-a' })
 
-      const result = await versioningService.rollback(db, 'entry1', 'v1', 'user123')
+      expect(mockExecuteCommand).toHaveBeenCalledTimes(1)
+      const [passedCtx, envelope] = mockExecuteCommand.mock.calls[0] as [unknown, Record<string, unknown>]
+      expect(passedCtx).toMatchObject({ tenantScope: 'tenant-a' })
+      expect(envelope).toMatchObject({
+        type: 'updateEntry',
+        payload: { entryId: 'entry1', data: { title: 'Original' } },
+        actor,
+        optimisticVersion: 3,
+      })
+      expect(envelope.dryRun).toBeUndefined()
+      // No direct writes: the command engine is the only write path (P3).
+      expect(mockRepo.createVersion).not.toHaveBeenCalled()
+      expect(mockRepo.updateEntry).not.toHaveBeenCalled()
+      expect(mockCommandsRepo.insertChangeLogEntries).not.toHaveBeenCalled()
 
       expect(result.success).toBe(true)
-      if (result.success) {
-        expect(result.data.entry).toBeDefined()
-        expect(result.data.entry?.version).toBe(4)
-        expect(result.data.entry?.data).toEqual({ title: 'Original' })
-        expect(result.data.newVersion.version).toBe(4)
-        expect(mockRepo.createVersion).toHaveBeenCalledWith(
-          db,
-          expect.objectContaining({
-            entryId: 'entry1',
-            version: 4,
-            data: { title: 'Original' },
-            createdBy: 'user123',
-          })
-        )
-        expect(mockRepo.updateEntry).toHaveBeenCalledWith(
-          db,
-          'entry1',
-          expect.objectContaining({
-            data: { title: 'Original' },
-            version: 4,
-          })
-        )
+      if (result.success && !result.data.dryRun) {
+        expect(result.data.commandId).toBe('cmd-1')
+        expect(result.data.entry.version).toBe(4)
+        expect(result.data.newVersion).toMatchObject({
+          entryId: 'entry1',
+          version: 4,
+          data: { title: 'Original' },
+          createdBy: 'user123',
+        })
+        expect(result.data.restoredFromVersionId).toBe('v1')
       }
     })
 
-    it('does not delete intermediate versions during rollback', async () => {
-      const entry = makeEntry({ id: 'entry1', version: 5 })
-      const targetVersion = makeVersion({ id: 'v2', version: 2 })
+    it('returns the command diff for a dry run', async () => {
+      arrange()
+      mockExecuteCommand.mockResolvedValue({
+        commandId: 'cmd-2',
+        type: 'updateEntry',
+        status: 'dry_run',
+        diff: [{ entityId: 'entry1' }],
+        executedAt: '2024-02-01T00:00:00.000Z',
+      })
 
-      mockRepo.findEntryById.mockResolvedValue(entry)
-      mockRepo.findVersions.mockResolvedValue([targetVersion])
-      mockRepo.createVersion.mockResolvedValue(makeVersion({}))
-      mockRepo.updateEntry.mockResolvedValue(makeEntry({ version: 6 }))
+      const result = await versioningService.rollback(ctx(), 'entry1', 'v1', { dryRun: true })
 
-      await versioningService.rollback(db, 'entry1', 'v2')
+      const envelope = mockExecuteCommand.mock.calls[0]?.[1] as Record<string, unknown>
+      expect(envelope.dryRun).toBe(true)
+      expect(result).toEqual({
+        success: true,
+        data: { dryRun: true, commandId: 'cmd-2', diff: [{ entityId: 'entry1' }] },
+      })
+    })
 
-      // Verify no delete operations occurred (only create and update)
-      expect(mockRepo.createVersion).toHaveBeenCalledTimes(1)
-      expect(mockRepo.updateEntry).toHaveBeenCalledTimes(1)
+    it('returns the command error when the command fails', async () => {
+      arrange()
+      mockExecuteCommand.mockResolvedValue({
+        commandId: 'cmd-3',
+        type: 'updateEntry',
+        status: 'failed',
+        error: { code: 'VERSION_CONFLICT', message: 'Expected version 3 but found 4' },
+        executedAt: '2024-02-01T00:00:00.000Z',
+      })
+
+      const result = await versioningService.rollback(ctx(), 'entry1', 'v1')
+
+      expect(result).toEqual({
+        success: false,
+        error: { code: 'VERSION_CONFLICT', message: 'Expected version 3 but found 4' },
+      })
     })
 
     it('returns NOT_FOUND when entry does not exist', async () => {
       mockRepo.findEntryById.mockResolvedValue(undefined)
 
-      const result = await versioningService.rollback(db, 'nonexistent', 'v1')
+      const result = await versioningService.rollback(ctx(), 'nonexistent', 'v1')
 
       expect(result.success).toBe(false)
       if (!result.success) {
         expect(result.error.code).toBe('NOT_FOUND')
       }
+      expect(mockExecuteCommand).not.toHaveBeenCalled()
     })
 
     it('returns NOT_FOUND when version does not exist', async () => {
-      const entry = makeEntry({ id: 'entry1' })
-      mockRepo.findEntryById.mockResolvedValue(entry)
+      mockRepo.findEntryById.mockResolvedValue(makeEntry({ id: 'entry1' }))
       mockRepo.findVersions.mockResolvedValue([])
 
-      const result = await versioningService.rollback(db, 'entry1', 'nonexistent')
+      const result = await versioningService.rollback(ctx(), 'entry1', 'nonexistent')
 
       expect(result.success).toBe(false)
       if (!result.success) {
         expect(result.error.code).toBe('NOT_FOUND')
       }
-    })
-
-    it('handles rollback failure gracefully', async () => {
-      const entry = makeEntry({ id: 'entry1', version: 2 })
-      const targetVersion = makeVersion({ id: 'v1', version: 1 })
-
-      mockRepo.findEntryById.mockResolvedValue(entry)
-      mockRepo.findVersions.mockResolvedValue([targetVersion])
-      mockRepo.createVersion.mockResolvedValue(makeVersion({}))
-      mockRepo.updateEntry.mockResolvedValue(undefined) // Update fails
-
-      const result = await versioningService.rollback(db, 'entry1', 'v1')
-
-      expect(result.success).toBe(false)
-      if (!result.success) {
-        expect(result.error.code).toBe('ROLLBACK_FAILED')
-      }
-    })
-
-    // ========================================================================
-    // Changelog entry tests
-    // ========================================================================
-
-    it('writes a changelog entry when an entry is rolled back', async () => {
-      const entry = makeEntry({
-        id: 'entry1',
-        version: 3,
-        data: { title: 'Current' },
-      })
-      const targetVersion = makeVersion({
-        id: 'v1',
-        entryId: 'entry1',
-        version: 1,
-        data: { title: 'Original' },
-      })
-      const newVersionRecord = makeVersion({
-        id: 'mock-uuid',
-        entryId: 'entry1',
-        version: 4,
-        data: { title: 'Original' },
-      })
-      const updatedEntry = makeEntry({
-        id: 'entry1',
-        version: 4,
-        data: { title: 'Original' },
-      })
-
-      mockRepo.findEntryById.mockResolvedValue(entry)
-      mockRepo.findVersions.mockResolvedValue([targetVersion])
-      mockRepo.createVersion.mockResolvedValue(newVersionRecord)
-      mockRepo.updateEntry.mockResolvedValue(updatedEntry)
-
-      const result = await versioningService.rollback(db, 'entry1', 'v1', 'user123')
-
-      expect(result.success).toBe(true)
-      expect(mockCommandsRepo.insertChangeLogEntries).toHaveBeenCalledTimes(1)
-      expect(mockCommandsRepo.insertChangeLogEntries).toHaveBeenCalledWith(
-        expect.objectContaining({
-          db,
-          commandId: null,
-          entries: [
-            expect.objectContaining({
-              entityType: 'entry',
-              entityId: 'entry1',
-              action: 'update',
-            }),
-          ],
-          tenantScope: null,
-        })
-      )
-    })
-
-    it('includes _rollbackFromVersion in changelog payload', async () => {
-      const entry = makeEntry({
-        id: 'entry1',
-        version: 3,
-        data: { title: 'Current' },
-      })
-      const targetVersion = makeVersion({
-        id: 'v1',
-        entryId: 'entry1',
-        version: 1,
-        data: { title: 'Original' },
-      })
-      const newVersionRecord = makeVersion({
-        id: 'mock-uuid',
-        entryId: 'entry1',
-        version: 4,
-        data: { title: 'Original' },
-      })
-      const updatedEntry = makeEntry({
-        id: 'entry1',
-        version: 4,
-        data: { title: 'Original' },
-      })
-
-      mockRepo.findEntryById.mockResolvedValue(entry)
-      mockRepo.findVersions.mockResolvedValue([targetVersion])
-      mockRepo.createVersion.mockResolvedValue(newVersionRecord)
-      mockRepo.updateEntry.mockResolvedValue(updatedEntry)
-
-      const result = await versioningService.rollback(db, 'entry1', 'v1', 'user123')
-
-      expect(result.success).toBe(true)
-      expect(mockCommandsRepo.insertChangeLogEntries).toHaveBeenCalledWith(
-        expect.objectContaining({
-          entries: [
-            expect.objectContaining({
-              changes: expect.objectContaining({
-                _rollbackFromVersion: 'v1',
-              }),
-            }),
-          ],
-        })
-      )
-    })
-
-    it('writes a changelog entry with tenantScope when provided', async () => {
-      const entry = makeEntry({
-        id: 'entry1',
-        version: 3,
-        data: { title: 'Current' },
-      })
-      const targetVersion = makeVersion({
-        id: 'v1',
-        entryId: 'entry1',
-        version: 1,
-        data: { title: 'Original' },
-      })
-      const newVersionRecord = makeVersion({
-        id: 'mock-uuid',
-        entryId: 'entry1',
-        version: 4,
-        data: { title: 'Original' },
-      })
-      const updatedEntry = makeEntry({
-        id: 'entry1',
-        version: 4,
-        data: { title: 'Original' },
-      })
-
-      mockRepo.findEntryById.mockResolvedValue(entry)
-      mockRepo.findVersions.mockResolvedValue([targetVersion])
-      mockRepo.createVersion.mockResolvedValue(newVersionRecord)
-      mockRepo.updateEntry.mockResolvedValue(updatedEntry)
-
-      const result = await versioningService.rollback(
-        db,
-        'entry1',
-        'v1',
-        'user123',
-        'tenant-abc'
-      )
-
-      expect(result.success).toBe(true)
-      expect(mockCommandsRepo.insertChangeLogEntries).toHaveBeenCalledWith(
-        expect.objectContaining({
-          tenantScope: 'tenant-abc',
-        })
-      )
-    })
-
-    it('does not write a changelog entry when rollback fails', async () => {
-      const entry = makeEntry({ id: 'entry1', version: 2 })
-      const targetVersion = makeVersion({ id: 'v1', version: 1 })
-
-      mockRepo.findEntryById.mockResolvedValue(entry)
-      mockRepo.findVersions.mockResolvedValue([targetVersion])
-      mockRepo.createVersion.mockResolvedValue(makeVersion({}))
-      mockRepo.updateEntry.mockResolvedValue(undefined) // Update fails
-
-      const result = await versioningService.rollback(db, 'entry1', 'v1')
-
-      expect(result.success).toBe(false)
-      expect(mockCommandsRepo.insertChangeLogEntries).not.toHaveBeenCalled()
-    })
-
-    it('does not fail the rollback when changelog write throws', async () => {
-      const entry = makeEntry({
-        id: 'entry1',
-        version: 3,
-        data: { title: 'Current' },
-      })
-      const targetVersion = makeVersion({
-        id: 'v1',
-        entryId: 'entry1',
-        version: 1,
-        data: { title: 'Original' },
-      })
-      const newVersionRecord = makeVersion({
-        id: 'mock-uuid',
-        entryId: 'entry1',
-        version: 4,
-        data: { title: 'Original' },
-      })
-      const updatedEntry = makeEntry({
-        id: 'entry1',
-        version: 4,
-        data: { title: 'Original' },
-      })
-
-      mockRepo.findEntryById.mockResolvedValue(entry)
-      mockRepo.findVersions.mockResolvedValue([targetVersion])
-      mockRepo.createVersion.mockResolvedValue(newVersionRecord)
-      mockRepo.updateEntry.mockResolvedValue(updatedEntry)
-      mockCommandsRepo.insertChangeLogEntries.mockRejectedValue(new Error('DB write failed'))
-
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-
-      const result = await versioningService.rollback(db, 'entry1', 'v1', 'user123')
-
-      // Rollback should still succeed even though changelog failed
-      expect(result.success).toBe(true)
-      expect(consoleSpy).toHaveBeenCalledWith(
-        'rollback_changelog_write_failed',
-        expect.objectContaining({
-          error: 'DB write failed',
-        })
-      )
-
-      consoleSpy.mockRestore()
+      expect(mockExecuteCommand).not.toHaveBeenCalled()
     })
   })
 })
