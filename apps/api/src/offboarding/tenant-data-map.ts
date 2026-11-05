@@ -52,6 +52,7 @@ export const TENANT_DELETION_ORDER: readonly TenantScopedRule[] = [
   { table: 'ai_suggestion_sets', kind: 'tenant', column: 'tenant_id' },
   { table: 'ai_import_sources', kind: 'tenant', column: 'tenant_id' },
   { table: 'ai_tool_invocations', kind: 'tenant', column: 'tenant_id' },
+  { table: 'preview_receipt_redemptions', kind: 'tenant', column: 'tenant_scope' },
   { table: 'ai_import_batches', kind: 'tenant', column: 'tenant_id' },
   // Webhooks.
   {

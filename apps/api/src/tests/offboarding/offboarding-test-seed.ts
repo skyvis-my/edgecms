@@ -22,6 +22,7 @@ function tenantSeedSql(t: string, slug: string, extraEntries: number): string {
     INSERT INTO entries_fts (entry_id, tenant_id, collection_id, locale, title, body) VALUES ('${t}-e1', '${t}', '${t}-c1', 'en', 'Hello', 'Hello ${slug}');
     INSERT INTO relations (id, sourceEntryId, targetEntryId, sourceCollectionId, targetCollectionId, relationType, fieldName, createdAt, updatedAt, tenantId) VALUES ('${t}-rel', '${t}-e1', '${t}-e2', '${t}-c1', '${t}-c1', 'one-to-many', 'related', '${NOW}', '${NOW}', '${t}');
     INSERT INTO schedule_intents (id, entry_id, transition_type, tenant_scope, created_at, updated_at) VALUES ('${t}-si', '${t}-e2', 'publish', '${t}', '${NOW}', '${NOW}');
+    INSERT INTO preview_receipt_redemptions (receipt_id, tenant_scope, user_id, commands_hash, redeemed_at) VALUES ('${t}-rcpt', '${t}', 'u-${t}', 'hash', '${NOW}');
     INSERT INTO schema_snapshots (id, tenant_id, schema_version, created_at) VALUES ('${t}-ss', '${t}', 1, '${NOW}');
     INSERT INTO cache_tags (id, tag, snapshotKey, createdAt) VALUES ('${t}-ct1', 't:${t}:c:${t}-c1', '${slug}:snapshot:posts:en:list', '${NOW}'), ('${t}-ct2', 'collection:${t}-c1', '${slug}:snapshot:posts:en:list', '${NOW}');
     INSERT INTO assets (id, filename, mime_type, size, original_key, created_at, updated_at, tenant_id) VALUES ('${t}-a1', 'hero.png', 'image/png', 10, 'tenants/${t}/assets/${t}-a1/original/hero.png', '${NOW}', '${NOW}', '${t}');
