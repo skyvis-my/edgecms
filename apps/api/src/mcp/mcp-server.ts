@@ -45,9 +45,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
     description: 'List all content collections in the current tenant scope (safe metadata without secrets).',
     inputSchema: {
       type: 'object',
-      properties: {
-        tenantId: { type: 'string', description: 'Optional tenant ID override' },
-      },
+      properties: {},
     },
   },
   {
@@ -58,7 +56,6 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       required: ['collectionSlug'],
       properties: {
         collectionSlug: { type: 'string', description: 'The unique slug of the collection' },
-        tenantId: { type: 'string', description: 'Optional tenant ID override' },
       },
     },
   },
@@ -73,7 +70,6 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         page: { type: 'number', description: 'Page number (default 1)' },
         perPage: { type: 'number', description: 'Items per page (default 20, max 100)' },
         status: { type: 'string', enum: ['draft', 'published', 'scheduled', 'archived'] },
-        tenantId: { type: 'string', description: 'Optional tenant ID override' },
       },
     },
   },
@@ -85,7 +81,6 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       required: ['entryId'],
       properties: {
         entryId: { type: 'string', description: 'The ID of the entry' },
-        tenantId: { type: 'string', description: 'Optional tenant ID override' },
       },
     },
   },
@@ -156,7 +151,6 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         query: { type: 'string', description: 'The natural language search query' },
         collectionSlug: { type: 'string', description: 'Optional collection slug filter' },
         limit: { type: 'number', description: 'Maximum number of results to return (default 5, max 20)' },
-        tenantId: { type: 'string', description: 'Optional tenant ID override' },
       },
     },
   },
@@ -167,19 +161,22 @@ export async function handleMcpToolCall(
   name: string,
   args: Record<string, unknown> = {}
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  // A tenant-scoped endpoint never serves another tenant's content.
-  const requestedTenant = typeof args.tenantId === 'string' ? args.tenantId : undefined
-  if (ctx.tenantScope && requestedTenant && requestedTenant !== ctx.tenantScope) {
+  // P2: the tenant comes only from the request (the endpoint path), never from
+  // a tool argument. A `tenantId` naming any other tenant is rejected.
+  const tenantId = ctx.tenantScope
+  if (args.tenantId !== undefined && args.tenantId !== tenantId) {
     return {
       content: [
-        { type: 'text', text: 'Error: tenantId override is not allowed on a tenant-scoped MCP endpoint' },
+        {
+          type: 'text',
+          text: 'Error: tenantId override is not allowed; call the tenant MCP endpoint /api/tenants/:slug/api/mcp instead',
+        },
       ],
       isError: true,
     }
   }
-  // HS-14: the effective tenant (context or override) must have AI turned on.
-  const effectiveTenant = ctx.tenantScope ?? requestedTenant
-  if (!(await isTenantAiEnabled({ db: ctx.db, workerEnv: ctx.env, tenantId: effectiveTenant }))) {
+  // HS-14: the request tenant must have AI turned on.
+  if (!(await isTenantAiEnabled({ db: ctx.db, workerEnv: ctx.env, tenantId }))) {
     return { content: [{ type: 'text', text: `Error: ${AI_DISABLED_MESSAGE}` }], isError: true }
   }
 
@@ -197,7 +194,6 @@ export async function handleMcpToolCall(
   try {
     switch (name) {
       case 'edgecms_list_collections': {
-        const tenantId = (args.tenantId as string | undefined) ?? ctx.tenantScope
         const collections = await collectionsRepository.findAll(ctx.db, tenantId)
         const sanitized = collections.map((col) => ({
           id: col.id,
@@ -216,7 +212,6 @@ export async function handleMcpToolCall(
 
       case 'edgecms_get_schema': {
         const collectionSlug = args.collectionSlug as string
-        const tenantId = (args.tenantId as string | undefined) ?? ctx.tenantScope
         const collection = await collectionsRepository.findBySlug(ctx.db, collectionSlug, tenantId)
         if (!collection) {
           return {
@@ -231,7 +226,6 @@ export async function handleMcpToolCall(
 
       case 'edgecms_list_entries': {
         const collectionSlug = args.collectionSlug as string
-        const tenantId = (args.tenantId as string | undefined) ?? ctx.tenantScope
         const collection = await collectionsRepository.findBySlug(ctx.db, collectionSlug, tenantId)
         if (!collection) {
           return {
@@ -263,7 +257,6 @@ export async function handleMcpToolCall(
 
       case 'edgecms_get_entry': {
         const entryId = args.entryId as string
-        const tenantId = (args.tenantId as string | undefined) ?? ctx.tenantScope
         const entry = await entriesRepository.findById(ctx.db, entryId, tenantId)
         if (!entry) {
           return {
@@ -532,7 +525,6 @@ export async function handleMcpToolCall(
             isError: true,
           }
         }
-        const tenantId = (args.tenantId as string | undefined) ?? ctx.tenantScope
         const collectionSlug = args.collectionSlug as string | undefined
         const limit = Math.min(20, Math.max(1, Number(args.limit) || 5))
 
