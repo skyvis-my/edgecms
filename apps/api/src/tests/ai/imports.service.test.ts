@@ -3,6 +3,7 @@ import type { Database } from '@/database/db'
 import type { Env } from '@/env'
 import type { AiImportBatch, AiImportSource, AiSuggestion, AiSuggestionSet } from '../../ai/imports.repository'
 import { aiImportService, buildCommandPayloads } from '../../ai/imports.service'
+import { createPreviewReceipt } from '../../ai/preview-receipt.service'
 
 const mockCollectionsRepo = {
   findBySlug: vi.fn(),
@@ -460,13 +461,23 @@ describe('aiImportService', () => {
       } as AiSuggestionSet)
 
       // Test mismatched dryRunHash
+      const receipt = await createPreviewReceipt({ commands: [cmd], userId: 'user-1', tenantId: 'tenant-1' })
+
+      // Test missing receipt and mismatched dryRunHash
       await expect(
-        aiImportService.applySuggestionSet(mockDb, mockKv, 's1', 'mismatched-hash', 'user-1')
+        aiImportService.applySuggestionSet(mockDb, mockKv, 's1', correctHash, 'user-1', 'tenant-1')
+      ).rejects.toThrow('A preview receipt from the latest dry-run is required before apply')
+      await expect(
+        aiImportService.applySuggestionSet(
+          mockDb, mockKv, 's1', 'mismatched-hash', 'user-1', 'tenant-1', undefined, undefined, receipt.receiptId
+        )
       ).rejects.toThrow('Latest dry-run hash is required before apply')
 
       // Test successful apply
       mockExecuteCommand.mockResolvedValue({ commandId: 'cmd-100', status: 'success' })
-      const applyRes = await aiImportService.applySuggestionSet(mockDb, mockKv, 's1', correctHash, 'user-1', 'tenant-1')
+      const applyRes = await aiImportService.applySuggestionSet(
+        mockDb, mockKv, 's1', correctHash, 'user-1', 'tenant-1', undefined, undefined, receipt.receiptId
+      )
       expect(applyRes.status).toBe('applied')
       expect(mockAiImportsRepo.updateBatch).toHaveBeenCalledWith(mockDb, 'b1', 'tenant-1', {
         status: 'applied',
@@ -493,8 +504,11 @@ describe('aiImportService', () => {
         dryRunPayloadJson: [cmd],
       } as AiSuggestionSet)
       mockExecuteCommand.mockResolvedValue({ commandId: 'cmd-err', status: 'failed' })
+      const receipt = await createPreviewReceipt({ commands: [cmd], userId: 'user-1', tenantId: 'tenant-1' })
 
-      const failRes = await aiImportService.applySuggestionSet(mockDb, mockKv, 's1', correctHash, 'user-1', 'tenant-1')
+      const failRes = await aiImportService.applySuggestionSet(
+        mockDb, mockKv, 's1', correctHash, 'user-1', 'tenant-1', undefined, undefined, receipt.receiptId
+      )
       expect(failRes.status).toBe('partial_failure')
       expect(mockAiImportsRepo.updateSuggestionSet).toHaveBeenCalledWith(mockDb, 's1', 'tenant-1', {
         status: 'ready',

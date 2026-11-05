@@ -101,6 +101,28 @@ POST /api/tenants/:slug/admin/ai/workflow
 
 The [MCP server](mcp-server.md) works the same way: `edgecms_preview_command` returns a receipt only when the dry run succeeded, and `edgecms_execute_command` accepts only a receipt. If you also pass `command`, it must match the reviewed command exactly.
 
+## AI import review
+
+AI import review is off unless the Worker sets `ENABLE_AI_IMPORT_REVIEW=true`; every route below then returns `404 AI_IMPORT_REVIEW_DISABLED`.
+
+```text
+POST  /api/tenants/:slug/admin/ai/import-batches
+POST  /api/tenants/:slug/admin/ai/import-batches/:batchId/sources
+POST  /api/tenants/:slug/admin/ai/import-batches/:batchId/analyze
+GET   /api/tenants/:slug/admin/ai/import-batches/:batchId
+PATCH /api/tenants/:slug/admin/ai/suggestions/:suggestionId
+POST  /api/tenants/:slug/admin/ai/suggestion-sets/:suggestionSetId/dry-run
+POST  /api/tenants/:slug/admin/ai/suggestion-sets/:suggestionSetId/apply
+```
+
+Everything before `apply` writes no entries. It writes only the review records (batch, source, suggestion and suggestion-set rows, tenant-scoped) and, for file sources, the uploaded file to R2 under the tenant's `ai-imports/` prefix. These records expire after 30 days, but nothing deletes them yet.
+
+- `dry-run` runs the accepted suggestions through the command engine as dry runs. When every command passes, it returns a `previewReceipt` (see [Preview receipts](#preview-receipts)) with the `dryRunHash`. No receipt is issued when a dry-run command fails.
+- `apply` takes `{ "dryRunHash": "...", "previewReceipt": "..." }`. It runs only the stored dry-run commands, and only after it redeems the receipt. A missing receipt returns `400 AI_IMPORT_APPLY_FAILED`. A rejected receipt returns `INVALID_PREVIEW_RECEIPT` with `err.reason` set to the code from the table, and the status from the table. A set that was already applied cannot be dry-run or applied again.
+- Mutating routes need a tenant owner, admin or editor role. Every command also checks `entry:<collection>` grants (PL-03).
+
+The WordPress WXR converter (`stageWordPressImportCommands`) stages `createEntry` dry-run commands from an export. It is a library function: no route accepts a WXR upload yet. It does not expand DTD entities. It rejects exports over 10,000,000 characters or 2,000 items. It keeps only `http`, `https`, `mailto` and relative link and image URLs, and it does not fetch remote media. Imported posts are staged as drafts unless the caller sets `defaultStatus: 'published'`.
+
 ## Audit rules
 
 - Show dry-run output to a person before executing.
