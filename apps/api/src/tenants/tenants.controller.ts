@@ -7,7 +7,7 @@ import type { Env } from '@/env'
 import { bumpAuthRevision, bumpPermissionRevision } from '@/auth/auth-revision'
 import { withTenantBindings } from './with-tenant-bindings'
 import { tenantsService } from './tenants.service'
-import { toServiceResponse } from '@/shared/utils/service-response'
+import { createErrorEnvelope, toServiceResponse } from '@/shared/utils/service-response'
 import { resolveHostPolicies, type ResolvedHostPolicies } from '@/host/host-policies'
 import type { LimitEnforcer } from '@/host/limits'
 import { createTenantEventPublisher, type TenantEventPublisher } from '@/host/tenant-events'
@@ -39,6 +39,18 @@ async function resolveTenantOr404(
     }
   }
   return { tenantId }
+}
+
+/** Offboarding endpoints a caller of the retired direct delete must use instead (HS-09). */
+export function tenantOffboardingEndpoints(slug: string) {
+  const tenantPath = `/api/admin/tenants/${encodeURIComponent(slug)}`
+  return {
+    export: `GET ${tenantPath}/export`,
+    request: `POST ${tenantPath}/deletion-requests`,
+    status: 'GET /api/admin/tenant-deletions/:jobId',
+    confirm: 'POST /api/admin/tenant-deletions/:jobId/confirm',
+    cancel: 'POST /api/admin/tenant-deletions/:jobId/cancel',
+  }
 }
 
 type SuperAdminDenial = {
@@ -234,21 +246,32 @@ export function createTenantsController(options: TenantsControllerOptions = {}) 
     })
 
     /**
-     * DELETE /:tenantSlug — Delete a tenant by ID or slug.
+     * DELETE /:tenantSlug — retired direct delete (HS-09).
+     *
+     * This route used to drop the tenant row at once. Many tenant-scoped
+     * tables do not cascade from `tenants`, so it left orphaned content,
+     * assets, webhooks and audit rows. It now deletes nothing and returns
+     * 409 `TENANT_OFFBOARDING_REQUIRED` with the offboarding endpoints:
+     * request -> export -> typed confirmation.
      */
     .delete('/:tenantSlug', {
       ...superAdminRoute,
       params: t.Object({
         tenantSlug: t.String({ minLength: 1 }),
       }),
-    }, async ({ db, params, set, user }) => {
-      const resolved = await resolveTenantOr404(db, params.tenantSlug, set)
-      if ('error' in resolved) return resolved.error
-      const result = await tenantsService.deleteById(db, resolved.tenantId, undefined, {
-        events,
-        actorId: user.id,
-      })
-      return toServiceResponse(set, result)
+    }, async ({ db, params, set }) => {
+      const tenant = await tenantsService.findByIdOrSlug(db, params.tenantSlug)
+      if (!tenant.success) {
+        set.status = 404
+        return createErrorEnvelope('NOT_FOUND', `Tenant '${params.tenantSlug}' not found`)
+      }
+      set.status = 409
+      set.headers['cache-control'] = 'no-store'
+      return createErrorEnvelope(
+        'TENANT_OFFBOARDING_REQUIRED',
+        'Direct tenant delete is retired. Request deletion, export the tenant, then confirm with the tenant slug and export id.',
+        { offboarding: tenantOffboardingEndpoints(tenant.data.slug) }
+      )
     })
 
     /**

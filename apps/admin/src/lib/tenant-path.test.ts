@@ -34,6 +34,13 @@ describe('prefixTenantPath', () => {
       )
     })
 
+    it('does not prefix global tenant deletion job routes (HS-09)', () => {
+      expect(prefixTenantPath('/admin/tenant-deletions/job-1/confirm', 'acme')).toBe(
+        '/admin/tenant-deletions/job-1/confirm'
+      )
+      expect(prefixTenantPath('/admin/tenant-deletions', 'acme')).toBe('/admin/tenant-deletions')
+    })
+
     it('does not prefix non-admin routes', () => {
       expect(prefixTenantPath('/auth/login', 'acme')).toBe('/auth/login')
     })

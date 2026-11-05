@@ -251,31 +251,26 @@ describe('tenantsController (repo-backed)', () => {
     }
   })
 
-  it('DELETE /:tenantSlug returns success when resolved tenant is deleted', async () => {
-    mockService.findByIdOrSlug.mockResolvedValueOnce(ok({ id: 't1' }))
-    mockService.deleteById.mockResolvedValueOnce(ok({ id: 't1' }))
+  it('DELETE /:tenantSlug refuses with 409 and never calls deleteById (HS-09)', async () => {
+    mockService.findByIdOrSlug.mockResolvedValueOnce(ok({ id: 't1', slug: 'acme' }))
 
-    const deleted = await app.handle(
+    const res = await app.handle(
       new Request('http://localhost/api/admin/tenants/acme', { method: 'DELETE' })
     )
-    expect(deleted.status).toBe(200)
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { error: { code: string } }
+    expect(body.error.code).toBe('TENANT_OFFBOARDING_REQUIRED')
+    expect(mockService.deleteById).not.toHaveBeenCalled()
   })
 
-  it('DELETE /:tenantSlug maps resolve and delete failures to 404', async () => {
-    mockService.findByIdOrSlug
-      .mockResolvedValueOnce(fail('NOT_FOUND'))
-      .mockResolvedValueOnce(ok({ id: 't1' }))
-    mockService.deleteById.mockResolvedValueOnce(fail('NOT_FOUND'))
+  it('DELETE /:tenantSlug maps unknown tenants to 404', async () => {
+    mockService.findByIdOrSlug.mockResolvedValueOnce(fail('NOT_FOUND'))
 
     const unresolved = await app.handle(
       new Request('http://localhost/api/admin/tenants/missing', { method: 'DELETE' })
     )
     expect(unresolved.status).toBe(404)
-
-    const missingDelete = await app.handle(
-      new Request('http://localhost/api/admin/tenants/acme', { method: 'DELETE' })
-    )
-    expect(missingDelete.status).toBe(404)
+    expect(mockService.deleteById).not.toHaveBeenCalled()
   })
 
   it('user routes map success states', async () => {
@@ -558,11 +553,10 @@ describe('tenantsController (repo-backed)', () => {
       expect(mockService.create).not.toHaveBeenCalled()
     })
 
-    it('PUT and DELETE pass the acting user to lifecycle events', async () => {
+    it('PUT passes the acting user to lifecycle events', async () => {
       mockUser = { id: 'u1', email: 'admin@example.com', emailVerified: true }
       mockService.findByIdOrSlug.mockResolvedValue(ok({ id: 't1', slug: 'acme', name: 'Acme' }))
       mockService.update.mockResolvedValueOnce(ok({ id: 't1', slug: 'acme', status: 'suspended' }))
-      mockService.deleteById.mockResolvedValueOnce(ok({ id: 't1' }))
 
       await app.handle(
         new Request('http://localhost/api/admin/tenants/acme', {
@@ -571,18 +565,11 @@ describe('tenantsController (repo-backed)', () => {
           body: JSON.stringify({ status: 'suspended' }),
         })
       )
-      await app.handle(new Request('http://localhost/api/admin/tenants/acme', { method: 'DELETE' }))
 
       expect(mockService.update).toHaveBeenCalledWith(
         expect.anything(),
         't1',
         { status: 'suspended' },
-        expect.objectContaining({ actorId: 'u1', events: expect.anything() })
-      )
-      expect(mockService.deleteById).toHaveBeenCalledWith(
-        expect.anything(),
-        't1',
-        undefined,
         expect.objectContaining({ actorId: 'u1', events: expect.anything() })
       )
     })

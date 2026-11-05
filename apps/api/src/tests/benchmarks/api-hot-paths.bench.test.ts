@@ -1011,8 +1011,9 @@ describe('API in-process benchmark contract', () => {
           }),
       },
       {
-        name: 'DELETE /api/admin/tenants/:tenantSlug mocked super-admin delete full app',
-        expectedStatus: 200,
+        // HS-09: the direct delete is retired and refuses with 409.
+        name: 'DELETE /api/admin/tenants/:tenantSlug mocked super-admin retired delete full app',
+        expectedStatus: 409,
         request: () =>
           new Request('http://localhost/api/admin/tenants/acme', {
             method: 'DELETE',
