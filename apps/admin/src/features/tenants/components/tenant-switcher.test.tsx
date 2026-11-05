@@ -51,7 +51,6 @@ mock.module('../api', () => ({
   useTenant: () => ({ data: null }),
   useCreateTenant: () => ({ mutateAsync: mock(() => {}) }),
   useUpdateTenant: () => ({ mutateAsync: mock(() => {}) }),
-  useDeleteTenant: () => ({ mutateAsync: mock(() => {}) }),
   useInviteTenantUser: () => ({ mutateAsync: mock(() => {}) }),
   useRemoveTenantUser: () => ({ mutateAsync: mock(() => {}) }),
 }))

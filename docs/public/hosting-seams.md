@@ -93,11 +93,37 @@ HS-09 adds an export and a two-step, verified deletion for shared-mode tenants. 
 - **Receipt and event.** When the job completes, EdgeCMS writes one `tenant.data_deleted` entry to the global audit chain, with the per-table counts, and sends `tenant.deleted` once.
 - **Kept on purpose.** User accounts stay global; use [personal data requests](operations-security.md#personal-data-requests) for those. The audit ledger, the R2 cleanup queue and the deletion job record are kept.
 
+- **Admin UI.** The tenant edit page's Danger Zone runs this flow in one dialog: request deletion, download the export, type the tenant slug, then delete. Nothing is deleted before the last step, and the request can be cancelled until then.
+
+### Retired direct delete
+
+`DELETE /api/admin/tenants/:tenantSlug` no longer deletes anything. It used to delete the `tenants` row at once, without confirmation, and left content, assets, webhooks and audit rows behind in tables that do not cascade from `tenants`. It now returns `409` (or `404` for an unknown tenant):
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "TENANT_OFFBOARDING_REQUIRED",
+    "message": "Direct tenant delete is retired. ...",
+    "details": {
+      "offboarding": {
+        "export": "GET /api/admin/tenants/acme/export",
+        "request": "POST /api/admin/tenants/acme/deletion-requests",
+        "status": "GET /api/admin/tenant-deletions/:jobId",
+        "confirm": "POST /api/admin/tenant-deletions/:jobId/confirm",
+        "cancel": "POST /api/admin/tenant-deletions/:jobId/cancel"
+      }
+    }
+  }
+}
+```
+
+**Upgrade step:** scripts that call the old route must switch to the deletion job: `POST .../deletion-requests`, then `GET .../export` (keep the file and its `x-edgecms-export-id`), then `POST /api/admin/tenant-deletions/:jobId/confirm` with `{ tenantSlug, exportId }`, and `resume` until the job is `completed`. Tenants already deleted through the old route can have orphaned rows; this release does not clean them up.
+
 Limits:
 
-- Tenants in dedicated mode are refused with `409 DEDICATED_RESOURCES_UNSUPPORTED`. Delete dedicated D1, KV and R2 resources through the host's own tooling.
+- Tenants in dedicated mode are refused with `409 DEDICATED_RESOURCES_UNSUPPORTED`, and the retired direct delete no longer removes them either. Delete dedicated D1, KV and R2 resources and the tenant through the host's own tooling.
 - The deletion SQL uses SQLite features, so it runs on D1 only, not on the Postgres hosting path.
-- `DELETE /api/admin/tenants/:slug` is unchanged. It deletes the tenant row without confirmation and does not remove tenant data. Use the deletion job instead.
 
 ## Sign-up and email verification
 
