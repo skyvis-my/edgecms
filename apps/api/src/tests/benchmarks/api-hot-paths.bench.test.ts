@@ -1337,5 +1337,5 @@ describe('API in-process benchmark contract', () => {
     expect(summaries.every((summary) => Number.isFinite(summary.medianMs))).toBe(true)
     expect(summaries.every((summary) => summary.samples > 0)).toBe(true)
     expect(summaries.filter((summary) => summary.overBudget)).toEqual([])
-  })
+  }, 30_000) // sequential run over every included route; grows with the manifest
 })
