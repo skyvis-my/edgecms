@@ -1,3 +1,4 @@
+import { collectionsRepository } from '@/collections/collections.repository'
 import type { Database } from '@/database/db'
 import { type EntryRow, entriesRepository } from '@/entries/entries.repository'
 import {
@@ -5,6 +6,7 @@ import {
   filterPubliclyVisible,
   type PublicVisibility,
 } from '@/entries/public-visibility'
+import { isPaidCollectionSlug } from '@/public/x402.middleware'
 import { type RelationRow, relationsRepository } from './relations.repository'
 
 /**
@@ -161,7 +163,16 @@ export const relationsResolver = {
     }
     const rows = await entriesRepository.findByIds(db, entryIds, tenantId)
     const visibility = toVisibility(publishedOnly)
-    return visibility ? filterPubliclyVisible(rows, visibility) : rows
+    if (!visibility) return rows
+    const visible = filterPubliclyVisible(rows, visibility)
+    if (visible.length === 0) return visible
+    // DL-07: public populate has no 402 gate, so drop entries of paid collections.
+    const collectionIds = [...new Set(visible.map((row) => row.collectionId))]
+    const targetCollections = await collectionsRepository.findByIds(db, collectionIds, tenantId)
+    const paidIds = new Set(
+      targetCollections.filter((col) => isPaidCollectionSlug(col.slug)).map((col) => col.id)
+    )
+    return paidIds.size > 0 ? visible.filter((row) => !paidIds.has(row.collectionId)) : visible
   },
 
   /**

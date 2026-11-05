@@ -20,6 +20,13 @@ vi.mock('../../relations/relations.repository', () => ({
   },
 }))
 
+// DL-07: public populate looks up target collections to drop paid ones.
+vi.mock('@/collections/collections.repository', () => ({
+  collectionsRepository: {
+    findByIds: vi.fn(async () => []),
+  },
+}))
+
 import { entriesRepository } from '@/entries/entries.repository'
 import { relationsRepository } from '../../relations/relations.repository'
 

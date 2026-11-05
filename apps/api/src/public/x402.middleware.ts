@@ -289,18 +289,17 @@ export function isMonetizedRequest(request: Request, collectionSlug?: string): b
   if (request.headers.get('x-402-require') === 'true') return true
   if (url.searchParams.get('paywall') === 'true' || url.searchParams.get('x402') === 'true') return true
 
-  // Monetized slug patterns (e.g. premium-*, paywalled-*, paid-*)
-  if (collectionSlug) {
-    if (
-      collectionSlug.startsWith('premium-') ||
-      collectionSlug.startsWith('paywall-') ||
-      collectionSlug.startsWith('paid-')
-    ) {
-      return true
-    }
-  }
+  return collectionSlug ? isPaidCollectionSlug(collectionSlug) : false
+}
 
-  return false
+const PAID_COLLECTION_PREFIXES = ['premium-', 'paywall-', 'paid-']
+
+/**
+ * DL-07 paid collections, by slug prefix. Read paths without the 402 gate
+ * (GraphQL, public relation population) must leave these out.
+ */
+export function isPaidCollectionSlug(slug: string): boolean {
+  return PAID_COLLECTION_PREFIXES.some((prefix) => slug.startsWith(prefix))
 }
 
 /**
