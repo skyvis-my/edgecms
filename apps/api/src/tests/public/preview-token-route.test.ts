@@ -212,6 +212,15 @@ describe('DL-08 preview token minting', () => {
     expect(res.headers.get('cache-control')).toContain('no-store')
   })
 
+  it('sends Referrer-Policy: no-referrer so the token page never leaks a Referer', async () => {
+    const res = await post(MINT, { collectionSlug: 'blog' }, { token: await accessToken('editor') })
+    expect(res.status).toBe(200)
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer')
+    const denied = await post(MINT, { collectionSlug: 'news' }, { token: await accessToken('blog-previewer') })
+    expect(denied.status).toBe(403)
+    expect(denied.headers.get('referrer-policy')).toBe('no-referrer')
+  })
+
   it('refuses a token for a collection the caller cannot read (PL-03 grants)', async () => {
     const token = await accessToken('blog-previewer')
     const denied = await post(MINT, { collectionSlug: 'news' }, { token })
@@ -243,6 +252,7 @@ describe('DL-08 preview token verification', () => {
     )
     expect(res.status).toBe(200)
     expect(res.headers.get('cache-control')).toContain('no-store')
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer')
   })
 
   it('rejects a token minted for another tenant', async () => {

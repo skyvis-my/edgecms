@@ -30,7 +30,7 @@ export function buildQueryParams(
   if (options?.perPage) queryParams.set('perPage', String(options.perPage))
   if (options?.sort) queryParams.set('sort', options.sort)
   if (options?.depth !== undefined) queryParams.set('depth', String(options.depth))
-  if (options?.previewToken) queryParams.set('previewToken', options.previewToken)
+  // DL-08: previewToken goes in the x-edgecms-preview-token header only, never the URL.
 
   if (options?.filter) {
     for (const [key, value] of Object.entries(options.filter)) {
@@ -146,7 +146,6 @@ export class EdgeCmsClient {
         if (locale) queryParams.set('locale', locale)
         if (options?.populate) queryParams.set('populate', options.populate)
         if (options?.depth) queryParams.set('depth', String(options.depth))
-        if (options?.previewToken) queryParams.set('previewToken', options.previewToken)
 
         const qs = queryParams.toString() ? `?${queryParams.toString()}` : ''
         const url = `${baseUrl}/api/tenants/${tenantSlug}/public/${slug}/${encodeURIComponent(entrySlugOrId)}${qs}`
@@ -175,7 +174,6 @@ export class EdgeCmsClient {
         const queryParams = new URLSearchParams()
         const locale = options?.locale || defaultLocale
         if (locale) queryParams.set('locale', locale)
-        if (options?.previewToken) queryParams.set('previewToken', options.previewToken)
 
         const qs = queryParams.toString() ? `?${queryParams.toString()}` : ''
         const url = `${baseUrl}/api/tenants/${tenantSlug}/public/singleton/${slug}${qs}`

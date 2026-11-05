@@ -2,6 +2,10 @@ import * as React from 'react'
 
 export const EDGECMS_PREVIEW_MESSAGE_TYPE = 'EDGECMS_PREVIEW_UPDATE'
 export const EDGECMS_PREVIEW_READY_TYPE = 'EDGECMS_PREVIEW_READY'
+export const EDGECMS_PREVIEW_TOKEN_TYPE = 'EDGECMS_PREVIEW_TOKEN'
+
+/** Longest token `listenForPreviewToken` accepts. Real tokens are well under 2 KB. */
+const MAX_PREVIEW_TOKEN_LENGTH = 8192
 
 export type PreviewMessagePayload<T = unknown> = {
   type: typeof EDGECMS_PREVIEW_MESSAGE_TYPE
@@ -11,6 +15,25 @@ export type PreviewMessagePayload<T = unknown> = {
 
 export type ReadyMessagePayload = {
   type: typeof EDGECMS_PREVIEW_READY_TYPE
+}
+
+export type PreviewTokenMessage = {
+  type: typeof EDGECMS_PREVIEW_TOKEN_TYPE
+  token: string
+}
+
+export type SendPreviewTokenOptions = {
+  /** Exact origin of the preview frame, e.g. `https://www.example.com`. `*` is refused. */
+  targetOrigin: string
+}
+
+export type ListenPreviewTokenOptions = {
+  /** Exact origin of the EdgeCMS admin, e.g. `https://admin.example.com`. `*` is refused. */
+  allowedOrigin: string
+  /** Window the token must come from. Defaults to `window.parent`. */
+  source?: Window | null | undefined
+  /** Post `EDGECMS_PREVIEW_READY` to the parent at `allowedOrigin` on start. Default true. */
+  notifyReady?: boolean | undefined
 }
 
 export type ListenPreviewOptions = {
@@ -124,4 +147,82 @@ export function useDraftPreview<T = unknown>(
   }, [options?.allowedOrigin, options?.token])
 
   return { data, isPreview }
+}
+
+/**
+ * Returns the `scheme://host[:port]` origin of an http(s) URL, or null for anything else
+ * (wildcards, opaque origins, `data:`, `javascript:`, unparsable input).
+ */
+export function resolvePreviewOrigin(url: string, base?: string): string | null {
+  if (!url || url === '*') return null
+  try {
+    const parsed = base ? new URL(url, base) : new URL(url)
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null
+    return parsed.origin
+  } catch {
+    return null
+  }
+}
+
+function requireExactOrigin(value: string | undefined, name: string): string {
+  const origin = typeof value === 'string' ? resolvePreviewOrigin(value) : null
+  if (!origin || origin !== value) {
+    throw new TypeError(`${name} must be an exact http(s) origin such as https://example.com`)
+  }
+  return origin
+}
+
+/**
+ * DL-08: sends a preview token from the admin to the preview frame. The token never goes in
+ * the frame URL; it is posted only to `targetOrigin`, so a frame that has navigated elsewhere
+ * does not receive it. Returns false when there is nothing to send.
+ */
+export function sendPreviewToken(
+  targetWindow: Window | null | undefined,
+  token: string,
+  options: SendPreviewTokenOptions
+): boolean {
+  const targetOrigin = requireExactOrigin(options?.targetOrigin, 'targetOrigin')
+  if (!targetWindow || typeof targetWindow.postMessage !== 'function') return false
+  if (typeof token !== 'string' || token.length === 0) return false
+  const message: PreviewTokenMessage = { type: EDGECMS_PREVIEW_TOKEN_TYPE, token }
+  targetWindow.postMessage(message, targetOrigin)
+  return true
+}
+
+/**
+ * DL-08: receives the preview token in the preview frame. Only messages from `allowedOrigin`
+ * and from the expected source window (default `window.parent`) are accepted. Send the token
+ * to EdgeCMS as the `x-edgecms-preview-token` header (the `previewToken` client option); do
+ * not put it in a URL, cookie or storage. Returns an unsubscribe function.
+ */
+export function listenForPreviewToken(
+  callback: (token: string) => void,
+  options: ListenPreviewTokenOptions
+): () => void {
+  const allowedOrigin = requireExactOrigin(options?.allowedOrigin, 'allowedOrigin')
+  if (typeof window === 'undefined') return () => {}
+
+  const expectedSource = options.source === undefined ? window.parent : options.source
+
+  const handleMessage = (event: MessageEvent) => {
+    if (event.origin !== allowedOrigin) return
+    if (!expectedSource || event.source !== expectedSource) return
+    const data = event.data as Partial<PreviewTokenMessage> | null | undefined
+    if (!data || typeof data !== 'object' || data.type !== EDGECMS_PREVIEW_TOKEN_TYPE) return
+    const token = data.token
+    if (typeof token !== 'string' || token.length === 0) return
+    if (token.length > MAX_PREVIEW_TOKEN_LENGTH) return
+    callback(token)
+  }
+
+  window.addEventListener('message', handleMessage)
+
+  if (options.notifyReady !== false && expectedSource) {
+    sendPreviewReadyNotification(expectedSource, allowedOrigin)
+  }
+
+  return () => {
+    window.removeEventListener('message', handleMessage)
+  }
 }

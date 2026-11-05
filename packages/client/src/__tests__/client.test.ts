@@ -80,7 +80,9 @@ describe('@edgecms/client HTTP Query Builder', () => {
     expect(mockFetch).toHaveBeenCalledTimes(1)
     const [calledUrl, calledInit] = mockFetch.mock.calls[0] as [string, RequestInit]
     expect(calledUrl).toContain('/api/tenants/acme/public/posts/my-post?')
-    expect(calledUrl).toContain('previewToken=test.preview.token')
+    // DL-08: the token travels in a header only, never in the URL.
+    expect(calledUrl).not.toContain('previewToken')
+    expect(calledUrl).not.toContain('test.preview.token')
     expect(calledUrl).toContain('depth=2')
     expect(calledInit.headers).toMatchObject({
       'x-edgecms-preview-token': 'test.preview.token',
@@ -270,7 +272,7 @@ describe('@edgecms/client Filter Query Serialization', () => {
     expect(params.has('filter[data.nullField][eq]')).toBe(false)
   })
 
-  it('serializes standard pagination, sort, depth, locale, previewToken', () => {
+  it('serializes standard pagination, sort, depth, locale; never the previewToken', () => {
     const params = buildQueryParams(
       {
         page: 3,
@@ -288,7 +290,8 @@ describe('@edgecms/client Filter Query Serialization', () => {
     expect(params.get('locale')).toBe('zh')
     expect(params.get('sort')).toBe('-createdAt,slug')
     expect(params.get('depth')).toBe('2')
-    expect(params.get('previewToken')).toBe('tok_abc123')
+    expect(params.has('previewToken')).toBe(false)
+    expect(params.toString()).not.toContain('tok_abc123')
   })
 })
 

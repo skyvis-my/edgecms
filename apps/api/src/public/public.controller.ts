@@ -54,10 +54,14 @@ function setPublicMissCache(headers: CacheHeaders) {
 
 import { generateWeakETag } from './etag'
 
-/** DL-08: preview tokens are per user; no browser, CDN or edge cache keeps them. */
+/**
+ * DL-08: preview tokens are per user; no browser, CDN or edge cache keeps them, and
+ * `Referrer-Policy: no-referrer` keeps any URL of a token response out of Referer headers.
+ */
 function setPreviewTokenNoStore(headers: CacheHeaders) {
   headers['Cache-Control'] = 'private, no-store'
   headers['CDN-Cache-Control'] = 'no-store'
+  headers['Referrer-Policy'] = 'no-referrer'
 }
 export { generateWeakETag }
 

@@ -50,6 +50,7 @@ export type CollectionListOptions = {
   sort?: string | undefined
   filter?: CollectionFilter | undefined
   depth?: number | undefined
+  /** Sent as the `x-edgecms-preview-token` header only; never added to the URL (DL-08). */
   previewToken?: string | undefined
   fetchOptions?: FetchOptions | undefined
 }
@@ -58,12 +59,14 @@ export type CollectionGetOptions = {
   locale?: string | undefined
   populate?: string | undefined
   depth?: number | undefined
+  /** Sent as the `x-edgecms-preview-token` header only; never added to the URL (DL-08). */
   previewToken?: string | undefined
   fetchOptions?: FetchOptions | undefined
 }
 
 export type CollectionSingletonOptions = {
   locale?: string | undefined
+  /** Sent as the `x-edgecms-preview-token` header only; never added to the URL (DL-08). */
   previewToken?: string | undefined
   fetchOptions?: FetchOptions | undefined
 }
