@@ -469,6 +469,9 @@ function installBenchmarkModuleMocks(): void {
 
   mock.module('@/entries/entries.service', () => ({
     entriesService: mockEntriesService,
+    // OP-06 collection import imports these validators; the bench does not run imports.
+    validateEntryFieldData: () => ({ valid: true }),
+    validateLocalizedFields: () => ({ valid: true }),
   }))
 
   mock.module('@/collections/collections.service', () => ({

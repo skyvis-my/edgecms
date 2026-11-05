@@ -172,4 +172,34 @@ See the [Operations guide](../operations-guide.md) for D1 Time Travel and the [D
 
 ## Data portability
 
-You can export collection schemas (Developer Export) and personal data (above), and preview an import without changing anything. There is no import that applies schema changes or deletes data. Adding one needs schema, migration, tenant isolation and rollback tests.
+You can export collection schemas as TypeScript (Developer Export in the admin), export personal data (above) and move a collection's entries between tenants with collection export and import.
+
+### Collection export and import
+
+Three tenant admin routes (PRD `OP-06`). They are content routes: owners, admins and editors can use them, members can export but not import, viewers cannot use them, and custom roles need the matching `entry:<collection>` grants.
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/tenants/:tenant/api/admin/collections/:slug/export` | Returns one JSON document (`format: "edgecms.collection-export"`, `formatVersion: 1`): the schema with a `schemaHash`, every entry with its status and data (locale values stay inside `data`), and relations keyed by collection slug and entry slug. Needs `read` on the collection. |
+| `POST .../collections/:slug/import/preview` | Body `{ "document": <export>, "strategy": "skip" \| "update" }`. Writes no content. Returns a per-entry plan (`create`, `update`, `skip`, `conflict`, `invalid` with a reason), a per-relation plan, warnings, the command engine dry-run diff and a preview receipt. |
+| `POST .../collections/:slug/import/execute` | Body `{ "document", "strategy", "previewReceipt" }`. Runs exactly the previewed plan. |
+
+How an import decides what to do:
+
+- Entries are matched by slug. A new slug is created. An existing entry with the same values is skipped. An existing entry with different values is a `conflict` with `strategy: "skip"` (the default) and an `update` with `strategy: "update"`.
+- Updates are non-destructive: fields the file does not mention keep their values. The update carries the version seen at preview, so a concurrent edit fails it.
+- Every entry is validated against the target collection (unknown fields, field types, locales). Invalid entries are reported and never imported.
+- Published entries are created as drafts and then published. Archived entries stay archived. Scheduled entries become drafts; schedules are not imported. The status of an existing entry is not changed.
+- A relation is linked only when its source is imported or already exists and its target exists in this tenant. A missing target or a taken one-to-one field is a `conflict`. Existing links are skipped.
+- A schema that differs from the exported one gives a `SCHEMA_HASH_MISMATCH` warning, not an error.
+
+The preview receipt is the AI-05 receipt: bound to the user, the tenant and a hash of the whole plan, valid for 15 minutes and usable once. Execute rebuilds the plan from the file and the current content. If anything changed the plan (the file, the strategy or the content), execute returns `409 IMPORT_PLAN_CHANGED` and the receipt is not spent; preview again. Execute without a receipt returns `400 RECEIPT_REQUIRED`.
+
+Limits:
+
+- Export stops at 1,000 entries (`413 EXPORT_TOO_LARGE`). An import file holds at most 500 entries and 2,000 relations.
+- Execute runs two command transactions: entry creates and updates, then relation links and publishes. D1 has no rollback across them. If a command fails, the import stops, completed commands are kept and the route returns `207` with an outcome per entry and relation.
+- If a slug is taken by the time execute runs, the entry gets a new slug and the response warns about it.
+- Relations to collections the caller cannot read are left out of an export (`omitted.relations` counts them) and are not linked on import.
+- Media files, versions, schedules, the schema itself and other collections are not exported. Import never changes a schema or deletes entries.
+- There is no admin screen for this yet; call the routes directly.

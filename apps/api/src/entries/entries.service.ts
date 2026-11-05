@@ -59,7 +59,7 @@ function deriveSlugFromData(data: Record<string, unknown>, defaultLocale?: strin
  * Validate that localized field data matches the collection's field definitions.
  * Ensures localizable fields store values as locale objects with valid locale keys.
  */
-function validateLocalizedFields(
+export function validateLocalizedFields(
   data: Record<string, unknown>,
   fields: Array<{ name: string; localizable: boolean }>,
   supportedLocales: string[]
@@ -228,7 +228,7 @@ function validateFieldValueType(
   }
 }
 
-function validateEntryFieldData(
+export function validateEntryFieldData(
   data: Record<string, unknown>,
   fields: FieldDefinitionValidation[],
   requireRequiredFields: boolean
