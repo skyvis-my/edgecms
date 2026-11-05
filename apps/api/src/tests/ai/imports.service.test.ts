@@ -14,6 +14,10 @@ const mockEntriesRepo = {
   findById: vi.fn(),
 }
 
+const mockAssetsRepo = {
+  findById: vi.fn(),
+}
+
 const mockAiImportsRepo = {
   createBatch: vi.fn(),
   findBatch: vi.fn(),
@@ -43,6 +47,10 @@ vi.mock('@/collections/collections.repository', () => ({
 
 vi.mock('@/entries/entries.repository', () => ({
   entriesRepository: mockEntriesRepo,
+}))
+
+vi.mock('@/assets/assets.repository', () => ({
+  assetsRepository: mockAssetsRepo,
 }))
 
 vi.mock('../../ai/imports.repository', () => ({
@@ -220,6 +228,7 @@ describe('aiImportService', () => {
 
     it('creates asset source', async () => {
       mockAiImportsRepo.findBatch.mockResolvedValue({ id: 'b1' } as AiImportBatch)
+      mockAssetsRepo.findById.mockResolvedValue({ id: 'asset-123' })
       mockAiImportsRepo.createSource.mockImplementation(async (_db, src) => src)
 
       const src = await aiImportService.addSource(
@@ -231,6 +240,7 @@ describe('aiImportService', () => {
       )
       expect(src.kind).toBe('asset')
       expect(src.existingAssetId).toBe('asset-123')
+      expect(mockAssetsRepo.findById).toHaveBeenCalledWith(mockDb, 'asset-123', 'tenant-1')
     })
 
     it('creates file source and checks size/type limits', async () => {

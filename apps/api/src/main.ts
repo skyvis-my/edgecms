@@ -3,6 +3,7 @@ import { ensureWorkerBootstrapped } from './runtime/bootstrap'
 import { dispatchWebhookQueue } from '@/webhooks/queue-consumer'
 import { runScheduledOutboxSweep } from '@/webhooks/outbox-sweeper'
 import { runScheduledSideEffectSweep } from '@/commands/side-effect-sweep'
+import { runScheduledAiImportCleanup } from '@/ai/import-retention-sweep'
 import type { WebhookQueueMessage } from '@/webhooks/queue-producer'
 import { getRequestUrl } from '@/shared/utils/request-url'
 import type { Env } from './env'
@@ -34,6 +35,8 @@ worker.scheduled = async (_controller: ScheduledController, env: Env, _ctx: Exec
   await runScheduledOutboxSweep(env)
   // CMD-06: retry post-commit side-effect intents even when no command arrives.
   await runScheduledSideEffectSweep(env)
+  // AI-08: delete expired AI import review records and their R2 source files.
+  await runScheduledAiImportCleanup(env)
 }
 Object.defineProperty(worker, 'fetch', {
   value: async (request: Request, ...args: [any?, any?]) => {
