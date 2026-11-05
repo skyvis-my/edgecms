@@ -38,6 +38,13 @@ export type SyncPushResult = {
 
 type ExecuteCommandFn = (ctx: CommandContext, envelope: CommandEnvelope) => Promise<CommandResult>
 
+/** Entry data at an exact version (the entry_versions snapshot), or undefined if pruned. */
+type FindVersionDataFn = (
+  db: Database,
+  entryId: string,
+  version: number
+) => Promise<Record<string, unknown> | undefined>
+
 type FindEntryByIdFn = (
   db: Database,
   id: string,
@@ -140,11 +147,15 @@ export async function executeSyncPushCommands(params: {
   syncChannel: string
   executeCommandFn: ExecuteCommandFn
   findEntryByIdFn?: FindEntryByIdFn
+  findVersionDataFn?: FindVersionDataFn
   /** PL-03: the caller's per-collection content access, checked per command. */
   contentAccess?: ContentAccess
 }): Promise<SyncPushResult[]> {
   const { commands, userId, db, kv, syncChannel, executeCommandFn } = params
   const findEntryByIdFn = params.findEntryByIdFn ?? entriesRepository.findById
+  const findVersionDataFn = params.findVersionDataFn ?? findVersionData
+  // OF-04: commands run in the tenant they were pushed to, like the commands route.
+  const tenantScope = syncChannel && syncChannel !== 'global' ? syncChannel : undefined
 
   const results: SyncPushResult[] = []
 
@@ -166,6 +177,7 @@ export async function executeSyncPushCommands(params: {
           actor: enrichedCommand.actor,
           kv,
           syncChannel,
+          ...(tenantScope && { tenantScope }),
           ...(params.contentAccess && { contentAccess: params.contentAccess }),
         },
         enrichedCommand
@@ -179,9 +191,17 @@ export async function executeSyncPushCommands(params: {
 
         // OF-04/P2: read the newer server state from the same tenant the command ran in;
         // an unscoped lookup reads 'global' and returns nothing for tenant entries.
-        const tenantScope = syncChannel && syncChannel !== 'global' ? syncChannel : undefined
         const latestEntry = entryId ? await findEntryByIdFn(db, entryId, tenantScope) : undefined
-        const conflictingFields = getConflictingFields(enrichedCommand.payload.data)
+        // The base is read only after the tenant-scoped lookup found the entry.
+        const baseData =
+          latestEntry && entryId && typeof enrichedCommand.optimisticVersion === 'number'
+            ? await findVersionDataFn(db, entryId, enrichedCommand.optimisticVersion)
+            : undefined
+        const conflictingFields = getConflictingFields(
+          enrichedCommand.payload.data,
+          latestEntry?.data,
+          baseData
+        )
 
         results.push({
           index,
@@ -227,9 +247,67 @@ export async function executeSyncPushCommands(params: {
   return results
 }
 
-function getConflictingFields(payloadData: unknown): string[] {
-  if (!payloadData || typeof payloadData !== 'object' || Array.isArray(payloadData)) {
-    return []
+async function findVersionData(
+  db: Database,
+  entryId: string,
+  version: number
+): Promise<Record<string, unknown> | undefined> {
+  // Best effort: without the snapshot the conflict falls back to a two-way field list.
+  try {
+    const row = await entriesRepository.findVersionByNumber(db, entryId, version)
+    return asRecord(row?.data)
+  } catch {
+    return undefined
   }
-  return Object.keys(payloadData as Record<string, unknown>)
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      return undefined
+    }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return value as Record<string, unknown>
+}
+
+/** Structural equality for JSON values; object key order is ignored. */
+function jsonEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true
+  if (Array.isArray(a)) {
+    return Array.isArray(b) && a.length === b.length && a.every((v, i) => jsonEqual(v, b[i]))
+  }
+  if (a && b && typeof a === 'object' && typeof b === 'object' && !Array.isArray(b)) {
+    const ar = a as Record<string, unknown>
+    const br = b as Record<string, unknown>
+    const ak = Object.keys(ar).filter((k) => ar[k] !== undefined)
+    const bk = Object.keys(br).filter((k) => br[k] !== undefined)
+    return ak.length === bk.length && ak.every((k) => jsonEqual(ar[k], br[k]))
+  }
+  return false
+}
+
+/**
+ * OF-04: the sent fields that truly conflict.
+ * - With the base snapshot: fields changed on both sides (relative to the base) to different values.
+ * - Without it: sent fields that differ from the server.
+ * - Without server data: every sent field.
+ */
+export function getConflictingFields(
+  payloadData: unknown,
+  serverData?: unknown,
+  baseData?: unknown
+): string[] {
+  const local = asRecord(payloadData)
+  if (!local) return []
+  const server = asRecord(serverData)
+  if (!server) return Object.keys(local)
+  const base = asRecord(baseData)
+  return Object.keys(local).filter((field) => {
+    if (jsonEqual(local[field], server[field])) return false
+    if (!base) return true
+    return !jsonEqual(local[field], base[field]) && !jsonEqual(server[field], base[field])
+  })
 }

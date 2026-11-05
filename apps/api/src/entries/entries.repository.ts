@@ -389,6 +389,20 @@ export const entriesRepository = {
     return rows.map((r) => r.slug)
   },
 
+  /** Find the snapshot of an entry at an exact version number (OF-04 conflict base). */
+  async findVersionByNumber(
+    db: Database,
+    entryId: string,
+    version: number
+  ): Promise<EntryVersionRow | undefined> {
+    const rows = await db
+      .select()
+      .from(entryVersions)
+      .where(and(eq(entryVersions.entryId, entryId), eq(entryVersions.version, version)))
+      .limit(1)
+    return rows[0]
+  },
+
   /** Find a specific version by its version ID. */
   async findVersionById(db: Database, versionId: string): Promise<EntryVersionRow | undefined> {
     const rows = await db
