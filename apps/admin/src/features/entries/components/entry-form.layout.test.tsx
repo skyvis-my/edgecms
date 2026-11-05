@@ -649,3 +649,97 @@ describe('EntryForm layout', () => {
     })
   })
 })
+
+describe('EntryForm status header (OF-05)', () => {
+  const statusEntry = {
+    id: 'entry-of05',
+    collectionId: 'collection-1',
+    slug: 'of05-entry',
+    status: 'scheduled' as const,
+    publishAt: '2026-12-01T09:00:00.000Z',
+    version: 3,
+    data: { title: 'Scheduled title' },
+    createdAt: '2026-01-10T00:00:00.000Z',
+    updatedAt: '2026-01-11T00:00:00.000Z',
+  }
+  const statusCollection = {
+    id: 'collection-1',
+    name: 'Articles',
+    slug: 'articles',
+    singleton: false,
+    defaultLocale: 'en',
+    supportedLocales: ['en'],
+    fields: [{ name: 'title', type: 'text', required: true, localizable: false }],
+  }
+
+  afterEach(async () => {
+    cleanup()
+    vi.clearAllMocks()
+    const { db } = await import('@/features/sync/local-db')
+    await db.commandQueue.clear()
+  })
+
+  beforeEach(() => {
+    mockUpdateEntryMutateAsync.mockResolvedValue({ ...statusEntry, version: 4 })
+  })
+
+  it('shows lifecycle, scheduled time and saved/unsaved state, and clears unsaved after save', async () => {
+    const view = render(<EntryForm mode='edit' entry={statusEntry} collection={statusCollection} />, {
+      wrapper: createWrapper(),
+    })
+
+    const indicator = view.getByTestId('entry-status-indicator')
+    expect(indicator.getAttribute('data-lifecycle')).toBe('scheduled')
+    expect(view.getByTestId('entry-status-schedule').querySelector('time')?.getAttribute('datetime')).toBe(
+      statusEntry.publishAt
+    )
+    expect(view.getByTestId('entry-status-sync').textContent).toBe('Saved')
+
+    fireEvent.change(view.getByTestId('field-title'), { target: { value: 'Edited title' } })
+    await waitFor(() => expect(view.getByTestId('entry-status-sync').textContent).toBe('Unsaved changes'))
+
+    fireEvent.click(view.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(mockUpdateEntryMutateAsync).toHaveBeenCalled())
+    await waitFor(() => expect(view.getByTestId('entry-status-sync').textContent).toBe('Saved'))
+  })
+
+  it('shows a queued marker when the offline command queue holds unsynced commands for this entry', async () => {
+    const { db } = await import('@/features/sync/local-db')
+    await db.commandQueue.add({
+      envelope: { type: 'updateEntry', payload: { entryId: statusEntry.id, data: {} } },
+      tenantSlug: null,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    })
+
+    const view = render(<EntryForm mode='edit' entry={statusEntry} collection={statusCollection} />, {
+      wrapper: createWrapper(),
+    })
+
+    await waitFor(() => expect(view.getByTestId('entry-status-sync').textContent).toBe('Queued offline'))
+    expect(
+      view.getByRole('group', { name: /1 change queued offline, not yet synced/ })
+    ).toBeTruthy()
+  })
+
+  it('keeps save/publish/schedule as keyboard-reachable buttons and exposes the schedule panel state', async () => {
+    const view = render(<EntryForm mode='edit' entry={statusEntry} collection={statusCollection} />, {
+      wrapper: createWrapper(),
+    })
+
+    const actions = view.getByRole('group', { name: 'Entry actions' })
+    for (const name of ['Schedule', 'Publish', 'Save']) {
+      const button = view.getByRole('button', { name })
+      expect(actions.contains(button)).toBe(true)
+      expect(button.getAttribute('tabindex')).not.toBe('-1')
+      expect((button as HTMLButtonElement).disabled).toBe(false)
+    }
+
+    const toggle = view.getByTestId('schedule-toggle')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(toggle.getAttribute('aria-controls')).toBe('entry-scheduling-panel')
+    fireEvent.click(toggle)
+    await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('true'))
+    expect(document.getElementById('entry-scheduling-panel')).toBeTruthy()
+  })
+})

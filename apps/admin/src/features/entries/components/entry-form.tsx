@@ -27,6 +27,8 @@ import {
 } from 'lucide-react'
 import { EntrySchedulingPanel } from './entry-scheduling-panel'
 import { EntryPreviewPanel } from './entry-preview-panel'
+import { EntryStatusIndicator } from './entry-status-indicator'
+import { useEntryQueueState } from '../lib/use-entry-queue-state'
 import type { Entry, EntryStatus } from '../api/entries-api'
 import {
   useCancelSchedule,
@@ -88,6 +90,8 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
     formatToDatetimeLocal(entry?.unpublishAt)
   )
   const [showScheduleControls, setShowScheduleControls] = useState(false)
+  const queueByEntry = useEntryQueueState()
+  const entryQueue = entry ? queueByEntry.get(entry.id) : undefined
 
   useEffect(() => {
     if (entry?.publishAt) {
@@ -378,7 +382,10 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
         if (updated?.version) {
           currentVersionRef.current = updated.version
         }
-        toast.success('Entry updated successfully')
+        // The edit is either saved or in the offline queue; either way it is no longer unsaved (OF-05).
+        form.reset(formData)
+        // A queued command has no server data; useExecuteCommand already announced the queueing.
+        if (updated) toast.success('Entry updated successfully')
       }
       if (onSaved) {
         onSaved(formData.slug)
@@ -567,25 +574,47 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className='space-y-6' data-mode={mode}>
-      <div className='flex items-center gap-3'>
-        <p className='text-sm font-medium'>{watch('slug') || entry?.slug || 'New entry'}</p>
-        {mode === 'edit' && entry && <p className='text-xs text-muted-foreground'>v{entry.version}</p>}
+      <div
+        data-testid='entry-form-header'
+        className='flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3'
+      >
+        <div className='flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1'>
+          <p className='max-w-full truncate text-sm font-medium'>
+            {watch('slug') || entry?.slug || 'New entry'}
+          </p>
+          {mode === 'edit' && entry && <p className='text-xs text-muted-foreground'>v{entry.version}</p>}
 
-        {/* Auto-save indicator (C-06) */}
-        {isAutosaving && (
-          <span data-testid='autosave-status' className='text-xs text-muted-foreground animate-pulse'>
-            Autosaving draft...
-          </span>
-        )}
-        {!isAutosaving && lastAutosavedAt && (
-          <span data-testid='autosave-status' className='text-xs text-muted-foreground'>
-            Draft autosaved {lastAutosavedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-          </span>
-        )}
+          <EntryStatusIndicator
+            variant='header'
+            status={entry?.status ?? 'draft'}
+            publishAt={entry?.publishAt}
+            unpublishAt={entry?.unpublishAt}
+            queue={entryQueue}
+            hasUnsavedChanges={mode === 'create' || isDirty}
+            isSaving={isSubmitting || isAutosaving}
+            showSaved={mode === 'edit'}
+          />
+
+          {/* Auto-save indicator (C-06) */}
+          {isAutosaving && (
+            <span data-testid='autosave-status' className='text-xs text-muted-foreground animate-pulse'>
+              Autosaving draft...
+            </span>
+          )}
+          {!isAutosaving && lastAutosavedAt && (
+            <span data-testid='autosave-status' className='text-xs text-muted-foreground'>
+              Draft autosaved {lastAutosavedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
+        </div>
 
         {/* Publishing & Scheduling controls for edit mode (C-07) */}
         {mode === 'edit' && entry ? (
-          <div className='ml-auto flex items-center gap-2'>
+          <div
+            role='group'
+            aria-label='Entry actions'
+            className='flex flex-wrap items-center gap-2 sm:ml-auto'
+          >
             <Button
               type='button'
               variant={showLivePreview ? 'secondary' : 'outline'}
@@ -603,6 +632,9 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
               size='sm'
               className='h-8 px-2.5 text-xs'
               onClick={() => setShowScheduleControls((prev) => !prev)}
+              aria-expanded={showScheduleControls}
+              aria-controls='entry-scheduling-panel'
+              data-testid='schedule-toggle'
             >
               <Calendar className='mr-1.5 size-3.5' />
               Schedule
@@ -635,7 +667,11 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
             </Button>
           </div>
         ) : (
-          <div className='ml-auto flex items-center gap-2'>
+          <div
+            role='group'
+            aria-label='Entry actions'
+            className='flex flex-wrap items-center gap-2 sm:ml-auto'
+          >
             <Button
               type='button'
               variant={showLivePreview ? 'secondary' : 'outline'}
@@ -656,19 +692,21 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
 
       {/* Scheduled Publishing Panel (C-07) */}
       {showScheduleControls && mode === 'edit' && entry && (
-        <EntrySchedulingPanel
-          entry={entry}
-          scheduledPublishAt={scheduledPublishAt}
-          setScheduledPublishAt={setScheduledPublishAt}
-          scheduledUnpublishAt={scheduledUnpublishAt}
-          setScheduledUnpublishAt={setScheduledUnpublishAt}
-          onSchedulePublish={handleSchedulePublish}
-          onScheduleUnpublish={handleScheduleUnpublish}
-          onCancelSchedule={handleCancelSchedule}
-          isPublishPending={schedulePublishMutation.isPending}
-          isUnpublishPending={scheduleUnpublishMutation.isPending}
-          isCancelPending={cancelScheduleMutation.isPending}
-        />
+        <div id='entry-scheduling-panel'>
+          <EntrySchedulingPanel
+            entry={entry}
+            scheduledPublishAt={scheduledPublishAt}
+            setScheduledPublishAt={setScheduledPublishAt}
+            scheduledUnpublishAt={scheduledUnpublishAt}
+            setScheduledUnpublishAt={setScheduledUnpublishAt}
+            onSchedulePublish={handleSchedulePublish}
+            onScheduleUnpublish={handleScheduleUnpublish}
+            onCancelSchedule={handleCancelSchedule}
+            isPublishPending={schedulePublishMutation.isPending}
+            isUnpublishPending={scheduleUnpublishMutation.isPending}
+            isCancelPending={cancelScheduleMutation.isPending}
+          />
+        </div>
       )}
       {hasConflict && (
         <div
