@@ -39,6 +39,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Changing a related entry purges cached parents that populate it (CM-04).
 - The admin always sends a validated blurhash on image upload (MD-03).
 
+### Security (wave 3)
+- Preview tokens can only be minted on tenant routes by a signed-in user with read access to the content; the hard-coded fallback secret is gone (`PREVIEW_SECRET` or `BETTER_AUTH_SECRET` required), lifetime is capped at 1 day, and preview reads skip the edge cache (DL-08). **Upgrade step:** set `PREVIEW_SECRET`.
+- AI import apply requires a single-use preview receipt; the WXR parser enforces size limits, drops unsafe URLs and imports posts as drafts by default (AI-08).
+- Member role changes are guarded against privilege escalation and demoting the last owner (PL-03).
+
+### Added (wave 3)
+- `PUT /api/tenants/:slug/api/admin/users/:userId/role` assigns built-in or custom roles; admin Users dialog lists custom roles (PL-03).
+- Plugin manifests declare `edgecms` range, `dependencies` and `bindings`, checked at composition (EX-02).
+- One-minute cron (`scheduled()`) sweeps the webhook outbox and side-effect intents; webhook dead-letter queue consumer; bulk replay of dead/failed deliveries (DL-09, CMD-06). **Upgrade step:** create the `edgecms-webhook-dlq*` queues before deploying.
+- Durable `side_effect_intents` for cache purge, revalidation, RAG and FTS sync, migration `0040` (CMD-06).
+- Admin Export/Import on the collection entries page (OP-06).
+
+### Fixed (wave 3)
+- Single-command dry runs no longer reserve or replay idempotency keys (CMD-03).
+- Webhook outbox rows are marked sent/failed on D1 (a lost `this` previously swallowed the update) (DL-09).
+
 ## [0.2.0] - 2026-10-22
 
 ### Security
