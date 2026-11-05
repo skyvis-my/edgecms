@@ -49,8 +49,31 @@ export type StageWordPressResult = {
   }
 }
 
+/** Largest WXR export accepted, in UTF-16 code units (about 10 MB of ASCII). */
+export const MAX_WXR_BYTES = 10_000_000
+/** Most `<item>` elements accepted from one export. */
+export const MAX_WXR_ITEMS = 2_000
+
 /**
- * Decodes standard HTML and XML entities.
+ * AI-08: link and image targets from an untrusted export. Keeps http(s),
+ * mailto and relative URLs; drops javascript:, data:, vbscript: and any other
+ * scheme. Control characters and whitespace are removed before the scheme
+ * check, as browsers do.
+ */
+export function safeImportUrl(raw: string): string | undefined {
+  const url = raw.trim()
+  if (!url) return undefined
+  // eslint-disable-next-line no-control-regex
+  const probe = url.replace(/[\u0000-\u0020\u007f]+/g, '').toLowerCase()
+  const scheme = /^([a-z][a-z0-9+.-]*):/.exec(probe)?.[1]
+  if (!scheme) return url
+  return scheme === 'http' || scheme === 'https' || scheme === 'mailto' ? url : undefined
+}
+
+/**
+ * Decodes standard HTML and XML entities. Only the fixed set below is
+ * understood; DTD-declared entities are left as literal text, so an export
+ * cannot trigger entity expansion.
  */
 export function decodeXmlEntities(str: string): string {
   return str
@@ -141,10 +164,11 @@ export function parseInlineContent(html: string): TipTapNode[] {
         }
       } else if (tagName === 'a') {
         const hrefMatch = /href=["']([^"']*)["']/i.exec(fullTag)
-        if (hrefMatch?.[1]) {
+        const href = hrefMatch?.[1] ? safeImportUrl(decodeXmlEntities(hrefMatch[1])) : undefined
+        if (href) {
           activeMarks.push({
             type: 'link',
-            attrs: { href: decodeXmlEntities(hrefMatch[1]) },
+            attrs: { href },
           })
         }
       }
@@ -300,7 +324,7 @@ function parseGutenbergBlock(
       const imgMatch = /<img(?:\s+[^>]*)src=["']([^"']*)["'](?:\s+[^>]*)alt=["']([^"']*)["']?/i.exec(
         trimmedHtml
       ) || /<img(?:\s+[^>]*)src=["']([^"']*)["']/i.exec(trimmedHtml)
-      const src = imgMatch?.[1] ? decodeXmlEntities(imgMatch[1]) : String(attrs.url || '')
+      const src = safeImportUrl(imgMatch?.[1] ? decodeXmlEntities(imgMatch[1]) : String(attrs.url || ''))
       const alt = imgMatch?.[2] ? decodeXmlEntities(imgMatch[2]) : String(attrs.alt || '')
       if (!src) return null
       return {
@@ -384,11 +408,12 @@ function parseClassicHtml(html: string): TipTapNode[] {
       const full = match[0]
       const srcMatch = /src=["']([^"']*)["']/i.exec(full)
       const altMatch = /alt=["']([^"']*)["']/i.exec(full)
-      if (srcMatch?.[1]) {
+      const src = srcMatch?.[1] ? safeImportUrl(decodeXmlEntities(srcMatch[1])) : undefined
+      if (src) {
         nodes.push({
           type: 'image',
           attrs: {
-            src: decodeXmlEntities(srcMatch[1]),
+            src,
             alt: altMatch?.[1] ? decodeXmlEntities(altMatch[1]) : '',
           },
         })
@@ -502,12 +527,18 @@ function extractCategoriesAndTags(itemXml: string): { categories: string[]; tags
  */
 export function parseWordPressWxr(wxrXml: string): WordPressPostItem[] {
   if (!wxrXml || !wxrXml.trim()) return []
+  if (wxrXml.length > MAX_WXR_BYTES) {
+    throw new Error(`WordPress export is too large (limit ${MAX_WXR_BYTES} characters)`)
+  }
 
   const items: WordPressPostItem[] = []
   const itemRegex = /<item>([\s\S]*?)<\/item>/gi
 
   let match: RegExpExecArray | null
   while ((match = itemRegex.exec(wxrXml)) !== null) {
+    if (items.length >= MAX_WXR_ITEMS) {
+      throw new Error(`WordPress export has too many items (limit ${MAX_WXR_ITEMS})`)
+    }
     const itemXml = match[1] ?? ''
 
     const title = extractXmlTagContent(itemXml, 'title')
@@ -565,8 +596,9 @@ export function stageWordPressImportCommands(
       continue
     }
 
-    const entryStatus: 'draft' | 'published' =
-      options.defaultStatus ?? (item.status === 'publish' ? 'published' : 'draft')
+    // AI-08: imported posts land as drafts for review; publishing on import
+    // must be asked for explicitly.
+    const entryStatus: 'draft' | 'published' = options.defaultStatus ?? 'draft'
 
     const envelope: CommandEnvelope = {
       type: 'createEntry',

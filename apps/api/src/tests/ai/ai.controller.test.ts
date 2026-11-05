@@ -510,6 +510,27 @@ describe('aiController', () => {
         )
         expect(resApplyFail.status).toBe(400)
       })
+
+      it('passes the preview receipt to apply and maps receipt rejections (AI-08)', async () => {
+        const { PreviewReceiptError } = await import('../../ai/preview-receipt.service')
+        mockAiImportService.applySuggestionSet.mockRejectedValueOnce(
+          new PreviewReceiptError('RECEIPT_ALREADY_USED', 'used')
+        )
+        const res = await app.handle(
+          new Request('http://localhost/api/admin/ai/suggestion-sets/set1/apply', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ dryRunHash: 'hash123', previewReceipt: 'rcpt_1' }),
+          })
+        )
+        expect(res.status).toBe(409)
+        const body = (await res.json()) as { err?: { code?: string; reason?: string } }
+        expect(body.err?.code).toBe('INVALID_PREVIEW_RECEIPT')
+        expect(body.err?.reason).toBe('RECEIPT_ALREADY_USED')
+        const calls = mockAiImportService.applySuggestionSet.mock.calls
+        const call = calls[calls.length - 1]
+        expect(call?.[8]).toBe('rcpt_1')
+      })
     })
   })
 })

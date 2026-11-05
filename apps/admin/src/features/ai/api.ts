@@ -140,6 +140,9 @@ export type AiImportDryRunResponse = {
   commandResults: CommandResult[]
   validationErrors: string[]
   dryRunHash: string
+  /** AI-05 receipt that apply must send back; absent when the preview failed. */
+  previewReceipt?: string
+  expiresAt?: string
 }
 
 export function useCreateImportBatch() {
@@ -244,9 +247,11 @@ export function useApplySuggestionSet() {
       suggestionSetId: string
       batchId: string
       dryRunHash: string
+      previewReceipt: string
     }): Promise<{ status: string; commandResults: CommandResult[] }> =>
       edenPost(`/admin/ai/suggestion-sets/${request.suggestionSetId}/apply`, {
         dryRunHash: request.dryRunHash,
+        previewReceipt: request.previewReceipt,
       }),
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['ai-import-batch', variables.batchId] })
