@@ -202,4 +202,13 @@ Limits:
 - If a slug is taken by the time execute runs, the entry gets a new slug and the response warns about it.
 - Relations to collections the caller cannot read are left out of an export (`omitted.relations` counts them) and are not linked on import.
 - Media files, versions, schedules, the schema itself and other collections are not exported. Import never changes a schema or deletes entries.
-- There is no admin screen for this yet; call the routes directly.
+
+Use the admin screen (below) or call the routes directly.
+
+#### Admin screen
+
+The entries page of a collection has **Export** and **Import** buttons.
+
+- **Export** downloads the export document as `<slug>-export-<date>.json`.
+- **Import** opens a dialog in three steps. Choose an export file and what to do when an entry with the same slug has different values (keep the existing entry, or update it from the file). **Preview import** calls the preview route and shows the counts per action, warnings, and the plan for every entry with its reason and validation errors; problems are listed first. Nothing is written until you select **Confirm import**, which sends the preview receipt. The results show the outcome of every entry and any failed relation, and say when the import stopped partway (`207`). If execute returns `409 IMPORT_PLAN_CHANGED`, the dialog asks you to preview again.
+- The buttons show only to roles that can use the routes: owners, admins and editors see both, members see Export, viewers see neither. Custom roles see neither, because the admin cannot read their `entry:<collection>` grants; they can call the routes directly. The API checks every call either way.

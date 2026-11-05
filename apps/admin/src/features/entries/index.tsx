@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useCollectionByIdentifier } from '@/features/collections/api/collections-api'
+import { CollectionTransferActions } from '@/features/collections/components/collection-transfer-actions'
 import { useEntries } from './api/entries-api'
 import { EntriesDeleteDialog } from './components/entries-delete-dialog'
 import { EntriesProvider } from './components/entries-provider'
@@ -89,7 +90,12 @@ function EntriesWorkspace() {
           </div>
 
           {collection && (
-            <div className='flex items-center gap-2'>
+            <div className='flex flex-wrap items-center gap-2'>
+              <CollectionTransferActions
+                tenantSlug={tenantSlug}
+                collectionSlug={collection.slug}
+                collectionName={collection.name}
+              />
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant='outline' size='icon'>
