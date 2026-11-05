@@ -827,17 +827,27 @@ describe('executeCommand', () => {
   })
 
   describe('preview receipt consumption (C-10)', () => {
-    it('consumes preview receipt directly inside executeCommand upon mutation success', async () => {
+    /** Mock DB whose redemption insert succeeds (AI-05 claims receipts in D1). */
+    function claimableDb(): Database {
+      const values = vi.fn().mockReturnValue({
+        onConflictDoNothing: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ receiptId: 'claimed' }]),
+        }),
+      })
+      return { insert: vi.fn().mockReturnValue({ values }) } as unknown as Database
+    }
+
+    it('redeems the preview receipt before the mutation runs (AI-05)', async () => {
       const receiptModule = await import('@/ai/preview-receipt.service')
-      const markConsumedSpy = vi.spyOn(receiptModule, 'markPreviewReceiptConsumed').mockResolvedValue(true)
-      const verifyReceiptSpy = vi.spyOn(receiptModule, 'verifyPreviewReceipt').mockResolvedValue({
-        valid: true,
+      const order: string[] = []
+      const redeemSpy = vi.spyOn(receiptModule, 'redeemPreviewReceipt').mockImplementation(async () => {
+        order.push('redeem')
+        return { valid: true }
       })
 
-      mockCreateEntry.mockResolvedValue({
-        success: true,
-        data: { id: 'e1', title: 'Mutated' },
-        auditEntries: [],
+      mockCreateEntry.mockImplementation(async () => {
+        order.push('mutate')
+        return { success: true, data: { id: 'e1', title: 'Mutated' }, auditEntries: [] }
       })
 
       const result = await executeCommand(ctx, {
@@ -849,16 +859,18 @@ describe('executeCommand', () => {
       })
 
       expect(result.status).toBe('success')
-      expect(verifyReceiptSpy).toHaveBeenCalled()
-      expect(markConsumedSpy).toHaveBeenCalledWith('rcpt-valid-1', ctx.kv, undefined)
+      expect(redeemSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ receiptId: 'rcpt-valid-1', userId: 'user1', kv: ctx.kv, db: ctx.db })
+      )
+      expect(order).toEqual(['redeem', 'mutate'])
 
-      markConsumedSpy.mockRestore()
-      verifyReceiptSpy.mockRestore()
+      redeemSpy.mockRestore()
+      mockCreateEntry.mockReset()
     })
 
-    it('rejects execution when preview receipt verification fails', async () => {
+    it('rejects execution when preview receipt redemption fails', async () => {
       const receiptModule = await import('@/ai/preview-receipt.service')
-      const verifyReceiptSpy = vi.spyOn(receiptModule, 'verifyPreviewReceipt').mockResolvedValue({
+      const redeemSpy = vi.spyOn(receiptModule, 'redeemPreviewReceipt').mockResolvedValue({
         valid: false,
         error: 'RECEIPT_ALREADY_USED',
         message: 'Preview receipt already executed',
@@ -874,9 +886,41 @@ describe('executeCommand', () => {
 
       expect(result.status).toBe('failed')
       expect(result.error?.code).toBe('INVALID_PREVIEW_RECEIPT')
+      expect(result.error?.reason).toBe('RECEIPT_ALREADY_USED')
       expect(mockCreateEntry).not.toHaveBeenCalled()
 
-      verifyReceiptSpy.mockRestore()
+      redeemSpy.mockRestore()
+    })
+
+    it('fails closed when the receipt cannot be claimed durably', async () => {
+      const receiptModule = await import('@/ai/preview-receipt.service')
+      receiptModule.__resetPreviewReceiptStoreForTests()
+      const envelope: CommandEnvelope = {
+        type: 'createEntry',
+        payload: { collectionId: 'c1', data: { title: 'No ledger' } },
+        actor: { userId: 'user1', source: 'ai' },
+        dryRun: true,
+        timestamp: new Date().toISOString(),
+      }
+      const receipt = await receiptModule.createPreviewReceipt({ commands: [envelope], userId: 'user1' })
+      const { previewReceiptRedemptions } = await import('@/database/schema/preview-receipts.schema')
+      const failingDb = {
+        insert: vi.fn((table: unknown) => {
+          if (table === previewReceiptRedemptions) {
+            throw new Error('no such table: preview_receipt_redemptions')
+          }
+          return mockInsert(table)
+        }),
+      } as unknown as Database
+
+      const result = await executeCommand(
+        { ...ctx, db: failingDb },
+        { ...envelope, dryRun: false, previewReceipt: receipt.receiptId }
+      )
+
+      expect(result.status).toBe('failed')
+      expect(result.error?.reason).toBe('RECEIPT_CLAIM_FAILED')
+      expect(mockCreateEntry).not.toHaveBeenCalled()
     })
 
     it('verifies a receipt bound to the request tenant scope (MCP/AI on tenant routes)', async () => {
@@ -898,7 +942,7 @@ describe('executeCommand', () => {
       mockCreateEntry.mockResolvedValue({ success: true, data: { id: 'e1' }, auditEntries: [] })
 
       const result = await executeCommand(
-        { ...ctx, tenantScope: 'tenant-1' },
+        { ...ctx, db: claimableDb(), tenantScope: 'tenant-1' },
         { ...envelope, dryRun: false, previewReceipt: receipt.receiptId }
       )
 

@@ -21,7 +21,7 @@ import { scheduleDeferredWork } from './deferred-work'
 import { buildMessagesForEvent, type WebhookQueueMessage } from '@/webhooks/queue-producer'
 import { commandsRepository } from './commands.repository'
 import { computeDiff } from './diff.service'
-import { createPreviewReceipt, markPreviewReceiptConsumed, verifyPreviewReceipt } from '@/ai/preview-receipt.service'
+import { createPreviewReceipt, redeemPreviewReceipt } from '@/ai/preview-receipt.service'
 import {
   handleBulkUpdate,
   handleCreateEntry,
@@ -445,37 +445,29 @@ function receiptScope(ctx: CommandContext): string | null {
   return ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : null
 }
 
-async function verifyReceiptSafely(
+/**
+ * AI-05: verifies the receipt against the exact envelopes about to run and
+ * claims it for single use before any mutation. Dry runs and envelopes
+ * without a receipt pass through.
+ */
+async function redeemReceiptForExecution(
   envelope: CommandEnvelope,
   commandsToVerify: CommandEnvelope[],
   ctx: CommandContext,
   tenantScope: string | null
-): Promise<{ valid: true } | { valid: false; message?: string }> {
+): Promise<{ valid: true } | { valid: false; reason?: string; message?: string }> {
   if (!envelope.previewReceipt || envelope.dryRun) return { valid: true }
-  const verification = await verifyPreviewReceipt({
+  const verification = await redeemPreviewReceipt({
     receiptId: envelope.previewReceipt,
     userId: envelope.actor.userId,
     tenantId: tenantScope ?? undefined,
     kv: ctx.kv,
+    db: ctx.db,
     commandsToVerify,
   })
-  return verification.valid ? { valid: true } : { valid: false, message: verification.message }
-}
-
-async function consumeReceiptSafely(
-  receiptId: string | undefined,
-  kv: KVNamespace | undefined,
-  tenantScope: string | null
-): Promise<void> {
-  if (!receiptId) return
-  try {
-    await markPreviewReceiptConsumed(receiptId, kv, tenantScope ?? undefined)
-  } catch (receiptErr) {
-    logger.warn('preview_receipt_consumption_failed', {
-      receiptId,
-      error: receiptErr instanceof Error ? receiptErr.message : String(receiptErr),
-    })
-  }
+  return verification.valid
+    ? { valid: true }
+    : { valid: false, reason: verification.error, message: verification.message }
 }
 
 /**
@@ -576,8 +568,7 @@ async function handlePostExecution(
   tenantScope: string | null,
   opts?: { cacheTags?: string[]; outboxEventId?: string }
 ): Promise<void> {
-  // 1. Consume preview receipt upon mutation success
-  await consumeReceiptSafely(envelope.previewReceipt, ctx.kv, receiptScope(ctx))
+  // 1. Preview receipts are claimed before execution (redeemReceiptForExecution).
 
   // 2. Record change log entries for sync
   if (handlerResult.auditEntries && handlerResult.auditEntries.length > 0) {
@@ -808,8 +799,8 @@ async function executeSingleCommand(
     return finalize(errorResult)
   }
 
-  // Verify preview receipt if supplied for execution
-  const receiptCheck = await verifyReceiptSafely(envelope, [envelope], ctx, receiptScope(ctx))
+  // Verify and claim the preview receipt before any mutation (AI-05)
+  const receiptCheck = await redeemReceiptForExecution(envelope, [envelope], ctx, receiptScope(ctx))
   if (!receiptCheck.valid) {
     const errorResult: CommandResult = {
       commandId,
@@ -818,6 +809,7 @@ async function executeSingleCommand(
       error: {
         code: 'INVALID_PREVIEW_RECEIPT',
         message: receiptCheck.message ?? 'Preview receipt verification failed',
+        ...(receiptCheck.reason ? { reason: receiptCheck.reason } : {}),
       },
       executedAt: new Date().toISOString(),
     }
@@ -1093,8 +1085,8 @@ async function handleTransaction(
     }
   }
 
-  // Verify preview receipt if supplied for transaction
-  const receiptCheck = await verifyReceiptSafely(envelope, payload.commands, ctx, receiptScope(ctx))
+  // Verify and claim the transaction's preview receipt before any mutation (AI-05)
+  const receiptCheck = await redeemReceiptForExecution(envelope, payload.commands, ctx, receiptScope(ctx))
   if (!receiptCheck.valid) {
     const errorResult: CommandResult = {
       commandId: transactionId,
@@ -1103,6 +1095,7 @@ async function handleTransaction(
       error: {
         code: 'INVALID_PREVIEW_RECEIPT',
         message: receiptCheck.message ?? 'Preview receipt verification failed',
+        ...(receiptCheck.reason ? { reason: receiptCheck.reason } : {}),
       },
       executedAt: new Date().toISOString(),
     }
@@ -1166,11 +1159,6 @@ async function handleTransaction(
       transactionId,
       error: err instanceof Error ? err.message : String(err),
     })
-  }
-
-  // Consume transaction preview receipt upon overall success (non-dryRun)
-  if (allSucceeded && !envelope.dryRun) {
-    await consumeReceiptSafely(envelope.previewReceipt, ctx.kv, receiptScope(ctx))
   }
 
   return finalize({
