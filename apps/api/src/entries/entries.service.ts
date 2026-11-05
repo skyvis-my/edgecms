@@ -845,6 +845,10 @@ export const entriesService = {
             createdBy: userId ?? null,
             createdAt: now,
           })
+          // CM-06: rollbacks before the command path wrote a row for the
+          // entry's new version. That row already holds this snapshot, so
+          // keep it instead of failing on (entryId, version).
+          .onConflictDoNothing({ target: [entryVersions.entryId, entryVersions.version] })
           .returning()
         const [updatedRows] = (await db.batch([updateBuilder, versionBuilder])) as unknown as [
           EntryRow[],
@@ -936,14 +940,20 @@ export const entriesService = {
     }
 
     // Create version snapshot of previous state only after successful update.
-    await entriesRepository.createVersion(db, {
-      id: crypto.randomUUID(),
-      entryId: id,
-      version: existing.version,
-      data: existing.data,
-      createdBy: userId ?? null,
-      createdAt: now,
-    })
+    try {
+      await entriesRepository.createVersion(db, {
+        id: crypto.randomUUID(),
+        entryId: id,
+        version: existing.version,
+        data: existing.data,
+        createdBy: userId ?? null,
+        createdAt: now,
+      })
+    } catch (err) {
+      // CM-06: a row for this version written by an older rollback already
+      // holds this snapshot (see the batch path above).
+      if (!(err instanceof Error && /unique/i.test(err.message))) throw err
+    }
 
     scheduleDeferredWork(
       undefined,
