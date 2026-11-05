@@ -39,6 +39,8 @@ type Entry = {
   status: 'draft' | 'scheduled' | 'published' | 'archived'
   data: Record<string, unknown>
   version: number
+  publishAt?: string | null
+  unpublishAt?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -194,7 +196,29 @@ const buildInitialState = (): MockState => {
           title: 'Launch Post',
           publishAt: '2030-01-01T10:00:00.000Z',
         },
+        publishAt: '2030-01-01T10:00:00.000Z',
         version: 1,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'entry-3',
+        collectionId: 'col-posts',
+        slug: 'pricing-update',
+        status: 'published',
+        data: { title: 'Pricing Update' },
+        unpublishAt: '2030-02-01T09:00:00.000Z',
+        version: 4,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'entry-4',
+        collectionId: 'col-posts',
+        slug: 'old-announcement',
+        status: 'archived',
+        data: { title: 'Old Announcement' },
+        version: 2,
         createdAt: now,
         updatedAt: now,
       },
@@ -463,6 +487,15 @@ async function setupMockApi(page: Page, state: MockState) {
         (candidate) => candidate.id === collectionIdentifier || candidate.slug === collectionIdentifier
       )
       await fulfillJson(route, collection ?? null, collection ? 200 : 404)
+      return
+    }
+
+    const entryDetailMatch = /\/admin\/entries\/([^/]+)$/.exec(pathname)
+    if (method === 'GET' && entryDetailMatch) {
+      const entry = state.entries.find(
+        (candidate) => candidate.id === entryDetailMatch[1] || candidate.slug === entryDetailMatch[1]
+      )
+      await fulfillJson(route, entry ?? { error: 'not found' }, entry ? 200 : 404)
       return
     }
 
@@ -808,3 +841,95 @@ test('visual: dark theme mode properly styles workspace and high-contrast compon
   expect(fs.existsSync(screenshotPath)).toBe(true)
   expect(fs.statSync(screenshotPath).size).toBeGreaterThan(1000)
 })
+
+// OF-05: entry states (saved / draft / published / scheduled / queued), keyboard and 375px layout.
+async function seedQueuedCommand(page: Page, entryId: string) {
+  await page.evaluate(async (id) => {
+    await new Promise<void>((resolve, reject) => {
+      const open = indexedDB.open('edgecms')
+      open.onerror = () => reject(open.error)
+      open.onsuccess = () => {
+        const tx = open.result.transaction('commandQueue', 'readwrite')
+        tx.objectStore('commandQueue').add({
+          envelope: {
+            type: 'updateEntry',
+            payload: { entryId: id, data: { title: 'Edited offline' } },
+            actor: { userId: 'local', source: 'admin' },
+            timestamp: new Date().toISOString(),
+          },
+          tenantSlug: 'acme',
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        })
+        tx.oncomplete = () => {
+          open.result.close()
+          resolve()
+        }
+        tx.onerror = () => reject(tx.error)
+      }
+    })
+  }, entryId)
+}
+
+async function expectNoHorizontalPageScroll(page: Page, width: number) {
+  const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth)
+  expect(scrollWidth).toBeLessThanOrEqual(width)
+}
+
+for (const viewport of [
+  { name: 'desktop', width: 1280, height: 900 },
+  { name: 'mobile-375', width: 375, height: 812 },
+]) {
+  test(`visual: OF-05 entry list shows lifecycle, schedule and queued states (${viewport.name})`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await page.goto('/tenants/acme/collections/posts/entries')
+    await expect(page.getByText('hello-world').first()).toBeVisible()
+    // Raw IndexedDB writes do not notify Dexie live queries, so seed then reload.
+    await seedQueuedCommand(page, 'entry-1')
+    await page.reload()
+
+    await expect(page.getByRole('group', { name: /Status: Draft\. 1 change queued offline/ })).toBeVisible()
+    await expect(page.getByRole('group', { name: /Status: Scheduled, publishes 2030-01-01/ })).toBeVisible()
+    await expect(page.getByRole('group', { name: /Status: Published, unpublishes 2030-02-01/ })).toBeVisible()
+    await expect(page.getByRole('group', { name: 'Status: Archived.' })).toBeVisible()
+    await expectNoHorizontalPageScroll(page, viewport.width)
+
+    const screenshotPath = path.join(SNAPSHOT_DIR, `of05-entry-list-${viewport.name}.png`)
+    await page.screenshot({ path: screenshotPath, fullPage: true, animations: 'disabled' })
+    expect(fs.statSync(screenshotPath).size).toBeGreaterThan(1000)
+  })
+
+  test(`visual: OF-05 entry editor header shows status and keyboard-reachable actions (${viewport.name})`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height })
+    await page.goto('/tenants/acme/collections/posts/entries/entry-2')
+    const indicator = page.getByTestId('entry-form-header').getByTestId('entry-status-indicator')
+    await expect(indicator).toHaveAttribute('data-lifecycle', 'scheduled')
+    await expect(indicator.getByText(/Publishes 2030-01-01/)).toBeVisible()
+    await expect(indicator.getByTestId('entry-status-sync')).toHaveText('Saved')
+
+    await page.getByLabel(/title/i).fill('Launch Post (edited)')
+    await expect(indicator.getByTestId('entry-status-sync')).toHaveText('Unsaved changes')
+
+    // Keyboard: Tab from the Schedule toggle reaches Publish then Save, each with a visible focus ring.
+    const schedule = page.getByTestId('schedule-toggle')
+    await schedule.focus()
+    await page.keyboard.press('Tab')
+    await expect(page.getByRole('button', { name: 'Publish', exact: true })).toBeFocused()
+    await page.keyboard.press('Tab')
+    const save = page.getByRole('button', { name: 'Save', exact: true })
+    await expect(save).toBeFocused()
+    const ring = await save.evaluate((el) => getComputedStyle(el).boxShadow)
+    expect(ring).not.toBe('none')
+
+    await schedule.focus()
+    await page.keyboard.press('Enter')
+    await expect(schedule).toHaveAttribute('aria-expanded', 'true')
+    await expect(page.getByTestId('scheduling-panel')).toBeVisible()
+    await expectNoHorizontalPageScroll(page, viewport.width)
+
+    await save.focus()
+    const screenshotPath = path.join(SNAPSHOT_DIR, `of05-entry-editor-${viewport.name}.png`)
+    await page.screenshot({ path: screenshotPath, fullPage: true, animations: 'disabled' })
+    expect(fs.statSync(screenshotPath).size).toBeGreaterThan(1000)
+  })
+}
