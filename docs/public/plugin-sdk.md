@@ -1,6 +1,6 @@
 # Plugin SDK
 
-This guide explains how to write a trusted EdgeCMS plugin: hooks, AI tools, field types, admin routes and admin menu items. It is for developers extending EdgeCMS in their own fork or deployment.
+This guide explains how to write a trusted EdgeCMS plugin: hooks, AI tools, field types, admin routes, admin menu items and admin contributions (sidebar pages, panels and banners). It is for developers extending EdgeCMS in their own fork or deployment.
 
 EdgeCMS runs trusted plugins only. A plugin loads when it is listed in the trusted catalog in the API source and is enabled by runtime configuration and KV state. Uploading arbitrary plugin code is not supported, and there is no plugin marketplace.
 
@@ -15,11 +15,12 @@ EdgeCMS runs trusted plugins only. A plugin loads when it is listed in the trust
 | `apps/api/src/plugins/plugin-hooks.ts` | Hook wiring |
 | `apps/api/src/plugins/plugins.controller.ts` | Admin plugin API |
 | `apps/admin/src/features/plugins` | Admin plugin panel |
+| `apps/admin/src/features/plugins/admin-contributions/catalog.ts` | Admin contribution catalog (HS-10) |
 | `examples/plugins/` | Example plugins; see [Sample plugins](sample-plugins.md) |
 
 ## The SDK package
 
-`@edgecms/plugin-sdk` is a types-only package:
+`@edgecms/plugin-sdk` is mostly types, plus the dependency-free admin contribution validators described in [Admin contributions](#admin-contributions-hs-10):
 
 ```ts
 import type {
@@ -193,6 +194,91 @@ type TrustedPluginAdminMenuItem = {
 
 Point menu paths at plugin settings or status pages. Labels and paths must be deterministic.
 
+## Admin contributions (HS-10)
+
+A trusted plugin can add to the admin without editing core admin code:
+
+- **Navigation pages**: a sidebar link inside a tenant workspace and a page that renders the plugin's component.
+- **Panels**: a card in a fixed slot, `dashboard` (the global dashboard) or `settings` (the settings layout).
+- **Banners**: an `info` or `warning` message at the top of the admin, with an optional link, dismissible by default.
+
+Contributions come from a build-time catalog in the admin source, `apps/admin/src/features/plugins/admin-contributions/catalog.ts`. The components are compiled into the admin bundle. There is no field for a remote script, an iframe URL or HTML, and banner text renders as plain text (P8).
+
+```ts
+import type { TrustedAdminContributionEntry } from '@edgecms/plugin-sdk'
+
+export const hostPlan = {
+  pluginName: 'acme-host-plan',
+  requiresLoadedApiPlugin: true,
+  contributions: {
+    navItems: [
+      { id: 'plan', label: 'Plan & usage', group: 'Host', access: 'tenant:manage', component: PlanPage },
+    ],
+    panels: [
+      { id: 'usage', slot: 'dashboard', title: 'Plan usage', access: 'tenant:read', component: UsagePanel },
+    ],
+    banners: [
+      {
+        id: 'trial-ending',
+        tone: 'warning',
+        message: 'Your trial ends in 3 days.',
+        access: 'tenant:manage',
+        link: { label: 'Choose a plan', href: 'https://billing.example.com/plans' },
+      },
+    ],
+  },
+} satisfies TrustedAdminContributionEntry<AdminComponent>
+```
+
+The full example is `examples/plugins/host-admin-contributions.plugin.ts`. A runnable React sample ships in the admin and is off by default; start the admin with `VITE_EDGECMS_SAMPLE_HOST_PLUGIN=true` to see it. Its numbers are sample data.
+
+### Routes
+
+The admin derives each page's route from the plugin name and item id:
+
+```text
+/tenants/:tenantSlug/plugins/:pluginName/:id
+```
+
+A plugin cannot choose a path, so it cannot replace a core page. Navigation pages exist only inside a tenant workspace. Components receive `{ pluginName, tenantSlug }`.
+
+### Access
+
+Every contribution declares `access`. The admin hides a contribution unless the signed-in user holds that level:
+
+| `access` | Inside a tenant | On global pages |
+| --- | --- | --- |
+| `tenant:read` | Any tenant member | Any signed-in user |
+| `tenant:write` | Editors, admins, owners | Global admins |
+| `tenant:manage` | Admins, owners | Global admins |
+| `superadmin` | Super-admins | Super-admins |
+
+Super-admins see everything. A custom tenant role gets `tenant:read`. The admin reads the tenant role from the RBAC access token. Contributions stay hidden until the role is known.
+
+This is a display gate only. Any API route a contributed component calls must check permissions itself, as every admin route already does.
+
+### Enabled state
+
+If `GET /api/admin/plugins` reports the plugin as `disabled` or `blocked`, it contributes nothing. With `requiresLoadedApiPlugin: true`, contributions also stay hidden until the API reports the plugin as `loaded`. Without it, a plugin that exists only in the admin catalog still renders.
+
+### Validation
+
+The admin validates the catalog with `composeAdminContributions` when the module loads. Validation is all-or-nothing per plugin: a plugin with any issue contributes nothing and is logged as rejected. A test in the admin fails the build if the shipped catalog has a rejected plugin. Rules:
+
+- `pluginName` and every `id` are lowercase slugs; ids are unique per kind within a plugin, and a plugin name may appear once.
+- `access`, `slot` and `tone` must be one of the listed values.
+- Labels and group names are 1 to 48 characters, panel titles up to 64, descriptions up to 160 and banner messages up to 280, with no control characters.
+- Banner links are an admin path starting with `/` (not `//`) or an `https://` URL.
+- Pages and panels need a bundled component.
+- Unknown fields are rejected.
+- Each plugin may add at most 8 navigation items, 4 panels and 3 banners.
+
+`validateAdminContributionEntry` returns the same issues for one entry, each with a `path` and a `code`.
+
+A contributed component that throws is contained: the admin shows a short notice in its place and keeps working.
+
+Banner dismissal is stored in the browser's local storage, so it applies per browser, not per user.
+
 ## Enable and disable
 
 Enabled state is stored in KV under:
@@ -213,7 +299,7 @@ The SDK exports `LoadedPluginMetadata`, `PluginAdminListResponse` and `PluginAdm
 4. Keep its routes under `/api/admin/plugins/:pluginName/*`.
 5. Add tests for the loaded, disabled and blocked states.
 6. Add a namespace test for every route.
-7. Add admin panel coverage if it adds menu items.
+7. Add admin panel coverage if it adds menu items or admin contributions.
 8. Document it in [Sample plugins](sample-plugins.md).
 9. Add or update its example module in `examples/plugins`.
 10. Add its name to `EDGE_PLUGINS_JSON`.

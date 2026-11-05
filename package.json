@@ -28,7 +28,7 @@
     "test:schemas": "bun test packages/schemas/src/__tests__/",
     "test:create-app": "bun test packages/create-app/src/index.test.ts",
     "test:runtime": "bun test packages/runtime/src/__tests__/packed-consumer.test.ts",
-    "test:plugin-sdk": "bun test packages/plugin-sdk/src/__tests__/plugin-consumer.test.ts",
+    "test:plugin-sdk": "bun test packages/plugin-sdk/src/__tests__/",
     "test:client": "bun test packages/client/src/__tests__/",
     "test:e2e:admin": "bun run --filter edgecms-admin test:e2e",
     "test:e2e:admin:live": "bun run --filter edgecms-admin test:e2e:live",
