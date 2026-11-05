@@ -5,6 +5,7 @@ import {
   normalizeAllowedAssetMimeTypes,
 } from '@/assets/file-policy'
 import { applyPublicAssetFormatAliases } from '@/public/public-assets-path-normalizer'
+import type { MutableHeaders } from '@/auth/cors'
 
 const mockDb = {} as D1Database
 const mockKv = {} as KVNamespace
@@ -73,6 +74,7 @@ vi.mock('@/public/public.repository', () => ({ publicRepository }))
 vi.mock('@/scheduling/ttl.service', () => ({ computeDynamicTTL }))
 
 const { publicController } = await import(`../../public/public.controller?bypass=${Date.now()}`)
+const { setCorsHeaders } = await import('@/auth/cors')
 
 describe('publicController', () => {
   const app = applyPublicAssetFormatAliases(new Elysia().use(publicController))
@@ -723,6 +725,104 @@ describe('publicController', () => {
       })
     )
     expect(mismatchedIfRangeRes.status).toBe(200)
+  })
+
+  describe('MD-03 Vary: Accept on format-negotiated asset responses', () => {
+    const varyTokens = (response: Response) =>
+      (response.headers.get('vary') ?? '')
+        .split(',')
+        .map((token) => token.trim().toLowerCase())
+        .filter(Boolean)
+
+    // Mirrors the API security plugin, which writes CORS headers (including
+    // `Vary: Origin,...`) into `set.headers` before the route runs.
+    const corsApp = applyPublicAssetFormatAliases(
+      new Elysia()
+        .onBeforeHandle('global', ({ request, set }) => {
+          const origin = request.headers.get('origin')
+          if (origin) setCorsHeaders(set.headers as MutableHeaders, origin)
+        })
+        .use(publicController)
+    )
+
+    const negotiated = () => {
+      assetsService.resolvePublicVariant.mockResolvedValue({
+        success: true,
+        data: {
+          key: 'variants/a1/md.avif',
+          contentType: 'image/avif',
+          fallbackKey: 'original/a1.jpg',
+          fallbackContentType: 'image/jpeg',
+        },
+      })
+      mockR2.get = vi.fn().mockResolvedValue({
+        body: new ReadableStream(),
+        httpEtag: '"avif-etag"',
+        size: 400,
+      } as unknown as R2ObjectBody)
+    }
+
+    it('200 negotiated response varies on Accept and stays immutable', async () => {
+      negotiated()
+      const response = await app.handle(
+        new Request('http://localhost/api/public/assets/a1/md', { headers: { accept: 'image/avif' } })
+      )
+      expect(response.status).toBe(200)
+      expect(varyTokens(response)).toContain('accept')
+      expect(response.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
+    })
+
+    it('keeps Accept and Origin in Vary when a CORS origin is allowed', async () => {
+      negotiated()
+      const response = await corsApp.handle(
+        new Request('http://localhost/api/public/assets/a1/md', {
+          headers: { accept: 'image/avif', origin: 'https://site.example' },
+        })
+      )
+      expect(response.status).toBe(200)
+      expect(response.headers.get('access-control-allow-origin')).toBe('https://site.example')
+      expect(varyTokens(response)).toEqual(expect.arrayContaining(['accept', 'origin']))
+      expect(response.headers.get('cache-control')).toBe('public, max-age=31536000, immutable')
+    })
+
+    it('304 revalidation of a negotiated response varies on Accept', async () => {
+      negotiated()
+      const response = await corsApp.handle(
+        new Request('http://localhost/api/public/assets/a1', {
+          headers: { 'if-none-match': '"avif-etag"', origin: 'https://site.example' },
+        })
+      )
+      expect(response.status).toBe(304)
+      expect(varyTokens(response)).toEqual(expect.arrayContaining(['accept', 'origin']))
+    })
+
+    it('206 and immutable 416 range responses of a negotiated asset vary on Accept', async () => {
+      negotiated()
+      const partial = await app.handle(
+        new Request('http://localhost/api/public/assets/a1/md', { headers: { range: 'bytes=0-9' } })
+      )
+      expect(partial.status).toBe(206)
+      expect(varyTokens(partial)).toContain('accept')
+
+      const unsatisfiable = await app.handle(
+        new Request('http://localhost/api/public/assets/a1/md', { headers: { range: 'bytes=900-1000' } })
+      )
+      expect(unsatisfiable.status).toBe(416)
+      expect(unsatisfiable.headers.get('cache-control')).toContain('immutable')
+      expect(varyTokens(unsatisfiable)).toContain('accept')
+    })
+
+    it('explicit /:variant/:format falling back to negotiation still varies on Accept', async () => {
+      assetsService.getPublicVariant.mockResolvedValue(null)
+      negotiated()
+      const response = await corsApp.handle(
+        new Request('http://localhost/api/public/assets/a1/md.webp', {
+          headers: { accept: 'image/avif', origin: 'https://site.example' },
+        })
+      )
+      expect(response.status).toBe(200)
+      expect(varyTokens(response)).toEqual(expect.arrayContaining(['accept', 'origin']))
+    })
   })
 
   it('POST /preview-token generates ephemeral preview token', async () => {
