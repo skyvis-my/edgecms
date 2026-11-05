@@ -132,7 +132,7 @@ On Cloudflare Workers, anonymous `GET` reads of `/api/public/:collection`, `/api
 - **Key.** Request origin and path, tenant, collection, locale, the KV content version for that collection and locale, and the query string with parameters sorted. Publishing, a command that invalidates the collection, or a scheduled `publishAt`/`unpublishAt` alarm bumps the version, so older entries stop matching. Stored entries keep their `Cache-Tag`, so a zone purge by tag also removes them.
 - **TTL.** The `CDN-Cache-Control` `max-age`, which already shrinks toward the next scheduled transition. Hits return the original browser `Cache-Control`.
 - **Stored only when** the response is `200`, `Cache-Control` is `public`, the CDN `max-age` is above zero, and there is no `Set-Cookie`, `WWW-Authenticate` or `X-402-*` header. CORS, rate-limit, request-id and D1 session headers are removed before storing.
-- **Skipped for** requests with `Authorization`, `Cookie`, `X-API-Key`, `X-402-Token`, `X-402-Require`, `X-Preview-Token`, `x-d1-session` or `x-session-bookmark` headers, `preview`, `previewToken`, `token`, `paywall` or `x402` query parameters, and paid-read collections (`premium-*`, `paywall-*`, `paid-*`).
+- **Skipped for** requests with `Authorization`, `Cookie`, `X-API-Key`, `X-402-Token`, `X-402-Require`, `X-Preview-Token`, `X-EdgeCMS-Preview-Token`, `x-d1-session` or `x-session-bookmark` headers, `preview`, `previewToken`, `token`, `paywall` or `x402` query parameters, and paid-read collections (`premium-*`, `paywall-*`, `paid-*`).
 - **Headers on a hit.** `x-edgecms-edge-cache: hit`, `x-edgecms-cache: hit`, `X-Cache-Source: edge` and `Server-Timing: cache;desc="edge";dur=<ms>`. A stored miss returns `x-edgecms-edge-cache: miss`. A matching `If-None-Match` gets `304` from the edge entry.
 
 The Cache API is per Cloudflare data centre and has no stale-while-revalidate, so each data centre fills its own copy. The version counter is read through the isolate memo (about 10 s) and KV, so an invalidation can take that long, plus KV propagation, to reach every isolate, as on the KV path. On `workers.dev` hosts and in `wrangler dev` the Cache API stores nothing. Without `caches.default` (tests, Docker/Postgres hosting) the layer does nothing.
@@ -253,7 +253,15 @@ The shared schema package also defines media contracts that no public route uses
 
 Draft preview routes are not public. Resolve drafts in server code through an authenticated admin or API flow, and never put preview secrets in a browser bundle.
 
-`POST .../public/preview-token` signs short-lived preview token metadata (tenant, entry, collection, preview URL; TTL 60 seconds to 7 days, default 1 hour) with `PREVIEW_SECRET`, and `POST .../public/preview-token/verify` checks one. No route returns draft content for these tokens yet. A suspended tenant cannot issue them.
+Preview tokens let an authenticated frontend confirm a preview session. They carry metadata only: no route returns draft content for them, and draft content reaches a preview page through the admin's [postMessage bridge](client-sdk.md#live-draft-preview-bridge).
+
+- **Minting.** `POST /api/tenants/:tenantSlug/public/preview-token` needs a signed-in user whose role can change the tenant admin API (owner, admin, editor, or a custom role with that grant). The user must also be able to read the content named: `collectionSlug`, `entryId`, or, when neither is given, every collection ([PL-03 grants](auth-and-access.md)). The global `/api/public/preview-token` route refuses with `400 TENANT_REQUIRED`, and a `tenantSlug` in the body is ignored. A suspended tenant cannot issue tokens.
+- **Contents.** The token is bound to the request tenant, the issuing user (`sub`), the optional collection, entry and preview URL, and an expiry. The TTL is 60 seconds to 1 day (default 1 hour).
+- **Signing.** HMAC-SHA-256 with a domain-separated input and a constant-time signature check. The secret is `PREVIEW_SECRET`, falling back to `BETTER_AUTH_SECRET`. There is no built-in default: with neither set, both routes return `500 CONFIG_ERROR`.
+- **Verifying.** `POST .../public/preview-token/verify` checks the signature, expiry, payload shape and tenant. On the tenant route the caller needs the same role as for minting.
+- **Caching.** Both responses send `Cache-Control: private, no-store` and `CDN-Cache-Control: no-store`. Public reads that carry a preview token (`X-Preview-Token`, `X-EdgeCMS-Preview-Token`, `previewToken` or `preview_token`) skip the [edge cache](#edge-cache-workers).
+- **Never a write credential.** No route accepts a preview token for writes. Sent as a bearer token, it is rejected with `401`.
+- **Revocation.** Tokens cannot be revoked one by one, and removing the issuer from the tenant does not revoke tokens already issued; they stay valid until they expire (at most 1 day). Rotating `PREVIEW_SECRET` invalidates every outstanding token at once.
 
 ## API tokens for browsers
 

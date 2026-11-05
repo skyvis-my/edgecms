@@ -420,7 +420,7 @@ export function createApiSecurityGuardPlugin(options: ApiSecurityGuardOptions) {
             if (tenantRole) return builtInContentAccess(tenantRole)
             if (customRole) return createContentAccess(await loadCustomPermissions())
             return NO_CONTENT_ACCESS
-          })
+          }, actorId)
         }
 
         // HS-11: deployment-wide MFA requirement for super-admins on every

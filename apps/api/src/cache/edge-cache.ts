@@ -37,6 +37,7 @@ const CREDENTIAL_REQUEST_HEADERS = [
   'x-402-token',
   'x-preview-token',
   'x-edgecms-preview',
+  'x-edgecms-preview-token',
   // Read-your-writes: the client wants D1 at least as fresh as its bookmark.
   'x-d1-session',
   'x-session-bookmark',

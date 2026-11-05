@@ -78,17 +78,29 @@ export function builtInContentAccess(role: TenantActorRole | undefined): Content
 // ---------------------------------------------------------------------------
 
 const requestContentAccess = new WeakMap<Request, () => Promise<ContentAccess>>()
+const requestContentActor = new WeakMap<Request, string>()
 
 /**
  * Called by the request guard once it has authorized a tenant request.
- * The resolver runs at most once and only if a handler asks.
+ * The resolver runs at most once and only if a handler asks. `actorId` is
+ * the authorized user, for handlers that bind their output to the caller.
  */
-export function setRequestContentAccess(request: Request, resolve: () => Promise<ContentAccess>): void {
+export function setRequestContentAccess(
+  request: Request,
+  resolve: () => Promise<ContentAccess>,
+  actorId?: string
+): void {
   let memo: Promise<ContentAccess> | undefined
   requestContentAccess.set(request, () => {
     memo ??= resolve().catch(() => NO_CONTENT_ACCESS)
     return memo
   })
+  if (actorId) requestContentActor.set(request, actorId)
+}
+
+/** The user the request guard authorized for this tenant request, if any. */
+export function getRequestContentActorId(request: Request): string | undefined {
+  return requestContentActor.get(request)
 }
 
 /**

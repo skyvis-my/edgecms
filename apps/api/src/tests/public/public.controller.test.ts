@@ -829,7 +829,7 @@ describe('publicController', () => {
     })
   })
 
-  it('POST /preview-token generates ephemeral preview token', async () => {
+  it('POST /preview-token refuses to mint on the global route (DL-08: tenant route and signed-in user only)', async () => {
     const response = await app.handle(
       new Request('http://localhost/api/public/preview-token', {
         method: 'POST',
@@ -843,28 +843,11 @@ describe('publicController', () => {
       })
     )
 
-    expect(response.status).toBe(200)
-    const json = (await response.json()) as { token: string; tenantSlug: string; exp: number }
-    expect(json.token).toBeDefined()
-    expect(json.tenantSlug).toBe('acme-corp')
-    expect(json.exp).toBeGreaterThan(Math.floor(Date.now() / 1000))
-
-    // Verify token via verification endpoint
-    const verifyResponse = await app.handle(
-      new Request('http://localhost/api/public/preview-token/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          token: json.token,
-          tenantSlug: 'acme-corp',
-        }),
-      })
-    )
-
-    expect(verifyResponse.status).toBe(200)
-    const verifyJson = (await verifyResponse.json()) as { valid: boolean; payload: { tenantSlug: string } }
-    expect(verifyJson.valid).toBe(true)
-    expect(verifyJson.payload.tenantSlug).toBe('acme-corp')
+    expect(response.status).toBe(400)
+    expect(response.headers.get('cache-control')).toContain('no-store')
+    const json = (await response.json()) as { token?: string; error?: { code?: string } }
+    expect(json.token).toBeUndefined()
+    expect(json.error?.code).toBe('TENANT_REQUIRED')
   })
 
   it('GET /:collectionSlug emits ETag header and handles conditional 304 Not Modified', async () => {
