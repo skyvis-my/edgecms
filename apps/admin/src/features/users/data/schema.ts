@@ -24,6 +24,8 @@ const userSchema = z.object({
   phoneNumber: z.string(),
   status: userStatusSchema,
   role: userRoleSchema,
+  /** Tenant listings: the stored tenant role, a built-in name or a custom role name. */
+  tenantRole: z.string().nullable().optional(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 })
