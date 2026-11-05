@@ -154,6 +154,8 @@ describe('edge cache (DL-03)', () => {
       ['x-402-require', 'true'],
       ['x-api-key', 'k'],
       ['x-preview-token', 'p'],
+      // DL-08: the header @edgecms/client sends with `previewToken`.
+      ['x-edgecms-preview-token', 'p'],
       ['x-d1-session', 'bookmark'],
       ['x-session-bookmark', 'bookmark'],
     ])('rejects requests carrying %s', (name, value) => {

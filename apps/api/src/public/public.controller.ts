@@ -6,7 +6,13 @@ import { getRequestUrl } from '@/shared/utils/request-url'
 import { publicService, type ImageTransformOptions } from './public.service'
 import { publicRepository } from './public.repository'
 import type { CollectionRow } from '@/collections/collections.repository'
-import { generatePreviewToken, verifyPreviewToken } from './preview-token'
+import { generatePreviewToken, resolvePreviewSecret, verifyPreviewToken } from './preview-token'
+import {
+  canAccessContent,
+  getRequestContentAccess,
+  getRequestContentActorId,
+} from '@/auth/content-access'
+import { createErrorEnvelope } from '@/shared/utils/service-response'
 import { handleX402Gate } from './x402.middleware'
 import { edgeCached } from '@/cache/edge-cache'
 
@@ -47,6 +53,12 @@ function setPublicMissCache(headers: CacheHeaders) {
 }
 
 import { generateWeakETag } from './etag'
+
+/** DL-08: preview tokens are per user; no browser, CDN or edge cache keeps them. */
+function setPreviewTokenNoStore(headers: CacheHeaders) {
+  headers['Cache-Control'] = 'private, no-store'
+  headers['CDN-Cache-Control'] = 'no-store'
+}
 export { generateWeakETag }
 
 function respondWithSnapshot(
@@ -623,6 +635,11 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       request.headers.get('if-none-match')
     )
   }))
+  /**
+   * DL-08: mint a preview token. Tenant route only; the request guard requires
+   * a signed-in user who can write the tenant admin API, and the token is
+   * bound to that user, the request tenant and content they can read.
+   */
   .post('/preview-token', {
     body: t.Object({
       tenantSlug: t.Optional(t.String()),
@@ -633,25 +650,43 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       ttlSeconds: t.Optional(t.Number()),
     }),
   }, async (ctx) => {
-    const { body, params, set, tenantCtx, workerEnv } = ctx
-    const tenantSlug =
-      tenantCtx?.tenant.slug ||
-      (params as Record<string, string | undefined> | undefined)?.tenantSlug ||
-      body?.tenantSlug
+    const { body, db, request, set, tenantCtx, workerEnv } = ctx
+    setPreviewTokenNoStore(set.headers)
 
-    if (!tenantSlug) {
+    const tenant = tenantCtx?.tenant
+    if (!tenant) {
       set.status = 400
-      return { error: 'Tenant context or tenantSlug is required' }
+      return createErrorEnvelope(
+        'TENANT_REQUIRED',
+        'Preview tokens are issued on tenant routes: POST /api/tenants/:tenantSlug/public/preview-token'
+      )
     }
 
-    const secret =
-      workerEnv?.PREVIEW_SECRET ||
-      workerEnv?.BETTER_AUTH_SECRET ||
-      workerEnv?.EDGECMS_API_KEY ||
-      'edgecms_preview_secret'
+    const issuerId = getRequestContentActorId(request)
+    const access = await getRequestContentAccess(request)
+    if (!issuerId || !access) {
+      set.status = 401
+      return createErrorEnvelope('UNAUTHORIZED', 'Authentication required')
+    }
 
-    const result = await generatePreviewToken({
-      tenantSlug,
+    const canRead = await canAccessContent(access, db, tenant.id, 'read', {
+      collectionSlugs: body.collectionSlug ? [body.collectionSlug] : [],
+      entryIds: body.entryId ? [body.entryId] : [],
+    })
+    if (!canRead) {
+      set.status = 403
+      return createErrorEnvelope('FORBIDDEN', 'No read access to the content this token would preview')
+    }
+
+    const secret = resolvePreviewSecret(workerEnv)
+    if (!secret) {
+      set.status = 500
+      return createErrorEnvelope('CONFIG_ERROR', 'Preview tokens are not configured (set PREVIEW_SECRET)')
+    }
+
+    return generatePreviewToken({
+      tenantSlug: tenant.slug,
+      issuerId,
       entrySlug: body.entrySlug,
       entryId: body.entryId,
       collectionSlug: body.collectionSlug,
@@ -659,8 +694,6 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
       ttlSeconds: body.ttlSeconds,
       secret,
     })
-
-    return result
   })
   .post('/preview-token/verify', {
     body: t.Object({
@@ -669,16 +702,17 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
     }),
   }, async (ctx) => {
     const { body, params, set, tenantCtx, workerEnv } = ctx
+    setPreviewTokenNoStore(set.headers)
     const expectedTenantSlug =
       tenantCtx?.tenant.slug ||
       (params as Record<string, string | undefined> | undefined)?.tenantSlug ||
       body?.tenantSlug
 
-    const secret =
-      workerEnv?.PREVIEW_SECRET ||
-      workerEnv?.BETTER_AUTH_SECRET ||
-      workerEnv?.EDGECMS_API_KEY ||
-      'edgecms_preview_secret'
+    const secret = resolvePreviewSecret(workerEnv)
+    if (!secret) {
+      set.status = 500
+      return createErrorEnvelope('CONFIG_ERROR', 'Preview tokens are not configured (set PREVIEW_SECRET)')
+    }
 
     const result = await verifyPreviewToken(body.token, secret, {
       expectedTenantSlug: expectedTenantSlug || undefined,
