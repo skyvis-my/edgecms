@@ -72,7 +72,7 @@ describe('relayOutbox', () => {
   it('returns zero without touching the db when no queue is bound', async () => {
     const { db } = createOutboxDbMock({ claimed: [pendingRow()] })
     const result = await relayOutbox(db as never, undefined, async () => [])
-    expect(result).toEqual({ relayed: 0, pending: 0 })
+    expect(result).toEqual({ relayed: 0, pending: 0, dead: 0 })
     expect(db.select).not.toHaveBeenCalled()
   })
 
@@ -85,20 +85,23 @@ describe('relayOutbox', () => {
       queue as never,
       async () => [message] as never
     )
-    expect(result).toEqual({ relayed: 1, pending: 0 })
+    expect(result).toEqual({ relayed: 1, pending: 0, dead: 0 })
     expect(queue.sendBatch).toHaveBeenCalledWith([{ body: message }])
-    expect(setValues[0]).toMatchObject({ status: 'sent' })
+    // First write is the lease, then the terminal 'sent' transition.
+    expect(setValues[setValues.length - 1]).toMatchObject({ status: 'sent' })
   })
 
-  it('leaves the row pending with +60s backoff when sendBatch throws (H1 crash window)', async () => {
+  it('leaves the row pending with 30-60s jittered backoff when sendBatch throws (H1 crash window)', async () => {
     const { db, setValues } = createOutboxDbMock({ claimed: [pendingRow()] })
     const before = Date.now()
     const queue = { sendBatch: vi.fn().mockRejectedValue(new Error('queue down')) }
     const result = await relayOutbox(db as never, queue as never, async () => [{ webhookId: 'w1' }] as never)
-    expect(result).toEqual({ relayed: 0, pending: 1 })
-    expect(setValues[0]).toMatchObject({ status: 'pending' })
-    const nextAttemptAt = Date.parse(setValues[0]?.nextAttemptAt as string)
-    expect(nextAttemptAt).toBeGreaterThanOrEqual(before + 60_000 - 5_000)
+    expect(result).toEqual({ relayed: 0, pending: 1, dead: 0 })
+    const failed = setValues[setValues.length - 1]
+    expect(failed).toMatchObject({ status: 'pending' })
+    const nextAttemptAt = Date.parse(failed?.nextAttemptAt as string)
+    expect(nextAttemptAt).toBeGreaterThanOrEqual(before + 30_000 - 1_000)
+    expect(nextAttemptAt).toBeLessThanOrEqual(Date.now() + 60_000 + 1_000)
   })
 
   it('relayOutboxForCommand sends a single event and returns message count', async () => {

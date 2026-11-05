@@ -1,4 +1,4 @@
-import { and, count, desc, eq, sql } from 'drizzle-orm'
+import { and, asc, count, desc, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { Database } from '@/database/db'
 import { webhookDeliveries, webhooks } from '@/database/schema/webhooks.schema'
 
@@ -208,6 +208,59 @@ export const webhooksRepository = {
       .limit(1)
       .all()
     return rows[0]
+  },
+
+  /**
+   * Oldest-first deliveries of one webhook in the given statuses, excluding
+   * test deliveries (bulk replay candidates).
+   */
+  async findReplayableDeliveries(
+    db: Database,
+    webhookId: string,
+    statuses: string[],
+    limit: number
+  ): Promise<WebhookDeliveryRow[]> {
+    if (statuses.length === 0 || limit <= 0) return []
+    return db
+      .select()
+      .from(webhookDeliveries)
+      .where(
+        and(
+          eq(webhookDeliveries.webhookId, webhookId),
+          inArray(webhookDeliveries.status, statuses),
+          ne(webhookDeliveries.eventType, 'test')
+        )
+      )
+      .orderBy(asc(webhookDeliveries.createdAt))
+      .limit(limit)
+      .all()
+  },
+
+  /**
+   * Move replayed deliveries back to 'pending', only while they are still in
+   * a replayable status (a concurrent replay cannot double-claim them).
+   * Returns the ids actually transitioned.
+   */
+  async markDeliveriesReplayed(
+    db: Database,
+    webhookId: string,
+    ids: string[],
+    fromStatuses: string[],
+    nextRetryAt: string
+  ): Promise<string[]> {
+    if (ids.length === 0) return []
+    const rows = await db
+      .update(webhookDeliveries)
+      .set({ status: 'pending', nextRetryAt })
+      .where(
+        and(
+          eq(webhookDeliveries.webhookId, webhookId),
+          inArray(webhookDeliveries.id, ids),
+          inArray(webhookDeliveries.status, fromStatuses)
+        )
+      )
+      .returning({ id: webhookDeliveries.id })
+    return rows.map((row) => row.id)
   },
 
   /** Insert a new webhook delivery record. */
