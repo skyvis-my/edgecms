@@ -185,7 +185,7 @@ export function EntryPreviewPanel({
           <Badge
             variant='outline'
             className='text-[10px] font-mono shrink-0 text-emerald-600 bg-emerald-50'
-            title={previewToken}
+            title='Preview token sent to the frame by postMessage, never in its URL'
           >
             Token Signed
           </Badge>
@@ -220,6 +220,7 @@ export function EntryPreviewPanel({
               className='w-full h-[620px] border-0'
               title='Live Split-Pane Draft Preview'
               data-testid='live-preview-iframe'
+              referrerPolicy='no-referrer'
               onLoad={onIframeLoad}
             />
           </div>

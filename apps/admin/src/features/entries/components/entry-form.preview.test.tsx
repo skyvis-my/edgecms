@@ -3,7 +3,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { describe, expect, it, vi, beforeEach } from 'bun:test'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { EntryForm } from './entry-form'
-import { EDGECMS_PREVIEW_MESSAGE_TYPE, EDGECMS_PREVIEW_READY_TYPE } from '@edgecms/client'
+import {
+  EDGECMS_PREVIEW_MESSAGE_TYPE,
+  EDGECMS_PREVIEW_READY_TYPE,
+  EDGECMS_PREVIEW_TOKEN_TYPE,
+} from '@edgecms/client'
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: vi.fn().mockReturnValue(vi.fn()),
@@ -93,7 +97,7 @@ describe('EntryForm Live Split-Pane Draft Preview & PostMessage Bridge', () => {
     expect(screen.queryByTestId('live-preview-pane')).toBeNull()
   })
 
-  it('toggles live preview pane and embeds iframe pointing to target url with token', async () => {
+  it('toggles live preview pane and embeds iframe pointing to target url', async () => {
     renderForm()
     const toggleBtn = screen.getByTestId('live-preview-toggle')
     fireEvent.click(toggleBtn)
@@ -115,6 +119,95 @@ describe('EntryForm Live Split-Pane Draft Preview & PostMessage Bridge', () => {
     const iframe = screen.getByTestId('live-preview-iframe') as HTMLIFrameElement
     expect(iframe).toBeDefined()
     expect(iframe.src).toContain('http://localhost:3000/preview')
+  })
+
+  it('DL-08: never puts the preview token in the iframe URL or the DOM', async () => {
+    renderForm()
+    fireEvent.click(screen.getByTestId('live-preview-toggle'))
+    await waitFor(() => {
+      expect(screen.getByText('Token Signed')).toBeDefined()
+    })
+
+    const iframe = screen.getByTestId('live-preview-iframe') as HTMLIFrameElement
+    const src = iframe.getAttribute('src') ?? ''
+    expect(src).not.toContain('mock-signed-hmac-token-123')
+    expect(src.toLowerCase()).not.toContain('token')
+    expect(new URL(src).searchParams.has('previewToken')).toBe(false)
+    expect(iframe.getAttribute('referrerpolicy')).toBe('no-referrer')
+    expect(document.body.innerHTML).not.toContain('mock-signed-hmac-token-123')
+  })
+
+  function readyFrom(source: unknown, origin: string) {
+    const event = new MessageEvent('message', {
+      data: { type: EDGECMS_PREVIEW_READY_TYPE },
+      origin,
+    })
+    Object.defineProperty(event, 'source', { value: source })
+    return event
+  }
+
+  it('DL-08: posts the token to the preview frame with its exact origin after READY', async () => {
+    renderForm()
+    fireEvent.click(screen.getByTestId('live-preview-toggle'))
+    await waitFor(() => {
+      expect(screen.getByText('Token Signed')).toBeDefined()
+    })
+
+    const iframe = screen.getByTestId('live-preview-iframe') as HTMLIFrameElement
+    const postMessageMock = vi.fn()
+    const frameWindow = { postMessage: postMessageMock }
+    Object.defineProperty(iframe, 'contentWindow', { value: frameWindow, writable: true })
+
+    await act(async () => {
+      window.dispatchEvent(readyFrom(frameWindow, 'http://localhost:3000'))
+    })
+
+    await waitFor(() => {
+      const tokenCalls = postMessageMock.mock.calls.filter(
+        ([msg]) => (msg as { type?: string }).type === EDGECMS_PREVIEW_TOKEN_TYPE
+      )
+      expect(tokenCalls.length).toBeGreaterThan(0)
+      for (const [msg, origin] of tokenCalls) {
+        expect(msg).toEqual({
+          type: EDGECMS_PREVIEW_TOKEN_TYPE,
+          token: 'mock-signed-hmac-token-123',
+        })
+        expect(origin).toBe('http://localhost:3000')
+      }
+    })
+
+    // No message, token or draft, is ever posted with a wildcard origin, and draft
+    // updates no longer carry the token.
+    for (const [msg, origin] of postMessageMock.mock.calls) {
+      expect(origin).toBe('http://localhost:3000')
+      if ((msg as { type?: string }).type === EDGECMS_PREVIEW_MESSAGE_TYPE) {
+        expect((msg as { token?: string }).token).toBeUndefined()
+      }
+    }
+  })
+
+  it('DL-08: ignores READY from another origin or window', async () => {
+    renderForm()
+    fireEvent.click(screen.getByTestId('live-preview-toggle'))
+    await waitFor(() => {
+      expect(screen.getByText('Token Signed')).toBeDefined()
+    })
+
+    const iframe = screen.getByTestId('live-preview-iframe') as HTMLIFrameElement
+    const postMessageMock = vi.fn()
+    const frameWindow = { postMessage: postMessageMock }
+    Object.defineProperty(iframe, 'contentWindow', { value: frameWindow, writable: true })
+
+    await act(async () => {
+      window.dispatchEvent(readyFrom(frameWindow, 'https://evil.example'))
+      window.dispatchEvent(readyFrom({ postMessage: vi.fn() }, 'http://localhost:3000'))
+    })
+
+    const tokenCalls = postMessageMock.mock.calls.filter(
+      ([msg]) => (msg as { type?: string }).type === EDGECMS_PREVIEW_TOKEN_TYPE
+    )
+    expect(tokenCalls).toHaveLength(0)
+    expect(screen.queryByText('Streaming Real-Time')).toBeNull()
   })
 
   it('switches between responsive device widths (Desktop, Tablet, Mobile)', async () => {
@@ -210,11 +303,7 @@ describe('EntryForm Live Split-Pane Draft Preview & PostMessage Bridge', () => {
 
     // Simulate iframe sending ready event
     await act(async () => {
-      window.dispatchEvent(
-        new MessageEvent('message', {
-          data: { type: EDGECMS_PREVIEW_READY_TYPE },
-        })
-      )
+      window.dispatchEvent(readyFrom(iframe.contentWindow, 'http://localhost:3000'))
     })
 
     await waitFor(() => {

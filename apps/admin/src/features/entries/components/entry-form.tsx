@@ -22,7 +22,9 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import type { ConflictBase } from '@/features/sync/field-merge'
 import {
   EDGECMS_PREVIEW_READY_TYPE,
+  resolvePreviewOrigin,
   sendDraftPreviewUpdate,
+  sendPreviewToken,
 } from '@edgecms/client'
 import {
   AlertTriangle,
@@ -241,6 +243,18 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
     })
   }
 
+  // DL-08: the preview frame's exact origin. Every postMessage (token and drafts) targets
+  // only this origin, so a frame that navigated elsewhere receives nothing.
+  const previewOrigin = useMemo(
+    () =>
+      resolvePreviewOrigin(
+        previewTargetUrl,
+        typeof window !== 'undefined' ? window.location.origin : undefined
+      ),
+    [previewTargetUrl]
+  )
+
+  // DL-08: the token is never put in this URL; it is posted to the frame instead.
   const computedPreviewUrl = useMemo(() => {
     if (!previewTargetUrl) return ''
     try {
@@ -248,7 +262,6 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
         previewTargetUrl,
         typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000'
       )
-      if (previewToken) url.searchParams.set('previewToken', previewToken)
       if (tenantSlug) url.searchParams.set('tenant', tenantSlug)
       const currentSlugVal = (watchedFormValues as { slug?: string } | undefined)?.slug || entry?.slug
       if (currentSlugVal) url.searchParams.set('slug', currentSlugVal)
@@ -256,10 +269,16 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
     } catch {
       return previewTargetUrl
     }
-  }, [previewTargetUrl, previewToken, tenantSlug, watchedFormValues, entry?.slug])
+  }, [previewTargetUrl, tenantSlug, watchedFormValues, entry?.slug])
+
+  const sendTokenToFrame = useCallback(() => {
+    const frame = iframeRef.current?.contentWindow
+    if (!frame || !previewToken || !previewOrigin) return
+    sendPreviewToken(frame, previewToken, { targetOrigin: previewOrigin })
+  }, [previewToken, previewOrigin])
 
   const streamDraftUpdate = useCallback(() => {
-    if (!iframeRef.current?.contentWindow) return
+    if (!iframeRef.current?.contentWindow || !previewOrigin) return
 
     const currentValues = getValues()
     const payload = {
@@ -272,10 +291,9 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
     }
 
     sendDraftPreviewUpdate(iframeRef.current.contentWindow, payload, {
-      token: previewToken ?? undefined,
-      targetOrigin: '*',
+      targetOrigin: previewOrigin,
     })
-  }, [getValues, activeLocale, collection.slug, previewToken])
+  }, [getValues, activeLocale, collection.slug, previewOrigin])
 
   // Stream draft JSON AST immediately whenever form inputs or TipTap rich text change
   useEffect(() => {
@@ -287,14 +305,23 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
   // Bi-directional postMessage listener for iframe handshake
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === EDGECMS_PREVIEW_READY_TYPE) {
-        setIframeReady(true)
-        streamDraftUpdate()
-      }
+      if (event.data?.type !== EDGECMS_PREVIEW_READY_TYPE) return
+      // Only the preview frame itself, at the preview origin, may start the handshake.
+      const frame = iframeRef.current?.contentWindow
+      if (!frame || event.source !== frame) return
+      if (!previewOrigin || event.origin !== previewOrigin) return
+      setIframeReady(true)
+      sendTokenToFrame()
+      streamDraftUpdate()
     }
     window.addEventListener('message', handleMessage)
     return () => window.removeEventListener('message', handleMessage)
-  }, [streamDraftUpdate])
+  }, [streamDraftUpdate, sendTokenToFrame, previewOrigin])
+
+  // A token minted after the frame is ready is posted as soon as it arrives.
+  useEffect(() => {
+    if (showLivePreview && iframeReady) sendTokenToFrame()
+  }, [showLivePreview, iframeReady, sendTokenToFrame])
 
   const collectionFields = useMemo(() => collection.fields, [collection.fields])
   const data = useWatch({ control, name: 'data' })
@@ -975,6 +1002,7 @@ export function EntryForm({ collection, entry, mode, onSaved }: EntryFormProps) 
               onFetchPreviewToken={fetchPreviewToken}
               onIframeLoad={() => {
                 setIframeReady(true)
+                sendTokenToFrame()
                 streamDraftUpdate()
               }}
               slug={watch('slug') || entry?.slug || ''}
