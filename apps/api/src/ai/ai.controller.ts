@@ -10,6 +10,7 @@ import { createErrorEnvelope } from '@/shared/utils/service-response'
 import { createAiHostHooks } from '@/host/ai-hooks'
 import { createCommandHostHooks, getCommandLimitError } from '@/host/command-hooks'
 import { getHostRuntime } from '@/host/host-context'
+import { getRequestContentAccess } from '@/auth/content-access'
 import { respondLimitExceeded } from '@/host/limits'
 
 export { isAiImportReviewEnabled, aiImportReviewDisabled }
@@ -100,6 +101,7 @@ export const aiController = new Elysia({ prefix: '/api/admin/ai' })
         env: workerEnv,
         context: body.context,
         commandHooks: createCommandHostHooks(runtime, hostScope),
+        contentAccess: await getRequestContentAccess(elysiaCtx.request),
         metadata: {
           tenantId: tenantCtx?.tenant.id,
           tenantSlug: tenantCtx?.tenant.slug,

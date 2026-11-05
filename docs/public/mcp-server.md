@@ -35,7 +35,7 @@ Send one of:
 - `Authorization: Bearer <access token>`, an EdgeCMS access token from `GET /api/auth/access-token?tenant=<slug>` (signed in). It acts as that user, on that tenant only, and expires after 10 minutes, so it suits scripts more than long-lived client configs.
 - A Better Auth session cookie, for agents running in a signed-in browser session.
 
-On tenant paths, users (session or access token) must be an owner, admin or editor of the tenant; other users get `403`, and calls without credentials get `401`.
+On tenant paths, users (session or access token) must be an owner, admin or editor of the tenant, or hold a custom role that can write to the tenant admin API; other users get `403`, and calls without credentials get `401`. For users, entry reads and commands are also checked per collection, as on the admin routes; a denied command returns an error and no preview receipt. A deployment key is not a user and keeps full access.
 
 Set a deployment key with:
 

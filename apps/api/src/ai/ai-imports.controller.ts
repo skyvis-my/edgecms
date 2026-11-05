@@ -4,6 +4,7 @@ import type { Env } from '@/env'
 import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import { aiImportService } from './imports.service'
 import { getRequestPathname } from '@/shared/utils/request-url'
+import { getRequestContentAccess } from '@/auth/content-access'
 
 export function isAiImportReviewEnabled(workerEnv: Env) {
   return workerEnv.ENABLE_AI_IMPORT_REVIEW === 'true'
@@ -242,7 +243,8 @@ export const aiImportsController = new Elysia()
           requestId: (elysiaCtx as unknown as { requestId?: string }).requestId ?? crypto.randomUUID(),
           pathname: requestPathname,
           method: request.method,
-        }
+        },
+        await getRequestContentAccess(request)
       )
       return { success: true as const, data: result }
     } catch (err) {
@@ -277,7 +279,8 @@ export const aiImportsController = new Elysia()
           requestId: (elysiaCtx as unknown as { requestId?: string }).requestId ?? crypto.randomUUID(),
           pathname: requestPathname,
           method: request.method,
-        }
+        },
+        await getRequestContentAccess(request)
       )
       return { success: true as const, data: result }
     } catch (err) {

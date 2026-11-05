@@ -2,6 +2,7 @@ import type { CommandContext } from '@/commands/engine'
 import { executeCommand } from '@/commands/engine'
 import { collectionsRepository } from '@/collections/collections.repository'
 import { entriesRepository } from '@/entries/entries.repository'
+import { canAccessCollectionSlug, canAccessContent } from '@/auth/content-access'
 import {
   createPreviewReceipt,
   redeemPreviewReceipt,
@@ -238,6 +239,12 @@ export async function handleMcpToolCall(
             isError: true,
           }
         }
+        if (ctx.contentAccess && !canAccessCollectionSlug(ctx.contentAccess, 'read', collection.slug)) {
+          return {
+            content: [{ type: 'text', text: `Forbidden: your role cannot read '${collectionSlug}' entries` }],
+            isError: true,
+          }
+        }
         const page = Math.max(1, Number(args.page) || 1)
         const perPage = Math.min(100, Math.max(1, Number(args.perPage) || 20))
         const status = args.status as string | undefined
@@ -261,6 +268,17 @@ export async function handleMcpToolCall(
         if (!entry) {
           return {
             content: [{ type: 'text', text: `Entry '${entryId}' not found` }],
+            isError: true,
+          }
+        }
+        if (
+          ctx.contentAccess &&
+          !(await canAccessContent(ctx.contentAccess, ctx.db, tenantId, 'read', {
+            collectionIds: [entry.collectionId],
+          }))
+        ) {
+          return {
+            content: [{ type: 'text', text: `Forbidden: your role cannot read entry '${entryId}'` }],
             isError: true,
           }
         }
@@ -288,6 +306,14 @@ export async function handleMcpToolCall(
 
         // Execute dry-run preview through the Command Engine
         const result = await executeCommand(ctx, envelope)
+
+        // PL-03: no receipt for a command the caller's role may not run.
+        if (result.status === 'failed' && result.error?.code === 'FORBIDDEN') {
+          return {
+            content: [{ type: 'text', text: `FORBIDDEN: ${result.error.message}` }],
+            isError: true,
+          }
+        }
 
         // A failed preview must not mint a receipt that could later execute.
         if (result.status !== 'dry_run') {

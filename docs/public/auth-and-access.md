@@ -184,12 +184,14 @@ There are two layers.
 
 **Tenant role** (membership in `tenant_users`): `owner`, `admin`, `editor`, `member` or `viewer`. On `/api/tenants/:tenantSlug/api/admin/*`:
 
-| Tenant role | Read admin routes | Mutate admin routes | List users, read audit |
-| --- | --- | --- | --- |
-| `owner`, `admin` | yes | yes | yes |
-| `editor` | yes | yes | no |
-| `member` | yes | no | no |
-| `viewer` | no | no | no |
+| Tenant role | Read admin routes | Mutate admin routes | List users, read audit | Webhooks, role changes, permanent asset delete |
+| --- | --- | --- | --- | --- |
+| `owner`, `admin` | yes | yes | yes | yes |
+| `editor` | yes | yes | no | no |
+| `member` | yes | no | no | no |
+| `viewer` | no | no | no | no |
+
+"Webhooks" covers reading webhook config and delivery logs as well as changing them; only `GET .../admin/webhooks/signing` is open to every role that can read admin routes.
 
 Other cases: no session returns `401 UNAUTHORIZED`; a role without the ability returns `403 FORBIDDEN`.
 
@@ -215,11 +217,23 @@ PUT    /api/tenants/:tenantSlug/api/admin/roles/:roleId
 DELETE /api/tenants/:tenantSlug/api/admin/roles/:roleId
 ```
 
+A member whose `tenant_users.role` is the name of a custom role gets that role's stored permissions, on both the session and the access-token path. Stored permissions are read only for custom roles; built-in roles use the table above.
+
+What a stored grant opens:
+
+| Subject | Effect |
+| --- | --- |
+| `entry:<collectionSlug>` | Entries of that one collection. Action `read`, `create`, `update`, `delete`, `publish`, `manage` or `*`; `mutate` covers every write. |
+| `entry:*`, `*:*` | Entries of every collection. |
+| `TenantAdminApi` | Tenant admin routes, and entries of every collection (`read`, or `mutate` for writes). |
+| `TenantAdminWebhooks` (or `webhooks:*`), `TenantAdminRoles`, `TenantAdminAssetsHardDelete` | The owner/admin-only routes of the same name. |
+
+The collection check runs on entry and version routes, on every command (including each command inside a `transaction` and each entry in a `bulkUpdate`), whether it comes from the admin, AI, AI imports, MCP or sync, and on MCP entry reads. A command or read the role does not cover returns `403 FORBIDDEN`. An entry or collection id that does not exist in the tenant is denied, not skipped. Command types that are not entry commands need write access to every collection.
+
 Current limits, stated plainly:
 
-- The request guard checks coarse subjects only (`TenantAdminApi`, `GlobalAdminApi`, plus the users and audit reads). Stored permissions such as `entry:*` or `asset:*` are listed by the API but do not restrict individual routes. A stored grant takes effect only when its subject is `TenantAdminApi` or `GlobalAdminApi`.
-- The membership routes accept only `owner`, `admin` and `member`, so no API route assigns a custom role to a user.
-- Role routes need the same ability as other tenant admin mutations, which includes `editor`.
+- The membership routes accept only `owner`, `admin` and `member`, so no API route assigns a custom role to a user. Set `tenant_users.role` to the custom role's name in D1.
+- Other stored subjects (`asset:*`, `collection:*`, `settings:*`, `user:*`) are listed by the API but do not restrict individual routes.
 
 ## Access tokens
 
@@ -296,5 +310,7 @@ with status `429` and a `Retry-After` header. Hosts can replace these numbers pe
 ```bash
 bun test --isolate apps/api/src/tests/auth/auth-policies.test.ts apps/api/src/tests/auth/mfa-enforcement.test.ts \
   apps/api/src/tests/auth/csrf.middleware.test.ts apps/api/src/tests/auth/rate-limit.middleware.test.ts \
-  apps/api/src/tests/auth/authorization.test.ts apps/api/src/tests/auth/super-admin.test.ts apps/api/src/tests/invites
+  apps/api/src/tests/auth/authorization.test.ts apps/api/src/tests/auth/super-admin.test.ts apps/api/src/tests/invites \
+  apps/api/src/tests/auth/rbac-route-matrix.test.ts apps/api/src/tests/auth/content-access-enforcement.test.ts \
+  apps/api/src/tests/auth/content-access-routes.test.ts
 ```

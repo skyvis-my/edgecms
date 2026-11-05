@@ -229,7 +229,7 @@ When the subrequest fails (always in local dev), the stored bytes are returned u
 
 Hard deletes remove the D1 rows, then write every R2 key to the `r2_gc_outbox` table before deleting it. A key whose delete fails stays `pending` and is retried after 5 minutes. Each `gc` call also sweeps up to 50 pending keys. Nothing runs GC on a schedule: no cron trigger calls it, so call `gc` yourself (for example from an operator script).
 
-Both `gc` and permanent delete are open to any role that can mutate tenant admin routes, including `editor`.
+Both `gc` and permanent delete need a tenant owner or admin (global routes: global admin), or a custom role with a `TenantAdminAssetsHardDelete` grant. Editors get `403`; they can still soft-delete.
 
 ## Search
 

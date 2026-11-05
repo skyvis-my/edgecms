@@ -13,6 +13,7 @@ import { createErrorEnvelope } from '@/shared/utils/service-response'
 import { type PreviewReceiptErrorCode, previewReceiptErrorStatus } from '@/ai/preview-receipt.service'
 import { createCommandHostHooks, getCommandLimitError } from '@/host/command-hooks'
 import { getHostRuntime } from '@/host/host-context'
+import { getRequestContentAccess } from '@/auth/content-access'
 
 /**
  * Resolve the Cloudflare execution context from the Elysia request context.
@@ -38,6 +39,7 @@ const COMMAND_ERROR_STATUS_MAP: Record<string, number> = {
   INVALID_STATUS_TRANSITION: 400,
   INVALID_PREVIEW_RECEIPT: 400,
   UNAUTHORIZED: 403,
+  FORBIDDEN: 403,
 }
 
 export function initializeWebhookProducerIfNeeded(
@@ -165,6 +167,7 @@ export const commandsController = new Elysia({ prefix: '/api/admin/commands', no
         pathname: requestPathname,
         method: elysiaCtx.request.method,
       },
+      contentAccess: await getRequestContentAccess(elysiaCtx.request),
     }
   
     // Execute command through engine
