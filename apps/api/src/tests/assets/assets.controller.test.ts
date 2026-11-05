@@ -51,10 +51,12 @@ vi.mock('../../assets/assets.service', () => ({
     updateFilename: vi.fn(),
     softDelete: vi.fn(),
     deleteMany: vi.fn(),
+    confirmDirectUpload: vi.fn(),
   },
 }))
 
 import { assetsService } from '../../assets/assets.service'
+import { ImageDimensionsExceededError } from '../../assets/image-dimensions'
 
 const { assetsController } = await import(`../../assets/assets.controller?bypass=${Date.now()}`)
 
@@ -77,6 +79,7 @@ describe('assetsController', () => {
     updateFilename: ReturnType<typeof vi.fn>
     softDelete: ReturnType<typeof vi.fn>
     deleteMany: ReturnType<typeof vi.fn>
+    confirmDirectUpload: ReturnType<typeof vi.fn>
   }
 
   beforeEach(() => {
@@ -212,6 +215,87 @@ describe('assetsController', () => {
     const body = (await response.json()) as { success: boolean; error?: { code?: string } }
     expect(body.success).toBe(false)
     expect(body.error?.code).toBe('UNSUPPORTED_MEDIA_TYPE')
+  })
+
+  it('MD-05: POST /upload returns a typed 422 when the image is over the tenant dimension limit', async () => {
+    mockService.upload.mockRejectedValueOnce(new ImageDimensionsExceededError(4000, 3000, 1000))
+
+    const response = await makeTenantApp().handle(
+      new Request('http://localhost/api/admin/assets/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: 'huge.png',
+          mimeType: 'image/png',
+          contentBase64: btoa('x'),
+          width: 10,
+          height: 10,
+        }),
+      })
+    )
+
+    expect(response.status).toBe(422)
+    const body = (await response.json()) as {
+      success: boolean
+      error?: { code?: string; message?: string; details?: Record<string, number> }
+    }
+    expect(body.success).toBe(false)
+    expect(body.error?.code).toBe('IMAGE_DIMENSIONS_EXCEEDED')
+    expect(body.error?.message).toContain('1000 px')
+    expect(body.error?.details).toEqual({ width: 4000, height: 3000, maxDimension: 1000 })
+  })
+
+  it('MD-05: POST /direct-upload-complete passes R2 and the tenant limit, and maps over-limit to 422', async () => {
+    mockService.confirmDirectUpload.mockRejectedValueOnce(new ImageDimensionsExceededError(5000, 10, 2048))
+
+    const response = await makeTenantApp().handle(
+      new Request('http://localhost/api/admin/assets/direct-upload-complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assetId: 'a1',
+          filename: 'big.png',
+          mimeType: 'image/png',
+          size: 10,
+          objectKey: 't1/a1/original.png',
+        }),
+      })
+    )
+
+    expect(response.status).toBe(422)
+    const body = (await response.json()) as { error?: { code?: string } }
+    expect(body.error?.code).toBe('IMAGE_DIMENSIONS_EXCEEDED')
+    expect(mockService.confirmDirectUpload).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ assetId: 'a1' }),
+      't1',
+      mockR2,
+      2048
+    )
+  })
+
+  it('MD-05: POST /direct-upload-complete rejects a foreign object key with 400', async () => {
+    mockService.confirmDirectUpload.mockRejectedValueOnce(
+      new Error('Direct upload object key does not belong to this asset')
+    )
+
+    const response = await makeTenantApp().handle(
+      new Request('http://localhost/api/admin/assets/direct-upload-complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          assetId: 'a1',
+          filename: 'x.png',
+          mimeType: 'image/png',
+          size: 10,
+          objectKey: 'other/a1/original.png',
+        }),
+      })
+    )
+
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as { error?: { code?: string } }
+    expect(body.error?.code).toBe('BAD_REQUEST')
   })
 
   it('POST /api/admin/assets/upload returns image processing details when codec fails', async () => {

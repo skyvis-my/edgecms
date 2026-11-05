@@ -510,6 +510,7 @@ export const publicService = {
                     status: 416,
                     headers: {
                       'Content-Range': `bytes */${total}`,
+                      'Vary': 'Accept',
                       'Accept-Ranges': 'bytes',
                       'Cache-Control': 'public, max-age=31536000, immutable',
                       'CDN-Cache-Control': 'public, max-age=31536000',
