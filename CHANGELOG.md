@@ -24,6 +24,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Cached public reads no longer read KV for rate limiting or D1 for the tenant row while it is cached (DL-10).
 - A `transaction` dry run writes nothing and returns a combined diff and one receipt (CMD-03).
 
+### Security (wave 2)
+- GraphQL reads apply the public publish window; `article(id)` no longer returns entries from another collection; variable page sizes count toward query cost (DL-06).
+- Webhook deliveries carry a timestamped `x-edgecms-signature-v1`, refuse redirects, and block more private ranges (DL-09).
+- `DELETE /api/admin/tenants/:slug` returns `409 TENANT_OFFBOARDING_REQUIRED`; tenants are deleted through confirmed offboarding (HS-09). **Upgrade step.**
+
+### Added (wave 2)
+- Collection export and receipt-bound import preview (OP-06).
+- Replay of failed webhook deliveries (DL-09).
+- Per-field and per-locale review for offline sync conflicts (OF-04).
+
+### Changed (wave 2)
+- Version rollback runs as an `updateEntry` command with audit, cache purge and outbox (CM-06, P3).
+- Changing a related entry purges cached parents that populate it (CM-04).
+- The admin always sends a validated blurhash on image upload (MD-03).
+
 ## [0.2.0] - 2026-10-22
 
 ### Security
