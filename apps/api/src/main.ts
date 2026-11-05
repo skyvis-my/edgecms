@@ -35,7 +35,6 @@ worker.scheduled = async (_controller: ScheduledController, env: Env, _ctx: Exec
   await runScheduledOutboxSweep(env)
   // CMD-06: retry post-commit side-effect intents even when no command arrives.
   await runScheduledSideEffectSweep(env)
-  // AI-08: delete expired AI import review records and their R2 source files.
   await runScheduledAiImportCleanup(env)
 }
 Object.defineProperty(worker, 'fetch', {
