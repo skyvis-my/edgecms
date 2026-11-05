@@ -257,6 +257,8 @@ describe('EntryForm layout', () => {
         id: 'entry-1',
         input: expect.not.objectContaining({ status: expect.any(String) }),
         optimisticVersion: 2,
+        // OF-04: the server state at that version travels with the command for offline merges.
+        base: { version: 2, slug: 'entry-1', data: { title: 'Sample title' } },
       })
     })
   })
@@ -548,7 +550,7 @@ describe('EntryForm layout', () => {
       fields: [{ name: 'title', type: 'text' as const, required: true, localizable: false }],
     }
 
-    const { rerender, getByTestId, queryByTestId } = render(
+    const { rerender, getByTestId, queryByTestId, findByRole } = render(
       <EntryForm mode='edit' entry={baseEntry} collection={collection} />,
       { wrapper: createWrapper() }
     )
@@ -571,8 +573,11 @@ describe('EntryForm layout', () => {
 
     expect(getByTestId('version-conflict-banner')).toBeInTheDocument()
 
-    // User chooses Force Overwrite
+    // User chooses Force Overwrite, then must confirm it (OF-04)
     fireEvent.click(getByTestId('conflict-overwrite-button'))
+    expect(mockUpdateEntryMutateAsync).not.toHaveBeenCalled()
+    const confirm = await findByRole('button', { name: 'Overwrite server version' })
+    fireEvent.click(confirm)
 
     await waitFor(() => {
       // Must submit with optimisticVersion: 3 (the remote version being overwritten)

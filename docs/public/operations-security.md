@@ -139,6 +139,18 @@ There is no release calendar or bulk release publishing.
 
 While an editor works on an existing entry, the admin saves the draft in the background every 30 seconds if the form has unsaved changes, sending the version it last saw. It shows a conflict warning when the server's draft version is newer than the editor's version.
 
+If the editor has unsaved edits when a newer server version arrives, it shows a banner with **Discard Local Changes** and **Force Overwrite**. Force Overwrite asks for confirmation before it replaces the server version.
+
+### Offline sync conflicts
+
+Edits made offline are queued in the browser with the version and content they started from. When the queue syncs and the server has a newer version, the admin merges field by field, and for localized fields locale by locale:
+
+- A field or locale changed only on one side takes that side's value.
+- If no change overlaps, the merged change is queued again against the server version and synced without asking.
+- If both sides changed the same field or locale to different values, the change waits on the **Sync** page. The review lists only those fields. Each defaults to the server value; choosing your own value over a newer server value needs a second confirmation.
+
+Changes queued by older admin builds have no starting snapshot, so their review lists every field that differs from the server.
+
 ## Test fixtures
 
 Local smoke data should include:
