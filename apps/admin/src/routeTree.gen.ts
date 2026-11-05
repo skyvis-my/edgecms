@@ -59,6 +59,7 @@ import { Route as AuthenticatedTenantsTenantSlugWebhooksIndexRouteImport } from 
 import { Route as AuthenticatedTenantsTenantSlugWebhooksWebhookIdRouteImport } from './routes/_authenticated/tenants/$tenantSlug/webhooks/$webhookId'
 import { Route as AuthenticatedTenantsTenantSlugWebhooksNewRouteImport } from './routes/_authenticated/tenants/$tenantSlug/webhooks/new'
 import { Route as AuthenticatedTenantsTenantSlugCollectionsCollectionIdIndexRouteImport } from './routes/_authenticated/tenants/$tenantSlug/collections/$collectionId/index'
+import { Route as AuthenticatedTenantsTenantSlugPluginsPluginNamePageIdRouteImport } from './routes/_authenticated/tenants/$tenantSlug/plugins/$pluginName/$pageId'
 import { Route as AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesIndexRouteImport } from './routes/_authenticated/tenants/$tenantSlug/collections/$collectionId/entries/index'
 import { Route as AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesCreateRouteImport } from './routes/_authenticated/tenants/$tenantSlug/collections/$collectionId/entries/create'
 import { Route as AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesEntryIdIndexRouteImport } from './routes/_authenticated/tenants/$tenantSlug/collections/$collectionId/entries/$entryId/index'
@@ -348,6 +349,12 @@ const AuthenticatedTenantsTenantSlugCollectionsCollectionIdIndexRoute =
     path: '/collections/$collectionId/',
     getParentRoute: () => AuthenticatedTenantsTenantSlugRoute,
   } as any)
+const AuthenticatedTenantsTenantSlugPluginsPluginNamePageIdRoute =
+  AuthenticatedTenantsTenantSlugPluginsPluginNamePageIdRouteImport.update({
+    id: '/plugins/$pluginName/$pageId',
+    path: '/plugins/$pluginName/$pageId',
+    getParentRoute: () => AuthenticatedTenantsTenantSlugRoute,
+  } as any)
 const AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesIndexRoute =
   AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesIndexRouteImport.update(
     {
@@ -422,6 +429,7 @@ export interface FileRoutesByFullPath {
   '/tenants/$tenantSlug/sync/': typeof AuthenticatedTenantsTenantSlugSyncIndexRoute
   '/tenants/$tenantSlug/users/': typeof AuthenticatedTenantsTenantSlugUsersIndexRoute
   '/tenants/$tenantSlug/webhooks/': typeof AuthenticatedTenantsTenantSlugWebhooksIndexRoute
+  '/tenants/$tenantSlug/plugins/$pluginName/$pageId': typeof AuthenticatedTenantsTenantSlugPluginsPluginNamePageIdRoute
   '/tenants/$tenantSlug/collections/$collectionId/': typeof AuthenticatedTenantsTenantSlugCollectionsCollectionIdIndexRoute
   '/tenants/$tenantSlug/collections/$collectionId/entries/create': typeof AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesCreateRoute
   '/tenants/$tenantSlug/collections/$collectionId/entries/': typeof AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesIndexRoute
@@ -474,6 +482,7 @@ export interface FileRoutesByTo {
   '/tenants/$tenantSlug/sync': typeof AuthenticatedTenantsTenantSlugSyncIndexRoute
   '/tenants/$tenantSlug/users': typeof AuthenticatedTenantsTenantSlugUsersIndexRoute
   '/tenants/$tenantSlug/webhooks': typeof AuthenticatedTenantsTenantSlugWebhooksIndexRoute
+  '/tenants/$tenantSlug/plugins/$pluginName/$pageId': typeof AuthenticatedTenantsTenantSlugPluginsPluginNamePageIdRoute
   '/tenants/$tenantSlug/collections/$collectionId': typeof AuthenticatedTenantsTenantSlugCollectionsCollectionIdIndexRoute
   '/tenants/$tenantSlug/collections/$collectionId/entries/create': typeof AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesCreateRoute
   '/tenants/$tenantSlug/collections/$collectionId/entries': typeof AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesIndexRoute
@@ -530,6 +539,7 @@ export interface FileRoutesById {
   '/_authenticated/tenants/$tenantSlug/sync/': typeof AuthenticatedTenantsTenantSlugSyncIndexRoute
   '/_authenticated/tenants/$tenantSlug/users/': typeof AuthenticatedTenantsTenantSlugUsersIndexRoute
   '/_authenticated/tenants/$tenantSlug/webhooks/': typeof AuthenticatedTenantsTenantSlugWebhooksIndexRoute
+  '/_authenticated/tenants/$tenantSlug/plugins/$pluginName/$pageId': typeof AuthenticatedTenantsTenantSlugPluginsPluginNamePageIdRoute
   '/_authenticated/tenants/$tenantSlug/collections/$collectionId/': typeof AuthenticatedTenantsTenantSlugCollectionsCollectionIdIndexRoute
   '/_authenticated/tenants/$tenantSlug/collections/$collectionId/entries/create': typeof AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesCreateRoute
   '/_authenticated/tenants/$tenantSlug/collections/$collectionId/entries/': typeof AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesIndexRoute
@@ -586,6 +596,7 @@ export interface FileRouteTypes {
     | '/tenants/$tenantSlug/sync/'
     | '/tenants/$tenantSlug/users/'
     | '/tenants/$tenantSlug/webhooks/'
+    | '/tenants/$tenantSlug/plugins/$pluginName/$pageId'
     | '/tenants/$tenantSlug/collections/$collectionId/'
     | '/tenants/$tenantSlug/collections/$collectionId/entries/create'
     | '/tenants/$tenantSlug/collections/$collectionId/entries/'
@@ -638,6 +649,7 @@ export interface FileRouteTypes {
     | '/tenants/$tenantSlug/sync'
     | '/tenants/$tenantSlug/users'
     | '/tenants/$tenantSlug/webhooks'
+    | '/tenants/$tenantSlug/plugins/$pluginName/$pageId'
     | '/tenants/$tenantSlug/collections/$collectionId'
     | '/tenants/$tenantSlug/collections/$collectionId/entries/create'
     | '/tenants/$tenantSlug/collections/$collectionId/entries'
@@ -693,6 +705,7 @@ export interface FileRouteTypes {
     | '/_authenticated/tenants/$tenantSlug/sync/'
     | '/_authenticated/tenants/$tenantSlug/users/'
     | '/_authenticated/tenants/$tenantSlug/webhooks/'
+    | '/_authenticated/tenants/$tenantSlug/plugins/$pluginName/$pageId'
     | '/_authenticated/tenants/$tenantSlug/collections/$collectionId/'
     | '/_authenticated/tenants/$tenantSlug/collections/$collectionId/entries/create'
     | '/_authenticated/tenants/$tenantSlug/collections/$collectionId/entries/'
@@ -1064,6 +1077,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedTenantsTenantSlugCollectionsCollectionIdIndexRouteImport
       parentRoute: typeof AuthenticatedTenantsTenantSlugRoute
     }
+    '/_authenticated/tenants/$tenantSlug/plugins/$pluginName/$pageId': {
+      id: '/_authenticated/tenants/$tenantSlug/plugins/$pluginName/$pageId'
+      path: '/plugins/$pluginName/$pageId'
+      fullPath: '/tenants/$tenantSlug/plugins/$pluginName/$pageId'
+      preLoaderRoute: typeof AuthenticatedTenantsTenantSlugPluginsPluginNamePageIdRouteImport
+      parentRoute: typeof AuthenticatedTenantsTenantSlugRoute
+    }
     '/_authenticated/tenants/$tenantSlug/collections/$collectionId/entries/': {
       id: '/_authenticated/tenants/$tenantSlug/collections/$collectionId/entries/'
       path: '/collections/$collectionId/entries'
@@ -1177,6 +1197,7 @@ interface AuthenticatedTenantsTenantSlugRouteChildren {
   AuthenticatedTenantsTenantSlugSyncIndexRoute: typeof AuthenticatedTenantsTenantSlugSyncIndexRoute
   AuthenticatedTenantsTenantSlugUsersIndexRoute: typeof AuthenticatedTenantsTenantSlugUsersIndexRoute
   AuthenticatedTenantsTenantSlugWebhooksIndexRoute: typeof AuthenticatedTenantsTenantSlugWebhooksIndexRoute
+  AuthenticatedTenantsTenantSlugPluginsPluginNamePageIdRoute: typeof AuthenticatedTenantsTenantSlugPluginsPluginNamePageIdRoute
   AuthenticatedTenantsTenantSlugCollectionsCollectionIdIndexRoute: typeof AuthenticatedTenantsTenantSlugCollectionsCollectionIdIndexRoute
   AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesCreateRoute: typeof AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesCreateRoute
   AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesIndexRoute: typeof AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesIndexRoute
@@ -1213,6 +1234,8 @@ const AuthenticatedTenantsTenantSlugRouteChildren: AuthenticatedTenantsTenantSlu
       AuthenticatedTenantsTenantSlugUsersIndexRoute,
     AuthenticatedTenantsTenantSlugWebhooksIndexRoute:
       AuthenticatedTenantsTenantSlugWebhooksIndexRoute,
+    AuthenticatedTenantsTenantSlugPluginsPluginNamePageIdRoute:
+      AuthenticatedTenantsTenantSlugPluginsPluginNamePageIdRoute,
     AuthenticatedTenantsTenantSlugCollectionsCollectionIdIndexRoute:
       AuthenticatedTenantsTenantSlugCollectionsCollectionIdIndexRoute,
     AuthenticatedTenantsTenantSlugCollectionsCollectionIdEntriesCreateRoute:

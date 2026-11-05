@@ -31,6 +31,7 @@ export const plugin = {
 - Runtime loading, validation, sandboxing, and route safety stay in the EdgeCMS API worker.
 - Route descriptors are type-only proof helpers; runtime route factories are still validated by the API loader.
 - Admin list response types mirror `/api/admin/plugins`.
+- Admin contribution types (`TrustedAdminContributionEntry`) and their validators (`validateAdminContributionEntry`, `composeAdminContributions`) are pure functions with no framework dependency (HS-10).
 
 ## Scripts
 

@@ -50,6 +50,9 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // HS-10: compile the dependency-free plugin SDK from source so the admin
+      // build does not depend on a prebuilt dist.
+      '@edgecms/plugin-sdk': path.resolve(__dirname, '../../packages/plugin-sdk/src/index.ts'),
     },
   },
   server: {
