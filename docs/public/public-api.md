@@ -263,6 +263,17 @@ Preview tokens let an authenticated frontend confirm a preview session. They car
 - **Never a write credential.** No route accepts a preview token for writes. Sent as a bearer token, it is rejected with `401`.
 - **Revocation.** Tokens cannot be revoked one by one, and removing the issuer from the tenant does not revoke tokens already issued; they stay valid until they expire (at most 1 day). Rotating `PREVIEW_SECRET` invalidates every outstanding token at once.
 
+## Paid reads (x402 / L402)
+
+Paid reads are an experimental, opt-in 402 gate on the public list, entry and singleton routes. EdgeCMS signs challenges and checks settlement tokens. It does not take payments: there is no Lightning, x402 facilitator or other payment-network check, and the `invoice` in a challenge is a placeholder string, not a payable invoice.
+
+- **Which reads are paid.** Collections whose slug starts with `premium-`, `paywall-` or `paid-`. A client can also ask for the gate on any route with the `X-402-Require: true` header or a `paywall=true` / `x402=true` query parameter. There is no per-collection setting in the admin, and the price is fixed at the default (100 `SATS`).
+- **Secret.** `X402_SECRET` signs challenges and settlement tokens. There is no built-in default and no fallback to `BETTER_AUTH_SECRET` or API keys. Without it, every paid read returns `500 CONFIG_ERROR` (`no-store`) and never the content. Set it with `npx wrangler secret put X402_SECRET`.
+- **Challenge.** An unpaid read returns `402 PAYMENT_REQUIRED` with `WWW-Authenticate: L402 token="…", invoice="…"`, `X-402-Price`, `X-402-Currency`, `X-402-Challenge` and `Cache-Control: no-store`. The macaroon is signed metadata (resource, tenant, price, currency, 15-minute expiry). Sending it back is not a payment proof and gets a new `402`.
+- **Settlement token.** Send it as `Authorization: L402 <token>` or `X-402-Token`. A valid token is HMAC-SHA-256 signed with `X402_SECRET` (domain-separated input, constant-time check), typed as a settlement, and bound to the request path, the tenant, the price, the currency and an expiry of at most 1 day (default 1 hour). EdgeCMS has no route that mints settlement tokens: your payment service mints them with `createSettlementToken` from `apps/api/src/public/x402.middleware.ts` after it confirms payment.
+- **Reuse.** A settlement token is a bearer pass: it can be used again for the same path until it expires. There is no single-use check and no per-token revocation; rotating `X402_SECRET` invalidates every outstanding token.
+- **Caching.** A settled read sends `Cache-Control: private, no-store`, `CDN-Cache-Control: no-store` and `X-402-Settled: true`. Paid requests skip the [edge cache](#edge-cache-workers) for both lookup and store.
+
 ## API tokens for browsers
 
 There is no browser-safe content API token. Use public routes for anonymous published reads and server-side admin or auth flows for anything protected.

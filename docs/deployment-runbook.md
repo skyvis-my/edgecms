@@ -117,6 +117,7 @@ bunx wrangler secret put <SECRET_NAME> --env <env>
 | `CLOUDFLARE_ZONE_ID` | Zone for CDN cache purge by tag (with `CF_API_TOKEN`) | No |
 | `EDGECMS_API_KEY` or `MCP_API_KEY` | API key for the [MCP server](public/mcp-server.md) | No |
 | `PREVIEW_SECRET` | Signs preview tokens; falls back to `BETTER_AUTH_SECRET` | No |
+| `X402_SECRET` | Signs paid-read (x402/L402) challenges and settlement tokens; no fallback, paid reads return `500` without it | If paid reads are used |
 | `WEBHOOK_ALLOWED_HOSTS` | Allow-list for webhook destination hosts | No |
 | `ENABLE_AI_IMPORT_REVIEW` | Set to `true` to turn on the AI import review beta endpoints | No |
 | `AUDIT_RETENTION_DAYS` | Audit retention in days; values under 365 are raised to 365 | No (default 365) |

@@ -13,7 +13,7 @@ import {
   getRequestContentActorId,
 } from '@/auth/content-access'
 import { createErrorEnvelope } from '@/shared/utils/service-response'
-import { handleX402Gate } from './x402.middleware'
+import { handleX402Gate, isSettledPaidRead, resolveX402Secret } from './x402.middleware'
 import { edgeCached } from '@/cache/edge-cache'
 
 type CacheHeaders = Record<string, string | number | string[] | undefined>
@@ -186,6 +186,13 @@ function setPublicCacheHeaders(
   debugHeaders?: Record<string, string>,
   etag?: string
 ) {
+  if (isSettledPaidRead(headers)) {
+    // DL-07: paid content is per payer; no shared cache may keep it.
+    headers['Cache-Control'] = 'private, no-store'
+    headers['CDN-Cache-Control'] = 'no-store'
+    if (etag) headers.ETag = etag
+    return
+  }
   headers['Cache-Control'] =
     `public, max-age=${browserTTL}, ` +
     `stale-while-revalidate=${PUBLIC_STALE_WHILE_REVALIDATE_SECONDS}, ` +
@@ -472,9 +479,9 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
     const perPage = Math.min(100, parsePositiveInt(query.perPage as string | undefined, 20))
 
     const x402Res = await handleX402Gate(ctx, {
-      secret: workerEnv?.BETTER_AUTH_SECRET || workerEnv?.EDGECMS_API_KEY || 'edgecms_secret',
+      secret: resolveX402Secret(workerEnv),
       collectionSlug: params.collectionSlug,
-      kv,
+      tenantId: tenantCtx?.tenant.id,
     })
     if (x402Res) return x402Res
 
@@ -566,9 +573,9 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
     const depth = Math.min(Math.max(depthParam, 1), 3)
 
     const x402Res = await handleX402Gate(ctx, {
-      secret: workerEnv?.BETTER_AUTH_SECRET || workerEnv?.EDGECMS_API_KEY || 'edgecms_secret',
+      secret: resolveX402Secret(workerEnv),
       collectionSlug: params.collectionSlug,
-      kv,
+      tenantId: tenantCtx?.tenant.id,
     })
     if (x402Res) return x402Res
 
@@ -608,9 +615,9 @@ export const publicController = new Elysia({ prefix: '/api/public', normalize: '
     const { params, query, set, db, kv, tenantCtx, workerEnv, request } = ctx
 
     const x402Res = await handleX402Gate(ctx, {
-      secret: workerEnv?.BETTER_AUTH_SECRET || workerEnv?.EDGECMS_API_KEY || 'edgecms_secret',
+      secret: resolveX402Secret(workerEnv),
       collectionSlug: params.collectionSlug,
-      kv,
+      tenantId: tenantCtx?.tenant.id,
     })
     if (x402Res) return x402Res
 

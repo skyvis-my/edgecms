@@ -7,9 +7,22 @@ import {
   verifyL402Token,
   isMonetizedRequest,
   handleX402Gate,
+  resolveX402Secret,
+  isSettledPaidRead,
 } from '@/public/x402.middleware'
 
 const TEST_SECRET = 'super_secret_test_key_for_x402_signatures'
+
+function settle(challengeId: string, resource: string, extra: Partial<{ tenantId: string; price: number; currency: string; ttlSeconds: number }> = {}) {
+  return createSettlementToken(TEST_SECRET, {
+    challengeId,
+    resource,
+    price: 100,
+    currency: 'SATS',
+    ...extra,
+  })
+}
+const expect100 = (resource: string, tenantId?: string) => ({ resource, tenantId, price: 100, currency: 'SATS' })
 
 describe('HTTP 402 / x402 Agent Micropayments Protocol Adapter (C-16)', () => {
   describe('createL402Challenge & verifyL402Token', () => {
@@ -30,60 +43,121 @@ describe('HTTP 402 / x402 Agent Micropayments Protocol Adapter (C-16)', () => {
 
     it('verifies valid HMAC settlement token and confirms settlement', async () => {
       const challenge = await createL402Challenge(TEST_SECRET, '/api/public/data', { price: 50 })
-      const token = await createSettlementToken(TEST_SECRET, challenge.challengeId, '/api/public/data')
+      const token = await settle(challenge.challengeId, '/api/public/data', { price: 50 })
 
-      const verification = await verifyL402Token(TEST_SECRET, token, '/api/public/data')
+      const verification = await verifyL402Token(TEST_SECRET, token, { resource: '/api/public/data', price: 50, currency: 'SATS' })
       expect(verification.valid).toBe(true)
       expect(verification.settled).toBe(true)
       expect(verification.challengeId).toBe(challenge.challengeId)
     })
 
     it('handles Authorization header format with L402 prefix', async () => {
-      const token = await createSettlementToken(TEST_SECRET, 'chal-123', '/api/public/report')
+      const token = await settle('chal-123', '/api/public/report')
       const authHeader = `L402 ${token}`
 
-      const verification = await verifyL402Token(TEST_SECRET, authHeader, '/api/public/report')
+      const verification = await verifyL402Token(TEST_SECRET, authHeader, expect100('/api/public/report'))
       expect(verification.valid).toBe(true)
       expect(verification.settled).toBe(true)
       expect(verification.challengeId).toBe('chal-123')
     })
 
     it('rejects tampered token with invalid signature', async () => {
-      const token = await createSettlementToken(TEST_SECRET, 'chal-123', '/api/public/data')
+      const token = await settle('chal-123', '/api/public/data')
       const tampered = token.slice(0, -5) + 'AAAAA'
 
-      const verification = await verifyL402Token(TEST_SECRET, tampered, '/api/public/data')
+      const verification = await verifyL402Token(TEST_SECRET, tampered, expect100('/api/public/data'))
       expect(verification.valid).toBe(false)
       expect(verification.settled).toBe(false)
       expect(verification.reason).toBe('invalid_signature')
     })
 
     it('rejects malformed token', async () => {
-      const verification = await verifyL402Token(TEST_SECRET, 'invalid-non-dotted-token', '/api/public/data')
+      const verification = await verifyL402Token(TEST_SECRET, 'invalid-non-dotted-token', expect100('/api/public/data'))
       expect(verification.valid).toBe(false)
       expect(verification.reason).toBe('malformed_token')
     })
 
     it('rejects token when presented against a different resource (resource mismatch)', async () => {
-      const token = await createSettlementToken(TEST_SECRET, 'chal-123', '/api/public/data')
-      const verification = await verifyL402Token(TEST_SECRET, token, '/api/public/expensive-secret')
+      const token = await settle('chal-123', '/api/public/data')
+      const verification = await verifyL402Token(TEST_SECRET, token, expect100('/api/public/expensive-secret'))
       expect(verification.valid).toBe(false)
       expect(verification.settled).toBe(false)
       expect(verification.reason).toBe('resource_mismatch')
     })
 
-    it('resolves settlement token from KV cache', async () => {
-      const mockKv = {
-        get: async (key: string) => {
-          if (key === 'x402:settled:preimage-xyz') return 'chal-kv-settled'
-          return null
-        },
-      } as unknown as KVNamespace
+    it('does not accept a bare KV key as a settlement (no unbound shortcut)', async () => {
+      const verification = await verifyL402Token(TEST_SECRET, 'preimage-xyz', expect100('/api/public/data'))
+      expect(verification.valid).toBe(false)
+    })
 
-      const verification = await verifyL402Token(TEST_SECRET, 'preimage-xyz', '/api/public/data', mockKv)
-      expect(verification.valid).toBe(true)
-      expect(verification.settled).toBe(true)
-      expect(verification.challengeId).toBe('chal-kv-settled')
+    it('rejects the challenge macaroon used as a settlement proof', async () => {
+      const challenge = await createL402Challenge(TEST_SECRET, '/api/public/premium')
+      const verification = await verifyL402Token(TEST_SECRET, challenge.macaroon, expect100('/api/public/premium'))
+      expect(verification.valid).toBe(false)
+      expect(verification.reason).toBe('not_a_settlement')
+    })
+
+    it('rejects an expired settlement token', async () => {
+      const token = await settle('chal-old', '/api/public/premium', { ttlSeconds: 1 })
+      const realNow = Date.now
+      Date.now = () => realNow() + 2000
+      try {
+        const verification = await verifyL402Token(TEST_SECRET, token, expect100('/api/public/premium'))
+        expect(verification.reason).toBe('token_expired')
+      } finally {
+        Date.now = realNow
+      }
+    })
+
+    it('caps settlement lifetime at one day', async () => {
+      const token = await settle('chal-long', '/api/public/premium', { ttlSeconds: 10 * 86400 })
+      const realNow = Date.now
+      Date.now = () => realNow() + 86400 * 1000 + 1000
+      try {
+        const verification = await verifyL402Token(TEST_SECRET, token, expect100('/api/public/premium'))
+        expect(verification.reason).toBe('token_expired')
+      } finally {
+        Date.now = realNow
+      }
+    })
+
+    it('rejects a token minted for another tenant on the same path', async () => {
+      const token = await settle('chal-a', '/api/public/premium', { tenantId: 'tenant-a' })
+      const verification = await verifyL402Token(TEST_SECRET, token, expect100('/api/public/premium', 'tenant-b'))
+      expect(verification.reason).toBe('tenant_mismatch')
+      const global = await verifyL402Token(TEST_SECRET, token, expect100('/api/public/premium'))
+      expect(global.reason).toBe('tenant_mismatch')
+    })
+
+    it('rejects a token settled for a lower price or another currency', async () => {
+      const cheap = await settle('chal-cheap', '/api/public/premium', { price: 1 })
+      expect((await verifyL402Token(TEST_SECRET, cheap, expect100('/api/public/premium'))).reason).toBe(
+        'amount_mismatch'
+      )
+      const usd = await settle('chal-usd', '/api/public/premium', { currency: 'USD' })
+      expect((await verifyL402Token(TEST_SECRET, usd, expect100('/api/public/premium'))).reason).toBe(
+        'amount_mismatch'
+      )
+    })
+
+    it('rejects a token signed with a different secret (e.g. the old built-in default)', async () => {
+      const forged = await createSettlementToken('edgecms_secret', {
+        challengeId: 'x',
+        resource: '/api/public/premium',
+        price: 100,
+        currency: 'SATS',
+      })
+      const verification = await verifyL402Token(TEST_SECRET, forged, expect100('/api/public/premium'))
+      expect(verification.reason).toBe('invalid_signature')
+    })
+  })
+
+  describe('resolveX402Secret', () => {
+    it('uses X402_SECRET only, never auth or API-key secrets', () => {
+      expect(resolveX402Secret({ X402_SECRET: 'abc' })).toBe('abc')
+      expect(resolveX402Secret({ BETTER_AUTH_SECRET: 'auth', EDGECMS_API_KEY: 'key' } as never)).toBeUndefined()
+      expect(resolveX402Secret({ X402_SECRET: '  ' })).toBeUndefined()
+      expect(resolveX402Secret(undefined)).toBeUndefined()
     })
   })
 
@@ -151,7 +225,7 @@ describe('HTTP 402 / x402 Agent Micropayments Protocol Adapter (C-16)', () => {
     })
 
     it('permits request and adds X-402-Settled header when valid token is provided', async () => {
-      const token = await createSettlementToken(TEST_SECRET, 'chal-paid-1', '/api/public/premium-posts')
+      const token = await settle('chal-paid-1', '/api/public/premium-posts')
       const ctx = {
         request: new Request('http://localhost/api/public/premium-posts', {
           headers: {
@@ -169,6 +243,23 @@ describe('HTTP 402 / x402 Agent Micropayments Protocol Adapter (C-16)', () => {
       expect(response).toBeNull() // Proceed to route handler
       expect(ctx.set.headers['X-402-Settled']).toBe('true')
       expect(ctx.set.headers['X-402-Receipt']).toBe('chal-paid-1')
+      expect(isSettledPaidRead(ctx.set.headers)).toBe(true)
+    })
+
+    it('binds the challenge to the request tenant', async () => {
+      const ctx = {
+        request: new Request('http://localhost/api/public/premium-posts'),
+        set: { headers: {} },
+      } as any
+      const response = await handleX402Gate(ctx, {
+        secret: TEST_SECRET,
+        collectionSlug: 'premium-posts',
+        tenantId: 'tenant-a',
+      })
+      const { macaroon } = (await response!.json()) as { macaroon: string }
+      const payload = JSON.parse(atob(macaroon.split('.')[0]!.replace(/-/g, '+').replace(/_/g, '/')))
+      expect(payload.tid).toBe('tenant-a')
+      expect(payload.typ).toBe('x402.challenge')
     })
   })
 
@@ -199,7 +290,7 @@ describe('HTTP 402 / x402 Agent Micropayments Protocol Adapter (C-16)', () => {
     })
 
     it('returns 200 OK with X-402-Settled header when valid payment token is supplied', async () => {
-      const token = await createSettlementToken(TEST_SECRET, 'chal-settled-100', '/api/public/premium-articles')
+      const token = await settle('chal-settled-100', '/api/public/premium-articles')
       const req = new Request('http://localhost/api/public/premium-articles', {
         headers: {
           Authorization: `L402 ${token}`,
@@ -223,23 +314,30 @@ describe('HTTP 402 / x402 Agent Micropayments Protocol Adapter (C-16)', () => {
     })
 
     it('createSettlementToken throws 500 without secret', async () => {
-      await expect(createSettlementToken('', 'chal-1', '/res')).rejects.toMatchObject({
+      await expect(
+        createSettlementToken('', { challengeId: 'chal-1', resource: '/res', price: 1, currency: 'SATS' })
+      ).rejects.toMatchObject({
         status: 500,
       })
     })
 
     it('verifyL402Token throws 500 without secret', async () => {
-      await expect(verifyL402Token('', 'tok', '/res')).rejects.toMatchObject({ status: 500 })
+      await expect(verifyL402Token('', 'tok', expect100('/res'))).rejects.toMatchObject({ status: 500 })
     })
 
-    it('handleX402Gate throws 500 for monetized request without secret', async () => {
-      const ctx = {
-        request: new Request('http://localhost/api/public/premium-posts'),
-        set: { headers: {} },
-      } as any
-      await expect(
-        handleX402Gate(ctx, { secret: '', collectionSlug: 'premium-posts' })
-      ).rejects.toMatchObject({ status: 500 })
+    it('handleX402Gate answers 500 CONFIG_ERROR (no-store) for a monetized request without secret', async () => {
+      for (const secret of ['', undefined]) {
+        const ctx = {
+          request: new Request('http://localhost/api/public/premium-posts'),
+          set: { headers: {} },
+        } as any
+        const res = await handleX402Gate(ctx, { secret, collectionSlug: 'premium-posts' })
+        expect(res?.status).toBe(500)
+        expect(res?.headers.get('cache-control')).toBe('private, no-store')
+        const body = (await res!.json()) as { error: { code: string } }
+        expect(body.error.code).toBe('CONFIG_ERROR')
+        expect(ctx.set.headers['X-402-Settled']).toBeUndefined()
+      }
     })
 
     it('free routes still pass without secret', async () => {

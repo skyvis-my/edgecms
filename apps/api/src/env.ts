@@ -59,6 +59,8 @@ export interface Env {
   SIGNUP_POLICY?: string
   AUTH_EMAIL_SENDER?: string
   PREVIEW_SECRET?: string
+  /** DL-07: signs x402/L402 paid-read challenges and settlement tokens; no fallback. */
+  X402_SECRET?: string
   WEBHOOK_ALLOWED_HOSTS?: string
   CORS_ALLOWED_ORIGINS?: string
   ADMIN_CORS_ALLOWED_ORIGINS?: string
