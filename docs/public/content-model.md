@@ -162,7 +162,7 @@ GET /api/tenants/:tenantSlug/public/posts/hello-world?populate=*
 
 Populated entries are full entry rows (`id`, `slug`, `status`, `data`, `version`, timestamps), scoped to the tenant. Public routes return only related entries that are publicly visible right now, using the same rule as public list and get: status `published` or `scheduled`, `publishAt` empty or in the past, and `unpublishAt` empty or in the future. Draft, archived, not-yet-live and expired related entries are left out: a `one-to-one` field becomes `null` and arrays skip them. Admin reads still return every related entry.
 
-A public snapshot's cache TTL also expires before the next `publishAt` or `unpublishAt` of any related entry it resolved, so a related entry appears or disappears on schedule (60-second floor, same as the parent collection's TTL). Editing a related entry does not purge snapshots of entries that link to it; they refresh when their TTL ends or their own collection changes. See also the relation notes in the [public API](public-api.md) guide.
+A public snapshot's cache TTL also expires before the next `publishAt` or `unpublishAt` of any related entry it resolved, so a related entry appears or disappears on schedule (60-second floor, same as the parent collection's TTL). Updating, publishing, unpublishing or deleting a related entry purges cached snapshots of entries that include it, through the same cache tags commands use (one tag per related entry, or per related collection above 50). See [cache headers](public-api.md#cache-headers). See also the relation notes in the [public API](public-api.md) guide.
 
 ## Entry Lifecycle
 

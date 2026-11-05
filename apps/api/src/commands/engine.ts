@@ -588,6 +588,22 @@ function deriveWebhookEvent(
   }
 }
 
+/**
+ * Payload used for cache-tag extraction. Tags are extracted after the handler
+ * ran, so a deleted entry can no longer be looked up; fall back to the
+ * collectionId the handler reported so collection-level tags (including the
+ * related-collection fallback on populated snapshots) are still purged.
+ */
+function cacheTagPayload(
+  envelope: CommandEnvelope,
+  handlerResult: CommandHandlerResult
+): Record<string, unknown> {
+  const payload = envelope.payload as Record<string, unknown>
+  const reported = (handlerResult.data as Record<string, unknown> | undefined)?.collectionId
+  if (typeof payload.collectionId === 'string' || typeof reported !== 'string') return payload
+  return { ...payload, collectionId: reported }
+}
+
 async function handlePostExecution(
   ctx: CommandContext,
   envelope: CommandEnvelope,
@@ -625,7 +641,7 @@ async function handlePostExecution(
       cacheTags = await extractCacheTagsFromCommand(
         ctx.db,
         envelope.type,
-        envelope.payload,
+        cacheTagPayload(envelope, handlerResult),
         tenantScope ?? undefined
       )
     } catch (err) {
@@ -920,7 +936,7 @@ async function executeSingleCommand(
         const tags = await extractCacheTagsFromCommand(
           ctx.db,
           envelope.type,
-          envelope.payload,
+          cacheTagPayload(envelope, handlerResult),
           tenantScope ?? undefined
         )
         precomputedCacheTags = tags

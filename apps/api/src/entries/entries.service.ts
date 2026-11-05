@@ -955,7 +955,11 @@ export const entriesService = {
   },
 
   /** Delete an entry by ID. */
-  async deleteById(db: Database, id: string, tenantId?: string): Promise<ServiceResult<{ id: string }>> {
+  async deleteById(
+    db: Database,
+    id: string,
+    tenantId?: string
+  ): Promise<ServiceResult<{ id: string; collectionId: string }>> {
     const existing = await entriesRepository.findById(db, id, tenantId)
     if (!existing) {
       return {
@@ -970,7 +974,9 @@ export const entriesService = {
         error: { code: 'NOT_FOUND', message: `Entry '${id}' not found` },
       }
     }
-    return { success: true, data: { id } }
+    // collectionId lets the command engine still emit collection cache tags
+    // after the row is gone (CM-04/DL-03 related-snapshot purge).
+    return { success: true, data: { id, collectionId: existing.collectionId } }
   },
 
   /** Duplicate an entry by ID. Creates a copy with draft status and new slug. */

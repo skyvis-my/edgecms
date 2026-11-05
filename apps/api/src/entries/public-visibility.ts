@@ -1,6 +1,8 @@
 import { publicEntryStatuses } from '@/shared/schemas/entry'
 
 type VisibilityFields = {
+  id?: string
+  collectionId?: string
   status: string
   publishAt?: string | null
   unpublishAt?: string | null
@@ -23,14 +25,20 @@ export function isEntryPubliclyVisible(entry: VisibilityFields, nowIso: string):
  * a whole populate tree and records the nearest future publishAt/unpublishAt
  * among every related entry it saw (visible or not), so the caller can expire
  * the snapshot before a related entry enters or leaves its window.
+ *
+ * It also records the id and collection of every related entry it saw
+ * (visible or not), so the snapshot can be cache-tagged with them and purged
+ * when one of them is updated, published, unpublished or deleted.
  */
 export interface PublicVisibility {
   readonly now: string
   nearestTransitionAt: string | null
+  /** Related entry id -> its collection id (empty string when unknown). */
+  readonly relatedEntries?: Map<string, string>
 }
 
 export function createPublicVisibility(now = new Date().toISOString()): PublicVisibility {
-  return { now, nearestTransitionAt: null }
+  return { now, nearestTransitionAt: null, relatedEntries: new Map() }
 }
 
 /** Record future transitions of `entries`, then return only the visible ones. */
@@ -40,6 +48,7 @@ export function filterPubliclyVisible<T extends VisibilityFields>(
 ): T[] {
   const { now } = visibility
   for (const entry of entries) {
+    if (entry.id) visibility.relatedEntries?.set(entry.id, entry.collectionId ?? '')
     for (const at of [entry.publishAt, entry.unpublishAt]) {
       if (at && at > now && (!visibility.nearestTransitionAt || at < visibility.nearestTransitionAt)) {
         visibility.nearestTransitionAt = at
