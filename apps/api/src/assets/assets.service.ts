@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm'
 import { estimateDecodedSize, storedAssetBytes } from './storage-bytes'
+import { isValidBlurhash } from './blurhash'
 import type { Database } from '@/database/db'
 import type { Env } from '@/env'
 import { logger } from '@/observability/logger'
@@ -201,7 +202,9 @@ export const assetsService = {
 
     const storedWidth = inferredWidth ?? null
     const storedHeight = inferredHeight ?? null
-    const storedBlurhash = input.blurhash ?? null
+    // MD-03: never store an arbitrary string; the controller already
+    // rejects malformed values with 400, this is the last guard.
+    const storedBlurhash = isValidBlurhash(input.blurhash) ? input.blurhash : null
 
     // ATM: compensating R2 rollback — if the D1 insert fails after the R2
     // put, delete the orphaned object instead of leaking storage.

@@ -1,4 +1,5 @@
 import type { UploadAssetInput } from './api'
+import { encodeBlurhash, pickBlurhashComponents } from './blurhash'
 import { resolveFileMimeType } from './file-policy'
 import { buildAssetFilename } from './media-utils'
 
@@ -96,6 +97,26 @@ function resizeToCanvas(
   return { canvas, width, height }
 }
 
+/**
+ * MD-03: blurhash from the smallest variant's pixels. Returns undefined when
+ * the pixels cannot be read, so the upload still proceeds without one.
+ */
+function computeCanvasBlurhash(
+  canvas: HTMLCanvasElement,
+  width: number,
+  height: number
+): string | undefined {
+  try {
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return undefined
+    const { data } = ctx.getImageData(0, 0, width, height)
+    const { componentX, componentY } = pickBlurhashComponents(width, height)
+    return encodeBlurhash(data, width, height, componentX, componentY)
+  } catch {
+    return undefined
+  }
+}
+
 async function fileToBase64(file: File): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer())
   let binary = ''
@@ -141,9 +162,14 @@ export async function optimizeImageForUpload(args: {
   const uploadMimeType = cappedOriginal ? 'image/webp' : mimeType
 
   const variants: NonNullable<UploadAssetInput['variants']> = []
+  let blurhash: string | undefined
 
-  for (const variantDef of VARIANTS) {
+  for (const [index, variantDef] of VARIANTS.entries()) {
     const { canvas, width, height } = resizeToCanvas(image, variantDef.maxDimension, maxDimension)
+    if (index === 0) {
+      // VARIANTS is ordered smallest first: the thumbnail is the cheapest source.
+      blurhash = computeCanvasBlurhash(canvas, width, height)
+    }
     const webpBase64 = canvasToBase64(canvas, 'webp', quality)
     if (!webpBase64) {
       throw new Error('WebP encoder unavailable in this browser')
@@ -175,6 +201,7 @@ export async function optimizeImageForUpload(args: {
     contentBase64: originalBase64,
     width: cappedOriginal?.width ?? image.width,
     height: cappedOriginal?.height ?? image.height,
+    ...(blurhash && { blurhash }),
     variants,
   }
 }

@@ -86,6 +86,8 @@ Multipart fields: `file` (required), `filename`, `mimeType`, `width`, `height`, 
 }
 ```
 
+`blurhash` must be a well-formed [blurhash](https://blurha.sh): base83 characters, 1 to 9 components on each axis, and a length that matches the component count in its first character (at most 166 characters). Anything else returns `400 BAD_REQUEST` and nothing is stored. An empty value counts as no blurhash.
+
 The Worker does not resize, re-encode or decode images. It does read the image header to check the tenant's dimension limit (see [Per-tenant limits](#per-tenant-limits-md-05)). It stores the original and whatever variants the caller sends. An API upload without `variants` stores only the original, and the public variant routes then serve the original (see [Public asset routes](#public-asset-routes)). `image-pipeline.ts` defines a variant plan but nothing calls it.
 
 Responses:
@@ -160,13 +162,13 @@ D1 tables `assets` and `asset_variants`:
 | `filename` | May contain `/` to place the file in a folder, e.g. `blog/hero.jpg`. Renaming moves it. |
 | `mime_type`, `size` | Resolved type; original size in bytes. |
 | `width`, `height` | Read from the file header when the format is supported; otherwise as sent by the uploader, or the largest variant's size. |
-| `blurhash` | Stored if the uploader sends one. |
+| `blurhash` | The admin uploader computes it in the browser from the thumbnail variant and always sends it for images. API uploads store it only when the caller sends one; the Worker does not compute it. |
 | `original_key` | R2 key of the original. |
 | `created_by`, `created_at`, `updated_at`, `deleted_at` | `deleted_at` marks a soft delete. |
 
 Each `asset_variants` row has `variant`, `format`, `width`, `height`, `file_size` and `object_key`.
 
-Gaps: the admin uploader does not compute a blurhash, so `blurhash` stays empty unless an API caller provides one. The asset table has no alt text, caption, credit or focal point columns; the helpers described under [Media Metadata And Policy](public-api.md#media-metadata-and-policy) are contract-level only.
+Gaps: an API upload without a `blurhash` field is stored with no blurhash, because the Worker has no image decoder (computing one needs decoded pixels). The admin uploader also leaves it empty if the browser cannot read the canvas pixels. The asset table has no alt text, caption, credit or focal point columns; the helpers described under [Media Metadata And Policy](public-api.md#media-metadata-and-policy) are contract-level only.
 
 ## Public asset routes
 
