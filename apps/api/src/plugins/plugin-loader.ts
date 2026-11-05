@@ -16,8 +16,11 @@ import {
 } from './trusted-plugin-catalog'
 
 import {
+  composePluginContracts,
   PLUGIN_SDK_VERSION,
+  satisfiesSemverRange,
   type PluginAdmissionRejectionCode,
+  type PluginCompositionReport,
   type PluginCapability,
   type PluginManifest,
 } from '@edgecms/plugin-sdk'
@@ -39,6 +42,7 @@ export {
   PluginCapabilityError,
 }
 export type {
+  PluginCompositionReport,
   PluginAdmissionRejectionCode,
   PluginCapability,
   PluginManifest,
@@ -53,6 +57,8 @@ type PluginConfigEntry = {
 
 type PluginLoadOptions = {
   kv?: KVNamespace
+  /** The Worker env; EX-02 binding requirements are checked against it. */
+  env?: Record<string, unknown>
 }
 
 import type {
@@ -156,19 +162,10 @@ function getTrustedAdminMenu(
   return { adminMenu, blockedAdminMenuLabels }
 }
 
-function parseSemver(v: string): [number, number, number] | null {
-  const parts = v.trim().replace(/^[\^~>=<]+/, '').split('.').map(Number)
-  if (parts.length < 3 || parts.some(n => Number.isNaN(n))) return null
-  return [parts[0]!, parts[1]!, parts[2]!]
-}
-
+// Fails closed: an unparsable range or version never matches (EX-02).
 function isCompatibleVersion(actualVersion: string, expectedRange: string | undefined): boolean {
-  if (!expectedRange || expectedRange === '*' || expectedRange === 'latest') return true
-  const actual = parseSemver(actualVersion)
-  const expected = parseSemver(expectedRange)
-  if (!actual || !expected) return true
-  // Match major versions for semantic compatibility
-  return actual[0] === expected[0]
+  if (expectedRange === undefined) return true
+  return satisfiesSemverRange(actualVersion, expectedRange)
 }
 
 export type AdmissionFailure = {
@@ -206,7 +203,7 @@ export function validatePluginAdmission(
   allManifests: PluginManifest[],
   trustedPlugin: TrustedPluginDefinition | undefined,
   activeBindings?: Record<string, unknown>,
-  claimedRouteNames?: Set<string>
+  claimedRoutePaths?: Set<string>
 ): AdmissionFailure | null {
   if (!trustedPlugin) {
     return {
@@ -215,13 +212,21 @@ export function validatePluginAdmission(
     }
   }
 
-  // 1. Duplicate Route Ownership
-  if (claimedRouteNames && trustedPlugin.routes) {
-    for (const routeName of Object.keys(trustedPlugin.routes)) {
-      if (claimedRouteNames.has(routeName)) {
+  // 1. Duplicate Route Ownership: a path already registered by another plugin.
+  // Route names are per-plugin labels, so two plugins may both have `health`.
+  if (claimedRoutePaths && trustedPlugin.routes) {
+    for (const [routeName, routeFactory] of Object.entries(trustedPlugin.routes)) {
+      let paths: string[]
+      try {
+        paths = getRoutePaths(routeFactory() as AnyElysia)
+      } catch {
+        continue // a throwing factory is blocked when routes are registered
+      }
+      const claimed = paths.find((path) => claimedRoutePaths.has(path))
+      if (claimed) {
         return {
           rejectionCode: 'DUPLICATE_OWNERSHIP',
-          reason: `Duplicate route ownership detected for '${routeName}'`,
+          reason: `Duplicate route ownership detected for '${claimed}' (route '${routeName}')`,
         }
       }
     }
@@ -361,6 +366,12 @@ export class PluginRuntime {
     createRoute: TrustedPluginRouteFactory
   }> = []
 
+  private compositionReport: PluginCompositionReport = {
+    frameworkVersion: API_VERSION,
+    loadOrder: [],
+    rejected: [],
+  }
+
   constructor(registry: PluginRegistry = createDefaultRegistry()) {
     this.registry = registry
     registryRuntimeMap.set(this.registry, this)
@@ -389,6 +400,9 @@ export class PluginRuntime {
       if (plugin.rejectionCode !== undefined) {
         entry.rejectionCode = plugin.rejectionCode
       }
+      if (plugin.issues !== undefined) {
+        entry.issues = plugin.issues.map((issue) => ({ ...issue }))
+      }
       return entry
     })
   }
@@ -407,6 +421,7 @@ export class PluginRuntime {
     this.loadedPluginAiTools = []
     this.loadedPluginFields = []
     this.loadedPluginRoutes = []
+    this.compositionReport = { frameworkVersion: API_VERSION, loadOrder: [], rejected: [] }
   }
 
   createLoadedPluginRoutesController(): AnyElysia {
@@ -419,7 +434,57 @@ export class PluginRuntime {
 
   loadPluginsSync(
     manifests: PluginManifest[],
-    trustedPluginResolver: (name: string) => TrustedPluginDefinition | undefined = getTrustedPluginDefinition
+    trustedPluginResolver: (name: string) => TrustedPluginDefinition | undefined = getTrustedPluginDefinition,
+    options: Pick<PluginLoadOptions, 'env'> = {}
+  ): PluginRegistry {
+    return this.applyManifests(
+      manifests,
+      manifests.map((manifest) => manifest.enabled !== false),
+      trustedPluginResolver,
+      options.env,
+      options.env
+    )
+  }
+
+  async loadPlugins(
+    manifests: PluginManifest[],
+    trustedPluginResolver: (name: string) => TrustedPluginDefinition | undefined = getTrustedPluginDefinition,
+    options: PluginLoadOptions = {}
+  ): Promise<PluginRegistry> {
+    const kv = options.kv
+    if (!kv) {
+      return this.loadPluginsSync(manifests, trustedPluginResolver, options)
+    }
+    const enabledFlags: boolean[] = []
+    for (const manifest of manifests) {
+      enabledFlags.push(manifest.enabled !== false && (await this.registry.isPluginEnabled(kv, manifest.name)))
+    }
+    return this.applyManifests(
+      manifests,
+      enabledFlags,
+      trustedPluginResolver,
+      options.env,
+      options.env ?? { CACHE: kv }
+    )
+  }
+
+  getCompositionReport(): PluginCompositionReport {
+    return {
+      frameworkVersion: this.compositionReport.frameworkVersion,
+      loadOrder: [...this.compositionReport.loadOrder],
+      rejected: this.compositionReport.rejected.map((entry) => ({
+        ...entry,
+        issues: entry.issues.map((issue) => ({ ...issue })),
+      })),
+    }
+  }
+
+  private applyManifests(
+    manifests: PluginManifest[],
+    enabledFlags: boolean[],
+    trustedPluginResolver: (name: string) => TrustedPluginDefinition | undefined,
+    env: Record<string, unknown> | undefined,
+    activeBindings: Record<string, unknown> | undefined
   ): PluginRegistry {
     const currentHookTimeoutMs = this.registry.getHookTimeoutMs()
     this.registry.clear()
@@ -429,11 +494,37 @@ export class PluginRuntime {
     this.loadedPluginFields = []
     this.loadedPluginRoutes = []
     const loadedToolNames = new Set<string>()
-    const claimedRouteNames = new Set<string>()
+    const claimedRoutePaths = new Set<string>()
 
-    for (const manifest of manifests) {
-      const enabled = manifest.enabled !== false
-      const trustedPlugin = trustedPluginResolver(manifest.name)
+    const trustedPlugins = manifests.map((manifest) => trustedPluginResolver(manifest.name))
+
+    // EX-02: check every enabled, trusted plugin's contract (engine range,
+    // dependencies, bindings) together, then register in dependency order.
+    const report = composePluginContracts({
+      frameworkVersion: API_VERSION,
+      plugins: manifests.flatMap((manifest, index) => {
+        const definition = trustedPlugins[index]
+        return enabledFlags[index] && definition ? [{ name: manifest.name, definition }] : []
+      }),
+      env,
+    })
+    this.compositionReport = report
+    const rejectedByName = new Map(report.rejected.map((entry) => [entry.pluginName, entry]))
+    const admitted = new Set(report.loadOrder)
+
+    // Admitted plugins take their slots in load order; everything else keeps its position.
+    const nextAdmitted = report.loadOrder[Symbol.iterator]()
+    const indexByName = new Map(manifests.map((manifest, index) => [manifest.name, index]))
+    const order = manifests.map((manifest, index) => {
+      if (!enabledFlags[index] || !admitted.has(manifest.name)) return index
+      const name = nextAdmitted.next().value as string
+      return indexByName.get(name)!
+    })
+
+    for (const index of order) {
+      const manifest = manifests[index]!
+      const enabled = enabledFlags[index]!
+      const trustedPlugin = trustedPlugins[index]
 
       if (!enabled) {
         const { adminMenu, blockedAdminMenuLabels } = getTrustedAdminMenu(
@@ -460,9 +551,15 @@ export class PluginRuntime {
         continue
       }
 
-      const admissionFailure = validatePluginAdmission(manifest, manifests, trustedPlugin, undefined, claimedRouteNames)
+      const contractRejection = trustedPlugin ? rejectedByName.get(manifest.name) : undefined
+      const admissionFailure: AdmissionFailure | null = contractRejection
+        ? {
+            rejectionCode: contractRejection.code,
+            reason: contractRejection.issues.map((issue) => issue.message).join(' '),
+          }
+        : validatePluginAdmission(manifest, manifests, trustedPlugin, activeBindings, claimedRoutePaths)
       if (admissionFailure) {
-        this.loadedPlugins.push({
+        const blocked: LoadedPluginMetadata = {
           name: manifest.name,
           enabled: true,
           hooks: [],
@@ -475,11 +572,12 @@ export class PluginRuntime {
           adminMenu: [],
           reason: admissionFailure.reason,
           rejectionCode: admissionFailure.rejectionCode,
-        })
+        }
+        if (contractRejection) blocked.issues = contractRejection.issues.map((issue) => ({ ...issue }))
+        this.loadedPlugins.push(blocked)
         continue
       }
       if (!trustedPlugin) continue
-
 
       for (const [hookName, hook] of Object.entries(trustedPlugin.hooks)) {
         if (!hook) continue
@@ -530,171 +628,7 @@ export class PluginRuntime {
         }
 
         loadedRouteNames.push(routeName)
-        claimedRouteNames.add(routeName)
-        if (routeKinds.includes('admin')) loadedAdminRouteNames.push(routeName)
-        this.loadedPluginRoutes.push({
-          pluginName: manifest.name,
-          routeName,
-          createRoute: routeFactory,
-        })
-      }
-
-      this.loadedPlugins.push({
-        name: manifest.name,
-        enabled: true,
-        hooks: Object.keys(trustedPlugin.hooks) as HookName[],
-        aiTools: trustedPlugin.aiTools?.map((tool) => tool.name) ?? [],
-        routes: loadedRouteNames,
-        adminRoutes: loadedAdminRouteNames,
-        publicRoutes: loadedPublicRouteNames,
-        status: 'loaded',
-        sandbox: 'trusted_catalog',
-        metadata: trustedPlugin.metadata ? { ...trustedPlugin.metadata } : undefined,
-        adminMenu,
-        reason:
-          blockedRouteNames.length > 0 || blockedAdminMenuLabels.length > 0
-            ? [
-                blockedRouteNames.length > 0
-                  ? `Blocked unsandboxed plugin routes: ${blockedRouteNames.join(', ')}`
-                  : undefined,
-                blockedAdminMenuLabels.length > 0
-                  ? `Blocked unsafe plugin admin menu items: ${blockedAdminMenuLabels.join(', ')}`
-                  : undefined,
-              ]
-                .filter(Boolean)
-                .join('; ')
-            : undefined,
-      })
-    }
-
-    return this.registry
-  }
-
-  async loadPlugins(
-    manifests: PluginManifest[],
-    trustedPluginResolver: (name: string) => TrustedPluginDefinition | undefined = getTrustedPluginDefinition,
-    options: PluginLoadOptions = {}
-  ): Promise<PluginRegistry> {
-    if (!options.kv) {
-      return this.loadPluginsSync(manifests, trustedPluginResolver)
-    }
-    const currentHookTimeoutMs = this.registry.getHookTimeoutMs()
-    this.registry.clear()
-    this.registry.setHookTimeoutMs(currentHookTimeoutMs)
-    this.loadedPlugins = []
-    this.loadedPluginAiTools = []
-    this.loadedPluginFields = []
-    this.loadedPluginRoutes = []
-    const loadedToolNames = new Set<string>()
-    const claimedRouteNames = new Set<string>()
-
-    for (const manifest of manifests) {
-      const enabled =
-        manifest.enabled !== false &&
-        (options.kv ? await this.registry.isPluginEnabled(options.kv, manifest.name) : true)
-      const trustedPlugin = trustedPluginResolver(manifest.name)
-
-      if (!enabled) {
-        const { adminMenu, blockedAdminMenuLabels } = getTrustedAdminMenu(
-          manifest.name,
-          trustedPlugin
-        )
-        this.loadedPlugins.push({
-          name: manifest.name,
-          enabled: false,
-          hooks: trustedPlugin ? (Object.keys(trustedPlugin.hooks) as HookName[]) : [],
-          aiTools: trustedPlugin?.aiTools?.map((tool) => tool.name) ?? [],
-          routes: Object.keys(trustedPlugin?.routes ?? {}),
-          adminRoutes: [],
-          publicRoutes: [],
-          status: 'disabled',
-          sandbox: 'trusted_catalog',
-          metadata: trustedPlugin?.metadata ? { ...trustedPlugin.metadata } : undefined,
-          adminMenu,
-          reason:
-            blockedAdminMenuLabels.length > 0
-              ? `Blocked unsafe plugin admin menu items: ${blockedAdminMenuLabels.join(', ')}`
-              : undefined,
-        })
-        continue
-      }
-
-      const admissionFailure = validatePluginAdmission(
-        manifest,
-        manifests,
-        trustedPlugin,
-        options.kv ? { CACHE: options.kv } : undefined,
-        claimedRouteNames
-      )
-      if (admissionFailure) {
-        this.loadedPlugins.push({
-          name: manifest.name,
-          enabled: true,
-          hooks: [],
-          aiTools: [],
-          routes: [],
-          adminRoutes: [],
-          publicRoutes: [],
-          status: 'blocked',
-          sandbox: 'trusted_catalog',
-          adminMenu: [],
-          reason: admissionFailure.reason,
-          rejectionCode: admissionFailure.rejectionCode,
-        })
-        continue
-      }
-      if (!trustedPlugin) continue
-
-
-      for (const [hookName, hook] of Object.entries(trustedPlugin.hooks)) {
-        if (!hook) continue
-        this.registry.register(hookName as HookName, hook)
-      }
-      for (const aiTool of trustedPlugin.aiTools ?? []) {
-        if (loadedToolNames.has(aiTool.name)) continue
-        this.loadedPluginAiTools.push({
-          ...aiTool,
-          toCommands: (args) => {
-            const safeArgs = deepFreeze(cloneForSandbox(args))
-            const rawCommands = aiTool.toCommands(safeArgs)
-            return sanitizeToolCommands(rawCommands)
-          },
-        })
-        loadedToolNames.add(aiTool.name)
-      }
-      for (const field of trustedPlugin.fields ?? []) {
-        this.loadedPluginFields.push({ ...field })
-      }
-      const loadedRouteNames: string[] = []
-      const loadedAdminRouteNames: string[] = []
-      const loadedPublicRouteNames: string[] = []
-      const blockedRouteNames: string[] = []
-      const { adminMenu, blockedAdminMenuLabels } = getTrustedAdminMenu(
-        manifest.name,
-        trustedPlugin
-      )
-      for (const [routeName, routeFactory] of Object.entries(trustedPlugin.routes ?? {})) {
-        let routePaths: string[]
-        try {
-          const probeApp = routeFactory() as AnyElysia
-          routePaths = getRoutePaths(probeApp)
-        } catch {
-          blockedRouteNames.push(routeName)
-          continue
-        }
-        const routeKinds = routePaths.map((path) =>
-          getSandboxedPluginRouteKind(manifest.name, path)
-        )
-        const isSandboxed =
-          routeKinds.length > 0 && routeKinds.every((kind) => kind === 'admin')
-
-        if (!isSandboxed) {
-          blockedRouteNames.push(routeName)
-          continue
-        }
-
-        loadedRouteNames.push(routeName)
-        claimedRouteNames.add(routeName)
+        for (const path of routePaths) claimedRoutePaths.add(path)
         if (routeKinds.includes('admin')) loadedAdminRouteNames.push(routeName)
         this.loadedPluginRoutes.push({
           pluginName: manifest.name,

@@ -59,10 +59,12 @@ export async function bootstrapApp(options: BootstrapOptions = {}): Promise<Boot
   if (options.pluginRuntime) {
     await options.pluginRuntime.reloadConfiguredPlugins(targetEnv.EDGE_PLUGINS_JSON, {
       kv: targetEnv.CACHE,
+      env: targetEnv as unknown as Record<string, unknown>,
     })
   } else {
     await reloadConfiguredPlugins(targetEnv.EDGE_PLUGINS_JSON, registry, {
       kv: targetEnv.CACHE,
+      env: targetEnv as unknown as Record<string, unknown>,
     })
   }
 

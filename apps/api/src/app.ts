@@ -471,6 +471,7 @@ if (configuredPluginHookTimeoutMs !== undefined) {
 if (startupEnv.EDGE_PLUGINS_JSON) {
   await reloadConfiguredPlugins(startupEnv.EDGE_PLUGINS_JSON, pluginRegistry, {
     kv: startupEnv.CACHE,
+    env: startupEnv as Record<string, unknown>,
   })
 }
 
