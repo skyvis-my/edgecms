@@ -317,7 +317,7 @@ GET  /api/tenants/:tenantSlug/graphql
 POST /api/tenants/:tenantSlug/graphql
 ```
 
-The schema is generated per tenant from its collections: each collection gets a list field (`locale`, `page`, `perPage` up to 100, `sort`) and a single-entry field (`id` or `slug`, `locale`). Resolvers return published entries only. Queries are limited to depth 3 and complexity 50. A `GET` with no `query` (or with `Accept: text/html`) returns the GraphiQL playground; open it to see the exact field names. Its feature set does not match other CMS GraphQL APIs.
+The schema is generated per tenant from its collections: each collection gets a list field (`locale`, `page`, `perPage` up to 100, `sort`) and a single-entry field (`id` or `slug`, `locale`). Resolvers apply the same rule as public REST: only entries with a public status inside their publish window (`publishAt` reached, `unpublishAt` not reached), and a single-entry lookup by `id` only returns entries of that collection. Lists are newest first; the `sort` argument is accepted but not applied yet. Relations are returned as stored IDs, not populated. Queries are limited to depth 3 and complexity 50; a `perPage` passed as a variable counts as the maximum page size. A `GET` with no `query` (or with `Accept: text/html`) returns the GraphiQL playground; open it to see the exact field names. Its feature set does not match other CMS GraphQL APIs.
 
 The Worker serves Elysia's OpenAPI document at `/api/docs`. It covers the routes that declare schemas, not every public and admin response. A generated client for all routes needs route schema coverage, a tenant and auth review, and a decision on error envelopes first.
 
