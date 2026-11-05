@@ -1,4 +1,4 @@
-import { Eye, FileText, Shield, UserCheck } from 'lucide-react'
+import { Crown, Eye, FileText, KeyRound, Shield, UserCheck, Users } from 'lucide-react'
 import type { UserStatus } from './schema'
 
 export const callTypes = new Map<UserStatus, string>([
@@ -53,3 +53,32 @@ export const tenantScopedRoles = [
     icon: Eye,
   },
 ] as const
+
+/**
+ * PL-03: built-in roles a tenant member can hold (`tenant_users.role`).
+ * Custom roles of the tenant are listed after these.
+ */
+export const tenantMemberBuiltInRoles = [
+  { label: 'Owner', value: 'owner', icon: Crown },
+  { label: 'Admin', value: 'admin', icon: UserCheck },
+  { label: 'Editor', value: 'editor', icon: FileText },
+  { label: 'Member', value: 'member', icon: Users },
+  { label: 'Viewer', value: 'viewer', icon: Eye },
+] as const
+
+export const customRoleIcon = KeyRound
+
+const BUILT_IN_TENANT_ROLE_VALUES = new Set<string>(tenantMemberBuiltInRoles.map((r) => r.value))
+
+export function isBuiltInTenantRole(role: string): boolean {
+  return BUILT_IN_TENANT_ROLE_VALUES.has(role)
+}
+
+/** Built-in tenant roles plus the tenant's custom roles, labelled for a picker. */
+export function buildTenantRoleOptions(roleNames: readonly string[]): Array<{ label: string; value: string }> {
+  const custom = roleNames
+    .filter((name) => !isBuiltInTenantRole(name))
+    .sort((a, b) => a.localeCompare(b))
+    .map((name) => ({ label: `${name} (custom)`, value: name }))
+  return [...tenantMemberBuiltInRoles.map(({ label, value }) => ({ label, value })), ...custom]
+}

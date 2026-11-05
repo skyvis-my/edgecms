@@ -89,6 +89,11 @@ export interface CommandQueueItem {
   syncedAt?: string
   error?: string
   serverState?: Record<string, unknown> // For conflict resolution
+  /**
+   * OF-04: entry state the queued updateEntry was based on (its optimisticVersion).
+   * Local only, never sent; enables a three-way merge when the server is newer.
+   */
+  base?: { version: number; slug?: string; data: Record<string, unknown> }
 }
 
 /**

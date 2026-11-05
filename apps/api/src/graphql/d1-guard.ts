@@ -22,6 +22,7 @@ export interface GuardValidationResult {
 
 const DEFAULT_MAX_DEPTH = 3
 const DEFAULT_MAX_COMPLEXITY = 50
+const MAX_PAGE_SIZE_MULTIPLIER = 10
 
 /**
  * Traverses a GraphQL Document AST to calculate maximum query depth
@@ -165,17 +166,19 @@ function calculateComplexity(
       let multiplier = 1
       if (selection.arguments) {
         for (const arg of selection.arguments) {
-          if (
-            (arg.name.value === 'limit' ||
-              arg.name.value === 'perPage' ||
-              arg.name.value === 'first') &&
-            arg.value.kind === Kind.INT
-          ) {
+          const isPageSizeArg =
+            arg.name.value === 'limit' || arg.name.value === 'perPage' || arg.name.value === 'first'
+          if (!isPageSizeArg) continue
+          if (arg.value.kind === Kind.INT) {
             const val = Number.parseInt(arg.value.value, 10)
             if (val > 1) {
               // Add a proportional complexity penalty capped at 10
-              multiplier = Math.min(10, val)
+              multiplier = Math.min(MAX_PAGE_SIZE_MULTIPLIER, val)
             }
+          } else if (arg.value.kind === Kind.VARIABLE) {
+            // The value is unknown at parse time; assume the worst case so a
+            // variable cannot dodge the page-size penalty.
+            multiplier = MAX_PAGE_SIZE_MULTIPLIER
           }
         }
       }

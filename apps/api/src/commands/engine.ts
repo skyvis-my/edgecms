@@ -1,5 +1,4 @@
-import { extractCacheTagsFromCommand, invalidateByTags } from '@/cache/invalidation.service'
-import { cdnPurgeService } from '@/cache/cdn-purge.service'
+import { extractCacheTagsFromCommand } from '@/cache/invalidation.service'
 import { logger } from '@/observability/logger'
 import type { Database } from '@/database/db'
 import type { Env } from '@/env'
@@ -18,10 +17,19 @@ import {
 import { relayOutbox } from '@/webhooks/outbox-relay'
 import { recordCommandAuditEvent } from '@/audit/audit-recorders'
 import { scheduleDeferredWork } from './deferred-work'
+import {
+  buildSideEffectIntents,
+  relaySideEffectIntents,
+  runSideEffectIntents,
+  sideEffectInsertValues,
+  type RevalidateTarget,
+  type SideEffectIntent,
+} from './side-effect-intents'
 import { buildMessagesForEvent, type WebhookQueueMessage } from '@/webhooks/queue-producer'
 import { commandsRepository } from './commands.repository'
 import { computeDiff } from './diff.service'
-import { createPreviewReceipt, markPreviewReceiptConsumed, verifyPreviewReceipt } from '@/ai/preview-receipt.service'
+import { authorizeCommandContent, type ContentAccess } from '@/auth/content-access'
+import { createPreviewReceipt, redeemPreviewReceipt } from '@/ai/preview-receipt.service'
 import {
   handleBulkUpdate,
   handleCreateEntry,
@@ -81,6 +89,14 @@ export type CommandContext = {
    * request entry points. Skipped for dry runs.
    */
   hostHooks?: CommandHostHooks
+  /**
+   * PL-03: the caller's per-collection content access. Every entry point
+   * that runs commands for a user (admin commands, AI, MCP, sync, imports)
+   * sets it; each command, including every command in a transaction, is
+   * checked before it runs. System callers (the publish scheduler) leave it
+   * unset.
+   */
+  contentAccess?: ContentAccess
 }
 
 export type CommandHostHooks = {
@@ -224,15 +240,22 @@ async function recordCommand(
   tenantScope: string | null,
   result?: Record<string, unknown> | null,
   auditEntries?: AuditEntry[],
-  outboxEntries?: OutboxEntry[]
+  outboxEntries?: OutboxEntry[],
+  sideEffects?: SideEffectIntent[]
 ): Promise<void> {
   const now = new Date().toISOString()
   const hasBatch = typeof (db as unknown as { batch?: unknown }).batch === 'function'
   const pendingOutbox = outboxEntries ?? []
+  const pendingSideEffects = sideEffects ?? []
 
-  if (hasBatch && ((auditEntries ?? []).length > 0 || pendingOutbox.length > 0)) {
+  if (
+    hasBatch &&
+    ((auditEntries ?? []).length > 0 || pendingOutbox.length > 0 || pendingSideEffects.length > 0)
+  ) {
     try {
-      const { auditLog, processedCommands, webhookOutbox } = await import('@/database/schema')
+      const { auditLog, processedCommands, sideEffectIntents, webhookOutbox } = await import(
+        '@/database/schema'
+      )
       const baseInsert = db.insert(processedCommands).values({
         id: commandId,
         commandType: envelope.type,
@@ -273,6 +296,14 @@ async function recordCommand(
       for (const entry of pendingOutbox) {
         builders.push(db.insert(webhookOutbox).values(outboxInsertValues(entry, now)))
       }
+      // CMD-06: side-effect intents commit with the command record.
+      if (pendingSideEffects.length > 0) {
+        builders.push(
+          db
+            .insert(sideEffectIntents)
+            .values(pendingSideEffects.map((intent) => sideEffectInsertValues(intent, now)))
+        )
+      }
       await (db as unknown as { batch: (q: unknown[]) => Promise<unknown> }).batch(builders)
       return
     } catch {
@@ -305,6 +336,23 @@ async function recordCommand(
       // to failed because the intent-log write failed.
       logger.warn('webhook_outbox_enqueue_failed', {
         eventId: entry.eventId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  if (pendingSideEffects.length > 0) {
+    try {
+      const { sideEffectIntents } = await import('@/database/schema')
+      await db
+        .insert(sideEffectIntents)
+        .values(pendingSideEffects.map((intent) => sideEffectInsertValues(intent, now)))
+    } catch (err) {
+      // Same best-effort rule as the outbox on drivers without db.batch: the
+      // engine still runs the intents after the commit, only without a
+      // durable retry record.
+      logger.warn('side_effect_intent_record_failed', {
+        commandId,
         error: err instanceof Error ? err.message : String(err),
       })
     }
@@ -349,7 +397,9 @@ async function checkIdempotency(
 ): Promise<CommandResult | null> {
   try {
     const existing = await commandsRepository.findById(db, commandId)
-    if (!existing) return null
+    // A 'dry_run' row is a legacy preview record, not an execution (CMD-03):
+    // it neither replays nor conflicts, and the real execution claims the key.
+    if (!existing || existing.status === 'dry_run') return null
 
     const keyName = envelope.idempotencyKey ?? commandId.replace(/^idem_/, '')
 
@@ -402,18 +452,6 @@ async function checkIdempotency(
       }
     }
 
-    if (existing.status === 'dry_run') {
-      const storedResult = existing.result as Record<string, unknown> | null
-      return {
-        commandId,
-        type: envelope.type,
-        status: 'dry_run',
-        diff: (storedResult?.diff as Record<string, unknown>[] | undefined) ?? [],
-        previewReceipt: storedResult?.previewReceipt as string | undefined,
-        executedAt: existing.executedAt,
-      }
-    }
-
     if (existing.status === 'failed') {
       const storedError = (existing.result as Record<string, unknown> | null)?.error as
         | { code: string; message: string }
@@ -445,36 +483,47 @@ function receiptScope(ctx: CommandContext): string | null {
   return ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : null
 }
 
-async function verifyReceiptSafely(
+/**
+ * AI-05: verifies the receipt against the exact envelopes about to run and
+ * claims it for single use before any mutation. Dry runs and envelopes
+ * without a receipt pass through.
+ */
+async function redeemReceiptForExecution(
   envelope: CommandEnvelope,
   commandsToVerify: CommandEnvelope[],
   ctx: CommandContext,
   tenantScope: string | null
-): Promise<{ valid: true } | { valid: false; message?: string }> {
+): Promise<{ valid: true } | { valid: false; reason?: string; message?: string }> {
   if (!envelope.previewReceipt || envelope.dryRun) return { valid: true }
-  const verification = await verifyPreviewReceipt({
+  const verification = await redeemPreviewReceipt({
     receiptId: envelope.previewReceipt,
     userId: envelope.actor.userId,
     tenantId: tenantScope ?? undefined,
     kv: ctx.kv,
+    db: ctx.db,
     commandsToVerify,
   })
-  return verification.valid ? { valid: true } : { valid: false, message: verification.message }
+  return verification.valid
+    ? { valid: true }
+    : { valid: false, reason: verification.error, message: verification.message }
 }
 
-async function consumeReceiptSafely(
-  receiptId: string | undefined,
-  kv: KVNamespace | undefined,
-  tenantScope: string | null
-): Promise<void> {
-  if (!receiptId) return
+/** Mint a preview receipt; a failure never blocks the dry-run diff. */
+async function createReceiptSafely(
+  commands: CommandEnvelope[],
+  userId: string,
+  ctx: CommandContext
+): Promise<string | undefined> {
   try {
-    await markPreviewReceiptConsumed(receiptId, kv, tenantScope ?? undefined)
-  } catch (receiptErr) {
-    logger.warn('preview_receipt_consumption_failed', {
-      receiptId,
-      error: receiptErr instanceof Error ? receiptErr.message : String(receiptErr),
+    const receipt = await createPreviewReceipt({
+      commands,
+      userId,
+      tenantId: receiptScope(ctx) ?? undefined,
+      kv: ctx.kv,
     })
+    return receipt.receiptId
+  } catch {
+    return undefined
   }
 }
 
@@ -568,16 +617,59 @@ function deriveWebhookEvent(
   }
 }
 
+/**
+ * Payload used for cache-tag extraction. Tags are extracted after the handler
+ * ran, so a deleted entry can no longer be looked up; fall back to the
+ * collectionId the handler reported so collection-level tags (including the
+ * related-collection fallback on populated snapshots) are still purged.
+ */
+function cacheTagPayload(
+  envelope: CommandEnvelope,
+  handlerResult: CommandHandlerResult
+): Record<string, unknown> {
+  const payload = envelope.payload as Record<string, unknown>
+  const reported = (handlerResult.data as Record<string, unknown> | undefined)?.collectionId
+  if (typeof payload.collectionId === 'string' || typeof reported !== 'string') return payload
+  return { ...payload, collectionId: reported }
+}
+
+/**
+ * CMD-06: the side-effect intents of one successful command. The row tenant
+ * is the handler's tenant scope (else the sync-channel scope) so offboarding
+ * deletes it with the tenant.
+ */
+function buildCommandSideEffects(
+  ctx: CommandContext,
+  envelope: CommandEnvelope,
+  commandId: string,
+  tenantScope: string | null,
+  cacheTags: string[],
+  derived: ReturnType<typeof deriveWebhookEvent>
+): SideEffectIntent[] {
+  const revalidateInfo = derived?.metadata.revalidate as Omit<RevalidateTarget, 'event'> | undefined
+  return buildSideEffectIntents({
+    commandId,
+    commandType: envelope.type,
+    tenantScope: ctx.tenantScope ?? tenantScope ?? 'global',
+    entityTenant: ctx.tenantScope,
+    payload: envelope.payload as Record<string, unknown>,
+    cacheTags,
+    revalidate:
+      derived && revalidateInfo ? { event: derived.eventType, ...revalidateInfo } : undefined,
+    env: ctx.env,
+    hasKv: Boolean(ctx.kv),
+  })
+}
+
 async function handlePostExecution(
   ctx: CommandContext,
   envelope: CommandEnvelope,
   commandId: string,
   handlerResult: CommandHandlerResult,
   tenantScope: string | null,
-  opts?: { cacheTags?: string[]; outboxEventId?: string }
+  opts?: { cacheTags?: string[]; outboxEventId?: string; sideEffects?: SideEffectIntent[] }
 ): Promise<void> {
-  // 1. Consume preview receipt upon mutation success
-  await consumeReceiptSafely(envelope.previewReceipt, ctx.kv, receiptScope(ctx))
+  // 1. Preview receipts are claimed before execution (redeemReceiptForExecution).
 
   // 2. Record change log entries for sync
   if (handlerResult.auditEntries && handlerResult.auditEntries.length > 0) {
@@ -606,7 +698,7 @@ async function handlePostExecution(
       cacheTags = await extractCacheTagsFromCommand(
         ctx.db,
         envelope.type,
-        envelope.payload,
+        cacheTagPayload(envelope, handlerResult),
         tenantScope ?? undefined
       )
     } catch (err) {
@@ -616,36 +708,12 @@ async function handlePostExecution(
     }
   }
 
-  if (cacheTags.length > 0) {
-    ctx.invalidatedCacheTags = cacheTags
-    if (ctx.kv) {
-      try {
-        const { invalidatedKeys } = await invalidateByTags(ctx.db, ctx.kv, cacheTags)
-        if (invalidatedKeys.length > 0) {
-          logger.info('cache_invalidation_completed', {
-            invalidatedKeys: invalidatedKeys.length,
-            tags: cacheTags.join(', '),
-          })
-        }
-      } catch (err) {
-        logger.error('cache_invalidation_failed', {
-          error: err instanceof Error ? err.message : String(err),
-        })
-      }
-    }
-    // Deferred side effect: detached from the response via `waitUntil` when
-    // available, otherwise fire-and-forget with caught rejections. Never
-    // blocks or fails the committed mutation.
-    scheduleDeferredWork(
-      ctx,
-      cdnPurgeService.purgeCloudflareCacheTags(ctx.env, cacheTags),
-      'cdn_cache_purge'
-    )
-  }
+  if (cacheTags.length > 0) ctx.invalidatedCacheTags = cacheTags
 
   // 4. Emit webhook event (non-blocking) with revalidation metadata
+  let derived: ReturnType<typeof deriveWebhookEvent> = null
   try {
-    const derived = deriveWebhookEvent(
+    derived = deriveWebhookEvent(
       envelope,
       commandId,
       handlerResult,
@@ -654,15 +722,6 @@ async function handlePostExecution(
       opts?.outboxEventId
     )
     if (derived) {
-      const revalidateInfo = (derived.metadata.revalidate as
-        | {
-            paths: string[]
-            tags: string[]
-            entryId?: string
-            collectionSlug?: string
-          }
-        | undefined)
-
       scheduleDeferredWork(
         ctx,
         eventBus.emit(
@@ -676,24 +735,6 @@ async function handlePostExecution(
         ),
         'webhook_event_emission'
       )
-
-      if (ctx.env?.FRONTEND_REVALIDATE_URL && revalidateInfo) {
-        scheduleDeferredWork(
-          ctx,
-          cdnPurgeService.dispatchFrontendRevalidation(
-            ctx.env.FRONTEND_REVALIDATE_URL,
-            {
-              event: derived.eventType,
-              tags: revalidateInfo.tags,
-              paths: revalidateInfo.paths,
-              entryId: revalidateInfo.entryId,
-              collectionSlug: revalidateInfo.collectionSlug,
-            },
-            ctx.env.FRONTEND_REVALIDATE_SECRET
-          ),
-          'frontend_revalidation'
-        )
-      }
     }
   } catch (err) {
     logger.error('webhook_event_emission_failed', {
@@ -701,7 +742,29 @@ async function handlePostExecution(
     })
   }
 
-  // 5. Best-effort opportunistic outbox sweep: replay crash-orphaned rows
+  // 5. CMD-06 side-effect intents (recorded with the command when the tags
+  // were known before the commit). KV snapshot invalidation is awaited so
+  // reads after the response see fresh snapshots; CDN purge, frontend
+  // revalidation, RAG indexing and FTS sync run detached. Each marks its row
+  // done; failures stay pending for relaySideEffectIntents.
+  const sideEffects =
+    opts?.sideEffects ??
+    buildCommandSideEffects(ctx, envelope, commandId, tenantScope, cacheTags, derived)
+  const sideEffectDeps = { db: ctx.db, env: ctx.env, kv: ctx.kv }
+  const inlineEffects = sideEffects.filter((intent) => intent.kind === 'kv_invalidate')
+  const deferredEffects = sideEffects.filter((intent) => intent.kind !== 'kv_invalidate')
+  if (inlineEffects.length > 0) {
+    await runSideEffectIntents(sideEffectDeps, inlineEffects)
+  }
+  if (deferredEffects.length > 0) {
+    scheduleDeferredWork(
+      ctx,
+      runSideEffectIntents(sideEffectDeps, deferredEffects),
+      'side_effect_intents'
+    )
+  }
+
+  // 6. Best-effort opportunistic outbox sweep: replay crash-orphaned rows
   // (created >60s ago, still pending). Fresh rows are excluded so this never
   // double-sends what the producer listener is about to deliver.
   // Deferred via `waitUntil` when available so the sweep never adds tail
@@ -728,6 +791,14 @@ async function handlePostExecution(
     })(),
     'outbox_relay_sweep'
   )
+
+  // 7. Same opportunistic replay for side-effect intents a crash or failed
+  // call left pending (rows newer than 60s belong to in-flight requests).
+  scheduleDeferredWork(
+    ctx,
+    relaySideEffectIntents(sideEffectDeps, { limit: 20, staleOnlyMs: 60_000 }),
+    'side_effect_relay_sweep'
+  )
 }
 
 /**
@@ -739,11 +810,28 @@ async function handlePostExecution(
  * 4. Records the command and audit entries in D1
  * 5. Returns a structured CommandResult
  */
+type SingleCommandOptions = {
+  /**
+   * Set when the command runs inside a transaction. The request-level
+   * idempotency key belongs to the transaction, so a sub-command only uses
+   * a key set on its own envelope; a dry-run transaction mints no
+   * per-command preview receipts (one receipt covers the whole transaction).
+   */
+  inTransaction?: boolean
+}
+
 async function executeSingleCommand(
   ctx: CommandContext,
-  envelope: CommandEnvelope
+  envelope: CommandEnvelope,
+  options: SingleCommandOptions = {}
 ): Promise<CommandResult> {
-  const idempotencyKey = envelope.idempotencyKey || ctx.idempotencyKey
+  // CMD-03/CMD-04: a dry-run writes nothing, so it never reserves, stores or
+  // replays an idempotency record; the real execution with the same key runs.
+  const idempotencyKey = envelope.dryRun
+    ? undefined
+    : options.inTransaction
+      ? envelope.idempotencyKey
+      : envelope.idempotencyKey || ctx.idempotencyKey
   const commandId = idempotencyKey ? `idem_${idempotencyKey}` : crypto.randomUUID()
   const tenantScope = ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : null
   const pluginHookContext = buildPluginHookContext(ctx, envelope)
@@ -800,16 +888,18 @@ async function executeSingleCommand(
       executedAt: new Date().toISOString(),
     }
 
-    await recordCommand(ctx.db, commandId, envelope, 'failed', tenantScope, {
-      error: errorResult.error,
-    })
+    if (!envelope.dryRun) {
+      await recordCommand(ctx.db, commandId, envelope, 'failed', tenantScope, {
+        error: errorResult.error,
+      })
+    }
     incrementMetric('command_runs_total', { type: envelope.type, status: 'failed' })
 
     return finalize(errorResult)
   }
 
-  // Verify preview receipt if supplied for execution
-  const receiptCheck = await verifyReceiptSafely(envelope, [envelope], ctx, receiptScope(ctx))
+  // Verify and claim the preview receipt before any mutation (AI-05)
+  const receiptCheck = await redeemReceiptForExecution(envelope, [envelope], ctx, receiptScope(ctx))
   if (!receiptCheck.valid) {
     const errorResult: CommandResult = {
       commandId,
@@ -818,6 +908,7 @@ async function executeSingleCommand(
       error: {
         code: 'INVALID_PREVIEW_RECEIPT',
         message: receiptCheck.message ?? 'Preview receipt verification failed',
+        ...(receiptCheck.reason ? { reason: receiptCheck.reason } : {}),
       },
       executedAt: new Date().toISOString(),
     }
@@ -834,24 +925,11 @@ async function executeSingleCommand(
       const diff = await computeDiff(ctx, envelope.type, envelope.payload)
 
       // Generate immutable preview receipt for dry-run commands
-      let previewReceiptId: string | undefined
-      try {
-        const receipt = await createPreviewReceipt({
-          commands: [envelope],
-          userId: envelope.actor.userId,
-          tenantId: receiptScope(ctx) ?? undefined,
-          kv: ctx.kv,
-        })
-        previewReceiptId = receipt.receiptId
-      } catch {
-        // Non-blocking for diff calculation
-      }
+      const previewReceiptId = options.inTransaction
+        ? undefined
+        : await createReceiptSafely([envelope], envelope.actor.userId, ctx)
 
-      // Record the dry-run command
-      await recordCommand(ctx.db, commandId, envelope, 'dry_run', tenantScope, {
-        diff: diff as unknown as Record<string, unknown>,
-        previewReceipt: previewReceiptId,
-      })
+      // No processed_commands row: a preview is not an execution (CMD-03).
       incrementMetric('command_runs_total', { type: envelope.type, status: 'dry_run' })
 
       return finalize({
@@ -892,11 +970,12 @@ async function executeSingleCommand(
       const outboxEventId = crypto.randomUUID()
       let outboxEntries: OutboxEntry[] = []
       let precomputedCacheTags: string[] | undefined
+      let sideEffects: SideEffectIntent[] | undefined
       try {
         const tags = await extractCacheTagsFromCommand(
           ctx.db,
           envelope.type,
-          envelope.payload,
+          cacheTagPayload(envelope, handlerResult),
           tenantScope ?? undefined
         )
         precomputedCacheTags = tags
@@ -908,6 +987,8 @@ async function executeSingleCommand(
           tags,
           outboxEventId
         )
+        // CMD-06: side-effect intents commit in the same batch as the command.
+        sideEffects = buildCommandSideEffects(ctx, envelope, commandId, tenantScope, tags, derived)
         if (derived) {
           outboxEntries = [
             {
@@ -938,12 +1019,14 @@ async function executeSingleCommand(
         tenantScope,
         handlerResult.data,
         handlerResult.auditEntries,
-        outboxEntries
+        outboxEntries,
+        sideEffects
       )
 
       await handlePostExecution(ctx, envelope, commandId, handlerResult, tenantScope, {
         cacheTags: precomputedCacheTags,
         outboxEventId: outboxEntries.length > 0 ? outboxEventId : undefined,
+        sideEffects,
       })
 
       incrementMetric('command_runs_total', { type: envelope.type, status: 'success' })
@@ -1013,7 +1096,10 @@ async function handleTransaction(
   ctx: CommandContext,
   envelope: CommandEnvelope
 ): Promise<CommandResult> {
-  const idempotencyKey = envelope.idempotencyKey || ctx.idempotencyKey
+  // CMD-03: a dry-run writes nothing, so it neither reserves nor replays the
+  // idempotency key; the real execution that follows must still run.
+  const dryRun = envelope.dryRun === true
+  const idempotencyKey = dryRun ? undefined : envelope.idempotencyKey || ctx.idempotencyKey
   const transactionId = idempotencyKey ? `idem_${idempotencyKey}` : crypto.randomUUID()
   const tenantScope = ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : null
   const pluginHookContext = buildPluginHookContext(ctx, envelope)
@@ -1093,8 +1179,8 @@ async function handleTransaction(
     }
   }
 
-  // Verify preview receipt if supplied for transaction
-  const receiptCheck = await verifyReceiptSafely(envelope, payload.commands, ctx, receiptScope(ctx))
+  // Verify and claim the transaction's preview receipt before any mutation (AI-05)
+  const receiptCheck = await redeemReceiptForExecution(envelope, payload.commands, ctx, receiptScope(ctx))
   if (!receiptCheck.valid) {
     const errorResult: CommandResult = {
       commandId: transactionId,
@@ -1103,6 +1189,7 @@ async function handleTransaction(
       error: {
         code: 'INVALID_PREVIEW_RECEIPT',
         message: receiptCheck.message ?? 'Preview receipt verification failed',
+        ...(receiptCheck.reason ? { reason: receiptCheck.reason } : {}),
       },
       executedAt: new Date().toISOString(),
     }
@@ -1121,12 +1208,13 @@ async function handleTransaction(
     // so individual commands do not prematurely consume the transaction receipt
     const enrichedEnvelope: CommandEnvelope = {
       ...subEnvelope,
-      dryRun: envelope.dryRun ? true : subEnvelope.dryRun,
+      dryRun: dryRun ? true : subEnvelope.dryRun,
+      idempotencyKey: dryRun ? undefined : subEnvelope.idempotencyKey,
       transactionId,
       previewReceipt: undefined,
     }
 
-    const result = await executeSingleCommand(ctx, enrichedEnvelope)
+    const result = await executeSingleCommand(ctx, enrichedEnvelope, { inTransaction: true })
     subResults.push(result)
 
     if (result.status === 'failed') {
@@ -1136,27 +1224,45 @@ async function handleTransaction(
   }
 
   const status = allSucceeded
-    ? envelope.dryRun
+    ? dryRun
       ? 'dry_run'
       : 'success'
     : 'failed'
 
+  // CMD-03: a dry run returns the combined diff of its sub-commands, each
+  // entry tagged with the sub-command it belongs to, plus one receipt that
+  // authorises executing exactly these sub-commands.
+  const combinedDiff = dryRun
+    ? subResults.flatMap((sub, commandIndex) =>
+        (sub.diff ?? []).map((entry) => ({ ...entry, commandIndex, commandType: sub.type }))
+      )
+    : undefined
+  const previewReceiptId =
+    dryRun && allSucceeded
+      ? await createReceiptSafely(payload.commands, envelope.actor.userId, ctx)
+      : undefined
+
   // Record the transaction itself as a processed command
-  // (compensating action note: sub-command effects persist; see saga comment above)
+  // (compensating action note: sub-command effects persist; see saga comment above).
+  // A dry run records nothing, matching a single-command dry run (CMD-03).
   try {
-    await recordCommand(
-      ctx.db,
-      transactionId,
-      envelope,
-      status as 'success' | 'failed' | 'dry_run',
-      tenantScope,
-      {
-        subResults: subResults as unknown as Record<string, unknown>[],
-        totalCommands: payload.commands.length,
-        completedCommands: subResults.filter((r) => r.status === 'success' || r.status === 'dry_run').length,
-        failedCommands: subResults.filter((r) => r.status === 'failed').length,
-      }
-    )
+    if (!dryRun) {
+      await recordCommand(
+        ctx.db,
+        transactionId,
+        envelope,
+        status as 'success' | 'failed' | 'dry_run',
+        tenantScope,
+        {
+          subResults: subResults as unknown as Record<string, unknown>[],
+          totalCommands: payload.commands.length,
+          completedCommands: subResults.filter((r) => r.status === 'success' || r.status === 'dry_run').length,
+          failedCommands: subResults.filter((r) => r.status === 'failed').length,
+          ...(combinedDiff ? { diff: combinedDiff } : {}),
+          ...(previewReceiptId ? { previewReceipt: previewReceiptId } : {}),
+        }
+      )
+    }
   } catch (err) {
     if (idempotencyKey) {
       const cached = await checkIdempotency(ctx.db, transactionId, envelope, 'TRANSACTION_FAILED')
@@ -1166,11 +1272,6 @@ async function handleTransaction(
       transactionId,
       error: err instanceof Error ? err.message : String(err),
     })
-  }
-
-  // Consume transaction preview receipt upon overall success (non-dryRun)
-  if (allSucceeded && !envelope.dryRun) {
-    await consumeReceiptSafely(envelope.previewReceipt, ctx.kv, receiptScope(ctx))
   }
 
   return finalize({
@@ -1183,11 +1284,15 @@ async function handleTransaction(
       completedCommands: subResults.filter((r) => r.status === 'success' || r.status === 'dry_run').length,
       failedCommands: subResults.filter((r) => r.status === 'failed').length,
     },
+    ...(combinedDiff ? { diff: combinedDiff } : {}),
+    ...(previewReceiptId ? { previewReceipt: previewReceiptId } : {}),
     error: allSucceeded
       ? undefined
       : {
           code: 'TRANSACTION_FAILED',
-          message: `Transaction failed: ${subResults.filter((r) => r.status === 'failed').length} command(s) failed. Note: D1 does not support rollback — completed sub-commands were persisted.`,
+          message: dryRun
+            ? `Transaction dry run failed: ${subResults.filter((r) => r.status === 'failed').length} command(s) failed. Nothing was written.`
+            : `Transaction failed: ${subResults.filter((r) => r.status === 'failed').length} command(s) failed. Note: D1 does not support rollback — completed sub-commands were persisted.`,
         },
     executedAt: new Date().toISOString(),
   })
@@ -1214,6 +1319,29 @@ export async function executeCommand(
   ctx: CommandContext,
   envelope: CommandEnvelope
 ): Promise<CommandResult> {
+  if (ctx.contentAccess) {
+    const denied = await authorizeCommandContent(
+      ctx.contentAccess,
+      ctx.db,
+      ctx.tenantScope ?? (ctx.syncChannel && ctx.syncChannel !== 'global' ? ctx.syncChannel : undefined),
+      envelope
+    )
+    if (denied) {
+      logger.warn('command_forbidden', {
+        type: envelope.type,
+        userId: ctx.actor.userId,
+        source: ctx.actor.source,
+      })
+      return {
+        commandId: crypto.randomUUID(),
+        type: envelope.type,
+        status: 'failed',
+        error: denied,
+        executedAt: new Date().toISOString(),
+      }
+    }
+  }
+
   const hooks = envelope.dryRun ? undefined : ctx.hostHooks
   if (hooks?.beforeExecute) {
     const rejected = await hooks.beforeExecute(envelope)

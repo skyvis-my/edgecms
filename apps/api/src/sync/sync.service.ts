@@ -1,5 +1,6 @@
 import { schemaSnapshotsRepository } from '@/collections/schema-snapshots.repository'
 import type { CommandContext } from '@/commands/engine'
+import type { ContentAccess } from '@/auth/content-access'
 import type { Database } from '@/database/db'
 import { entriesRepository } from '@/entries/entries.repository'
 import type { CommandEnvelope, CommandResult } from '@edgecms/schemas/commands'
@@ -39,7 +40,8 @@ type ExecuteCommandFn = (ctx: CommandContext, envelope: CommandEnvelope) => Prom
 
 type FindEntryByIdFn = (
   db: Database,
-  id: string
+  id: string,
+  tenantId?: string
 ) => Promise<
   | {
       version: number
@@ -138,6 +140,8 @@ export async function executeSyncPushCommands(params: {
   syncChannel: string
   executeCommandFn: ExecuteCommandFn
   findEntryByIdFn?: FindEntryByIdFn
+  /** PL-03: the caller's per-collection content access, checked per command. */
+  contentAccess?: ContentAccess
 }): Promise<SyncPushResult[]> {
   const { commands, userId, db, kv, syncChannel, executeCommandFn } = params
   const findEntryByIdFn = params.findEntryByIdFn ?? entriesRepository.findById
@@ -162,6 +166,7 @@ export async function executeSyncPushCommands(params: {
           actor: enrichedCommand.actor,
           kv,
           syncChannel,
+          ...(params.contentAccess && { contentAccess: params.contentAccess }),
         },
         enrichedCommand
       )
@@ -172,7 +177,10 @@ export async function executeSyncPushCommands(params: {
             ? enrichedCommand.payload.entryId
             : undefined
 
-        const latestEntry = entryId ? await findEntryByIdFn(db, entryId) : undefined
+        // OF-04/P2: read the newer server state from the same tenant the command ran in;
+        // an unscoped lookup reads 'global' and returns nothing for tenant entries.
+        const tenantScope = syncChannel && syncChannel !== 'global' ? syncChannel : undefined
+        const latestEntry = entryId ? await findEntryByIdFn(db, entryId, tenantScope) : undefined
         const conflictingFields = getConflictingFields(enrichedCommand.payload.data)
 
         results.push({

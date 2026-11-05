@@ -1,15 +1,29 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import type { CommandEnvelope } from '@edgecms/schemas/commands'
 import { collectionsRepository } from '@/collections/collections.repository'
-import { commandsRepository } from '@/commands/commands.repository'
-import { scheduleDeferredWork } from '@/commands/deferred-work'
+import { type CommandContext, executeCommand } from '@/commands/engine'
 import type { Database } from '@/database/db'
-import { entries, entryVersions } from '@/database/schema'
+import { entryVersions } from '@/database/schema'
 import { projectEntryDataWithSchema } from '@/entries/schema-projection'
-import { logger } from '@/observability/logger'
 import type { EntryRow, EntryVersionRow } from '@/entries/entries.repository'
 import type { ServiceResult } from '@/shared/types/result'
-import { retentionService } from './retention.service'
 import { versioningRepository } from './versioning.repository'
+
+/** Result of a rollback: the applied update, or a dry-run preview. */
+export type RollbackResult =
+  | {
+      dryRun?: undefined
+      commandId: string
+      entry: EntryRow
+      newVersion: EntryVersionRow
+      restoredFromVersionId: string
+    }
+  | {
+      dryRun: true
+      commandId: string
+      diff: Record<string, unknown>[]
+      previewReceipt?: string
+    }
 
 /** Diff entry for version comparison. */
 export interface VersionDiffEntry {
@@ -77,19 +91,20 @@ export const versioningService = {
    *
    * @param db - Database connection
    * @param entryId - Entry ID to list versions for
-   * @param options - Pagination options
+   * @param options - Pagination options and the request tenant (P2: the entry
+   *   must belong to it; omitted means the global scope)
    */
   async listVersions(
     db: Database,
     entryId: string,
-    options: { page?: number; limit?: number } = {}
+    options: { page?: number; limit?: number; tenantId?: string } = {}
   ): Promise<ServiceResult<VersionListResult>> {
     const page = Math.max(1, options.page ?? 1)
     const perPage = Math.min(100, Math.max(1, options.limit ?? 20))
     const offset = (page - 1) * perPage
 
-    // Verify entry exists
-    const entry = await versioningRepository.findEntryById(db, entryId)
+    // Verify entry exists in the request tenant
+    const entry = await versioningRepository.findEntryById(db, entryId, options.tenantId)
     if (!entry) {
       return {
         success: false,
@@ -178,14 +193,16 @@ export const versioningService = {
    * @param db - Database connection
    * @param entryId - Entry ID
    * @param versionId - Version ID to retrieve
+   * @param tenantId - Request tenant the entry must belong to (P2)
    */
   async getVersion(
     db: Database,
     entryId: string,
-    versionId: string
+    versionId: string,
+    tenantId?: string
   ): Promise<ServiceResult<EntryVersionRow>> {
-    // Verify entry exists
-    const entry = await versioningRepository.findEntryById(db, entryId)
+    // Verify entry exists in the request tenant
+    const entry = await versioningRepository.findEntryById(db, entryId, tenantId)
     if (!entry) {
       return {
         success: false,
@@ -245,17 +262,19 @@ export const versioningService = {
    * @param entryId - Entry ID
    * @param versionId1 - First version ID (older)
    * @param versionId2 - Second version ID (newer)
+   * @param tenantId - Request tenant the entry must belong to (P2)
    */
   async diffVersions(
     db: Database,
     entryId: string,
     versionId1: string,
-    versionId2: string
+    versionId2: string,
+    tenantId?: string
   ): Promise<ServiceResult<VersionDiffEntry[]>> {
     // Fetch both versions in parallel (independent indexed lookups).
     const [version1Result, version2Result] = await Promise.all([
-      versioningService.getVersion(db, entryId, versionId1),
-      versioningService.getVersion(db, entryId, versionId2),
+      versioningService.getVersion(db, entryId, versionId1, tenantId),
+      versioningService.getVersion(db, entryId, versionId2, tenantId),
     ])
     if (!version1Result.success) {
       return version1Result
@@ -271,34 +290,38 @@ export const versioningService = {
   },
 
   /**
-   * Rollback an entry to a previous version.
+   * Roll an entry back to a previous version (CM-06).
    *
-   * Creates a NEW version with data from the specified historical version,
-   * and updates the entry's current data. Does NOT delete intermediate versions.
+   * P3: the write runs through the command engine as an `updateEntry`
+   * command that replaces `data` with the chosen version's data and carries
+   * the entry's current version as `optimisticVersion`. The engine applies
+   * content permissions, validation, the version check, the processed-command
+   * record, audit event, change log, sync event, cache invalidation and the
+   * webhook outbox intent. Like every update, it snapshots the pre-rollback
+   * state to `entry_versions` under its own version number.
    *
-   * @param db - Database connection
-   * @param entryId - Entry ID to rollback
-   * @param versionId - Version ID to rollback to
-   * @param userId - User performing the rollback
+   * @param ctx - Command context built by the request (db, actor, tenant)
+   * @param entryId - Entry ID to roll back
+   * @param versionId - Version ID to restore
+   * @param options.tenantId - Request tenant the entry must belong to (P2)
+   * @param options.dryRun - Preview the change without writing
    */
   async rollback(
-    db: Database,
+    ctx: CommandContext,
     entryId: string,
     versionId: string,
-    userId?: string,
-    tenantScope?: string | null
-  ): Promise<ServiceResult<{ entry: EntryRow; newVersion: EntryVersionRow }>> {
+    options: { tenantId?: string; dryRun?: boolean } = {}
+  ): Promise<ServiceResult<RollbackResult>> {
+    const { db } = ctx
+    const { tenantId, dryRun } = options
     // Fetch target version + current entry in parallel (independent reads).
     const [versionResult, entry] = await Promise.all([
-      versioningService.getVersion(db, entryId, versionId),
-      versioningRepository.findEntryById(db, entryId),
+      versioningService.getVersion(db, entryId, versionId, tenantId),
+      versioningRepository.findEntryById(db, entryId, tenantId),
     ])
     if (!versionResult.success) {
       return versionResult
     }
-
-    const targetVersion = versionResult.data
-
     if (!entry) {
       return {
         success: false,
@@ -306,165 +329,63 @@ export const versioningService = {
       }
     }
 
-    const now = new Date().toISOString()
-    const newVersionNumber = entry.version + 1
-
-    let restoredData = (targetVersion.data || {}) as Record<string, unknown>
+    let restoredData = (versionResult.data.data || {}) as Record<string, unknown>
     if (entry.collectionId) {
       try {
-        const collection = await collectionsRepository.findById(db, entry.collectionId)
+        const collection = await collectionsRepository.findById(db, entry.collectionId, tenantId)
         if (collection?.fields && Array.isArray(collection.fields)) {
           restoredData = projectEntryDataWithSchema(restoredData, collection.fields)
         }
       } catch {
-        // Fall back to original targetVersion.data if collection lookup is unavailable
+        // Fall back to the stored version data if the collection lookup fails.
       }
     }
 
-    // Prefer atomic batch (entry update + version row) on real D1; mocks without
-    // batch use the sequential path below with revert on failure.
-    const hasBatch = typeof (db as unknown as { batch?: unknown }).batch === 'function'
-    if (hasBatch) {
-      try {
-        const updateBuilder = db
-          .update(entries)
-          .set({ data: restoredData, version: newVersionNumber, updatedAt: now })
-          .where(and(eq(entries.id, entryId), eq(entries.version, entry.version)))
-          .returning()
-        const versionId = crypto.randomUUID()
-        const versionBuilder = db
-          .insert(entryVersions)
-          .values({
-            id: versionId,
-            entryId,
-            version: newVersionNumber,
-            data: restoredData,
-            createdBy: userId ?? null,
-            createdAt: now,
-          })
-          .returning()
-        const [updatedRows, versionRows] = (await (
-          db as unknown as { batch: (q: unknown[]) => Promise<unknown[][]> }
-        ).batch([updateBuilder, versionBuilder])) as unknown as [
-          EntryRow[],
-          EntryVersionRow[],
-        ]
-        const batchUpdated = updatedRows[0]
-        const batchVersion = versionRows[0]
-        if (batchUpdated && batchVersion) {
-          try {
-            await commandsRepository.insertChangeLogEntries({
-              db,
-              commandId: null,
-              entries: [
-                {
-                  entityType: 'entry',
-                  entityId: entryId,
-                  action: 'update',
-                  changes: {
-                    ...(batchUpdated.data as Record<string, unknown>),
-                    _rollbackFromVersion: versionId,
-                  },
-                },
-              ],
-              tenantScope: tenantScope ?? null,
-              timestamp: now,
-            })
-          } catch (err) {
-            logger.error('rollback_changelog_write_failed', { error: err instanceof Error ? err.message : String(err) })
-          }
-          scheduleDeferredWork(
-            undefined,
-            retentionService.enforceRetention(db, entryId),
-            'version_retention'
-          )
-          return { success: true, data: { entry: batchUpdated, newVersion: batchVersion } }
-        }
-        // Batch driver returned no rows (mock) — fall through to sequential path.
-      } catch {
-        // Fall through to sequential path.
+    const envelope: CommandEnvelope = {
+      type: 'updateEntry',
+      payload: { entryId, data: restoredData },
+      actor: ctx.actor as CommandEnvelope['actor'],
+      optimisticVersion: entry.version,
+      ...(dryRun ? { dryRun: true } : {}),
+      timestamp: new Date().toISOString(),
+    }
+    const result = await executeCommand(ctx, envelope)
+
+    if (result.status === 'dry_run') {
+      return {
+        success: true,
+        data: {
+          dryRun: true,
+          commandId: result.commandId,
+          diff: result.diff ?? [],
+          ...(result.previewReceipt ? { previewReceipt: result.previewReceipt } : {}),
+        },
       }
     }
-    // Update entry with expected version check first
-    const updateFn =
-      typeof versioningRepository.updateWithExpectedVersion === 'function'
-        ? () =>
-            versioningRepository.updateWithExpectedVersion(db, entryId, entry.version, {
-              data: restoredData,
-              version: newVersionNumber,
-              updatedAt: now,
-            })
-        : () =>
-            versioningRepository.updateEntry(db, entryId, {
-              data: restoredData,
-              version: newVersionNumber,
-              updatedAt: now,
-            })
-
-    const updated = await updateFn()
-
-    if (!updated) {
+    if (result.status !== 'success' || !result.data) {
       return {
         success: false,
-        error: { code: 'ROLLBACK_FAILED', message: 'Failed to update entry during rollback: version mismatch or entry missing' },
+        error: result.error ?? { code: 'INTERNAL_ERROR', message: 'Rollback failed' },
       }
     }
 
-    // Create new version record with the rolled-back data
-    let newVersion
-    try {
-      newVersion = await versioningRepository.createVersion(db, {
-        id: crypto.randomUUID(),
-        entryId,
-        version: newVersionNumber,
-        data: restoredData,
-        createdBy: userId ?? null,
-        createdAt: now,
-      })
-    } catch (createErr) {
-      // Revert entry to prevent desynchronization
-      await versioningRepository.updateEntry(db, entryId, {
-        data: entry.data || {},
-        version: entry.version,
-        updatedAt: entry.updatedAt,
-      })
-      throw createErr
-    }
-
-    // Write changelog entry (non-blocking — never fail the rollback)
-    try {
-      await commandsRepository.insertChangeLogEntries({
-        db,
-        commandId: null,
-        entries: [
-          {
-            entityType: 'entry',
-            entityId: entryId,
-            action: 'update',
-            changes: {
-              ...(updated.data as Record<string, unknown>),
-              _rollbackFromVersion: versionId,
-            },
-          },
-        ],
-        tenantScope: tenantScope ?? null,
-        timestamp: now,
-      })
-    } catch (err) {
-      logger.error('rollback_changelog_write_failed', { error: err instanceof Error ? err.message : String(err) })
-    }
-
-    scheduleDeferredWork(
-      undefined,
-      retentionService.enforceRetention(db, entryId),
-      'version_retention'
-    )
-
+    const updated = result.data as unknown as EntryRow
     return {
       success: true,
       data: {
+        commandId: result.commandId,
         entry: updated,
-        newVersion,
+        // The entry's new current version. History keeps the pre-rollback
+        // snapshot; the current version itself lives on the entry row.
+        newVersion: {
+          id: result.commandId,
+          entryId,
+          version: updated.version,
+          data: updated.data,
+          createdBy: ctx.actor.userId ?? null,
+          createdAt: updated.updatedAt,
+        },
+        restoredFromVersionId: versionId,
       },
     }
   },

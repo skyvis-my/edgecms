@@ -156,6 +156,7 @@ export function ImportReviewPage() {
   const [sourceText, setSourceText] = useState('')
   const [file, setFile] = useState<File | null>(null)
   const [dryRunHash, setDryRunHash] = useState<string>()
+  const [previewReceipt, setPreviewReceipt] = useState<string>()
 
   const createBatch = useCreateImportBatch()
   const uploadSource = useUploadImportSource()
@@ -171,7 +172,8 @@ export function ImportReviewPage() {
   )
   const suggestionSetId = detail?.suggestionSet?.id
   const canDryRun = Boolean(suggestionSetId && acceptedCount > 0)
-  const canApply = Boolean(suggestionSetId && (dryRunHash || detail?.suggestionSet?.dryRunHash))
+  // AI-05: apply needs the receipt from a dry-run run in this session.
+  const canApply = Boolean(suggestionSetId && dryRunHash && previewReceipt)
 
   async function startImport() {
     const created = await createBatch.mutateAsync({
@@ -351,6 +353,7 @@ export function ImportReviewPage() {
                 if (!suggestionSetId || !batchId) return
                 const result = await dryRunSet.mutateAsync({ suggestionSetId, batchId })
                 setDryRunHash(result.dryRunHash)
+                setPreviewReceipt(result.previewReceipt)
               }}
             >
               <Play className='size-4' />
@@ -359,12 +362,11 @@ export function ImportReviewPage() {
             <Button
               disabled={!canApply || applySet.isPending}
               onClick={() => {
-                if (!suggestionSetId || !batchId) return
-                applySet.mutate({
-                  suggestionSetId,
-                  batchId,
-                  dryRunHash: dryRunHash ?? detail?.suggestionSet?.dryRunHash ?? '',
-                })
+                if (!suggestionSetId || !batchId || !dryRunHash || !previewReceipt) return
+                applySet.mutate(
+                  { suggestionSetId, batchId, dryRunHash, previewReceipt },
+                  { onSettled: () => setPreviewReceipt(undefined) }
+                )
               }}
             >
               Apply selected

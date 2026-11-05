@@ -469,6 +469,9 @@ function installBenchmarkModuleMocks(): void {
 
   mock.module('@/entries/entries.service', () => ({
     entriesService: mockEntriesService,
+    // OP-06 collection import imports these validators; the bench does not run imports.
+    validateEntryFieldData: () => ({ valid: true }),
+    validateLocalizedFields: () => ({ valid: true }),
   }))
 
   mock.module('@/collections/collections.service', () => ({
@@ -1011,8 +1014,9 @@ describe('API in-process benchmark contract', () => {
           }),
       },
       {
-        name: 'DELETE /api/admin/tenants/:tenantSlug mocked super-admin delete full app',
-        expectedStatus: 200,
+        // HS-09: the direct delete is retired and refuses with 409.
+        name: 'DELETE /api/admin/tenants/:tenantSlug mocked super-admin retired delete full app',
+        expectedStatus: 409,
         request: () =>
           new Request('http://localhost/api/admin/tenants/acme', {
             method: 'DELETE',
@@ -1333,5 +1337,5 @@ describe('API in-process benchmark contract', () => {
     expect(summaries.every((summary) => Number.isFinite(summary.medianMs))).toBe(true)
     expect(summaries.every((summary) => summary.samples > 0)).toBe(true)
     expect(summaries.filter((summary) => summary.overBudget)).toEqual([])
-  })
+  }, 30_000) // sequential run over every included route; grows with the manifest
 })

@@ -95,7 +95,7 @@ describe('F12 — Plugin admission deterministic rejection checks', () => {
   })
 
   it('rejects duplicate route ownership with DUPLICATE_OWNERSHIP', () => {
-    const claimedRoutes = new Set<string>(['health'])
+    const claimedRoutes = new Set<string>(['/api/admin/plugins/dummy/health'])
     const result = validatePluginAdmission(
       { name: 'dummy' },
       [{ name: 'dummy' }],
@@ -105,7 +105,7 @@ describe('F12 — Plugin admission deterministic rejection checks', () => {
     )
     expect(result).not.toBeNull()
     expect(result?.rejectionCode).toBe('DUPLICATE_OWNERSHIP')
-    expect(result?.reason).toContain("Duplicate route ownership detected for 'health'")
+    expect(result?.reason).toContain("Duplicate route ownership detected for '/api/admin/plugins/dummy/health'")
   })
 
   it('blocks admitted plugins in loadPlugins and records rejectionCode in loaded metadata', async () => {
@@ -119,7 +119,8 @@ describe('F12 — Plugin admission deterministic rejection checks', () => {
     const pluginB: TrustedPluginDefinition = {
       hooks: {},
       routes: {
-        sharedRoute: () => new Elysia().get('/api/admin/plugins/plugin-b/sharedRoute', () => ({ ok: true })),
+        // Claims plugin-a's path: route ownership is by path, not route name.
+        sharedRoute: () => new Elysia().get('/api/admin/plugins/plugin-a/sharedRoute', () => ({ ok: true })),
       },
     }
 

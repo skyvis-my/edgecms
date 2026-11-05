@@ -184,16 +184,18 @@ There are two layers.
 
 **Tenant role** (membership in `tenant_users`): `owner`, `admin`, `editor`, `member` or `viewer`. On `/api/tenants/:tenantSlug/api/admin/*`:
 
-| Tenant role | Read admin routes | Mutate admin routes | List users, read audit |
-| --- | --- | --- | --- |
-| `owner`, `admin` | yes | yes | yes |
-| `editor` | yes | yes | no |
-| `member` | yes | no | no |
-| `viewer` | no | no | no |
+| Tenant role | Read admin routes | Mutate admin routes | List users, read audit | Webhooks, role changes, permanent asset delete |
+| --- | --- | --- | --- | --- |
+| `owner`, `admin` | yes | yes | yes | yes |
+| `editor` | yes | yes | no | no |
+| `member` | yes | no | no | no |
+| `viewer` | no | no | no | no |
+
+"Webhooks" covers reading webhook config and delivery logs as well as changing them; only `GET .../admin/webhooks/signing` is open to every role that can read admin routes.
 
 Other cases: no session returns `401 UNAUTHORIZED`; a role without the ability returns `403 FORBIDDEN`.
 
-Memberships are managed by super-admins:
+Super-admins add and remove memberships (tenant owners and admins change roles, see [below](#assigning-a-members-role)):
 
 ```text
 GET    /api/admin/tenants/:tenantSlug/users
@@ -215,11 +217,43 @@ PUT    /api/tenants/:tenantSlug/api/admin/roles/:roleId
 DELETE /api/tenants/:tenantSlug/api/admin/roles/:roleId
 ```
 
+A member whose `tenant_users.role` is the name of a custom role gets that role's stored permissions, on both the session and the access-token path. Stored permissions are read only for custom roles; built-in roles use the table above.
+
+### Assigning a member's role
+
+Tenant owners and admins (or a custom role with a `TenantAdminRoles` grant) set a member's role, built-in or custom:
+
+```text
+PUT /api/tenants/:tenantSlug/api/admin/users/:userId/role   { role: "blog-writer" }
+```
+
+```json
+{ "success": true, "data": { "tenantId": "…", "userId": "…", "role": "blog-writer", "previousRole": "member", "roleKind": "custom", "changed": true } }
+```
+
+- `role` is `owner`, `admin`, `editor`, `member`, `viewer` or the name of a custom role of the same tenant. A role of another tenant, an unknown name or `superadmin` returns `400 VALIDATION_ERROR`. A user who is not a member of this tenant returns `404`.
+- Only owners and super-admins grant `owner` or change an owner's role; admins get `403`.
+- A custom role with the `TenantAdminRoles` grant cannot change admins, owners or its own role, and can only assign (or replace) a role whose grants it holds itself.
+- The last owner cannot be demoted, by anyone: `409 LAST_OWNER`. The check and the write are one guarded `UPDATE`, so two concurrent demotions cannot remove the last owner. A role changed by someone else meanwhile returns `409 CONFLICT`.
+- Setting the same role again is a no-op (`changed: false`).
+- Each change writes an `rbac.member_role.changed` audit event (HS-12) in the tenant chain with the previous and new role names. The request is also recorded as `admin.users.put`, like other admin mutations.
+- How fast the new role applies: session requests read the membership from D1 on every request, so the next request uses it. The change bumps the member's auth revision in `CACHE`, so their access tokens go stale: a token older than 60 seconds gets `401 TOKEN_STALE` and the admin fetches a new one. A token minted less than 60 seconds before the change keeps its old role until it is 60 seconds old. KV is eventually consistent, so other locations can see the bump up to about 60 seconds later. If the KV write fails, the bound is the token lifetime (10 minutes).
+- `GET /api/tenants/:tenantSlug/api/admin/users` returns each member's stored role as `tenantRole`. The admin's tenant **Users** page shows it and edits roles through this route.
+
+What a stored grant opens:
+
+| Subject | Effect |
+| --- | --- |
+| `entry:<collectionSlug>` | Entries of that one collection. Action `read`, `create`, `update`, `delete`, `publish`, `manage` or `*`; `mutate` covers every write. |
+| `entry:*`, `*:*` | Entries of every collection. |
+| `TenantAdminApi` | Tenant admin routes, and entries of every collection (`read`, or `mutate` for writes). |
+| `TenantAdminWebhooks` (or `webhooks:*`), `TenantAdminRoles`, `TenantAdminAssetsHardDelete` | The owner/admin-only routes of the same name. |
+
+The collection check runs on entry and version routes, on every command (including each command inside a `transaction` and each entry in a `bulkUpdate`), whether it comes from the admin, AI, AI imports, MCP or sync, and on MCP entry reads. A command or read the role does not cover returns `403 FORBIDDEN`. An entry or collection id that does not exist in the tenant is denied, not skipped. Command types that are not entry commands need write access to every collection.
+
 Current limits, stated plainly:
 
-- The request guard checks coarse subjects only (`TenantAdminApi`, `GlobalAdminApi`, plus the users and audit reads). Stored permissions such as `entry:*` or `asset:*` are listed by the API but do not restrict individual routes. A stored grant takes effect only when its subject is `TenantAdminApi` or `GlobalAdminApi`.
-- The membership routes accept only `owner`, `admin` and `member`, so no API route assigns a custom role to a user.
-- Role routes need the same ability as other tenant admin mutations, which includes `editor`.
+- Other stored subjects (`asset:*`, `collection:*`, `settings:*`, `user:*`) are listed by the API but do not restrict individual routes.
 
 ## Access tokens
 
@@ -296,5 +330,7 @@ with status `429` and a `Retry-After` header. Hosts can replace these numbers pe
 ```bash
 bun test --isolate apps/api/src/tests/auth/auth-policies.test.ts apps/api/src/tests/auth/mfa-enforcement.test.ts \
   apps/api/src/tests/auth/csrf.middleware.test.ts apps/api/src/tests/auth/rate-limit.middleware.test.ts \
-  apps/api/src/tests/auth/authorization.test.ts apps/api/src/tests/auth/super-admin.test.ts apps/api/src/tests/invites
+  apps/api/src/tests/auth/authorization.test.ts apps/api/src/tests/auth/super-admin.test.ts apps/api/src/tests/invites \
+  apps/api/src/tests/auth/rbac-route-matrix.test.ts apps/api/src/tests/auth/content-access-enforcement.test.ts \
+  apps/api/src/tests/auth/content-access-routes.test.ts
 ```

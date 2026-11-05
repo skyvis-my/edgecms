@@ -1,4 +1,6 @@
 import type { CommandEnvelope, PreviewReceiptRecord } from '@edgecms/schemas/commands'
+import type { Database } from '@/database/db'
+import { previewReceiptRedemptions } from '@/database/schema/preview-receipts.schema'
 
 const DEFAULT_RECEIPT_TTL_SECONDS = 900 // 15 minutes
 const RECEIPT_KEY_PREFIX = 'preview_receipt:'
@@ -23,8 +25,13 @@ function pruneMemoryReceiptStoreIfNeeded(): void {
   }
 }
 
+// Receipt ids redeemed in this isolate: closes same-isolate races before the
+// durable claim, and is the only claim when no SQL database is available.
+const claimedReceiptIds = new Set<string>()
+
 export function __resetPreviewReceiptStoreForTests(): void {
   memoryReceiptStore.clear()
+  claimedReceiptIds.clear()
 }
 
 /**
@@ -142,17 +149,46 @@ export async function createPreviewReceipt(
   return record
 }
 
+export type PreviewReceiptErrorCode =
+  | 'RECEIPT_NOT_FOUND'
+  | 'RECEIPT_EXPIRED'
+  | 'RECEIPT_ALREADY_USED'
+  | 'ACTOR_MISMATCH'
+  | 'TENANT_MISMATCH'
+  | 'HASH_MISMATCH'
+  | 'RECEIPT_CLAIM_FAILED'
+
 export interface VerifyReceiptResult {
   valid: boolean
-  error?:
-    | 'RECEIPT_NOT_FOUND'
-    | 'RECEIPT_EXPIRED'
-    | 'RECEIPT_ALREADY_USED'
-    | 'ACTOR_MISMATCH'
-    | 'TENANT_MISMATCH'
-    | 'HASH_MISMATCH'
+  error?: PreviewReceiptErrorCode
   message?: string
   receipt?: PreviewReceiptRecord
+}
+
+/** Typed rejection thrown by flows that redeem a receipt outside the engine. */
+export class PreviewReceiptError extends Error {
+  readonly code: PreviewReceiptErrorCode
+
+  constructor(code: PreviewReceiptErrorCode, message: string) {
+    super(message)
+    this.name = 'PreviewReceiptError'
+    this.code = code
+  }
+}
+
+/** HTTP status for a receipt rejection on REST routes. */
+export function previewReceiptErrorStatus(code: PreviewReceiptErrorCode): number {
+  switch (code) {
+    case 'RECEIPT_ALREADY_USED':
+      return 409
+    case 'ACTOR_MISMATCH':
+    case 'TENANT_MISMATCH':
+      return 403
+    case 'RECEIPT_CLAIM_FAILED':
+      return 503
+    default:
+      return 400
+  }
 }
 
 /**
@@ -291,31 +327,15 @@ export async function verifyPreviewReceipt(options: {
     }
   }
 
-  // Optional: check caller-provided commands if passed
+  // Caller-supplied commands must be exactly the reviewed set: same commands,
+  // same order, same count. Subsets, repeats and reorders are rejected.
   if (commandsToVerify && commandsToVerify.length > 0) {
-    if (commandsToVerify.length === receipt.commands.length) {
-      const callerHash = await computeCommandsHash(commandsToVerify)
-      if (callerHash !== receipt.hash) {
-        return {
-          valid: false,
-          error: 'HASH_MISMATCH',
-          message: 'Supplied commands do not match preview receipt hash (divergence detected)',
-        }
-      }
-    } else {
-      // Subset verification (e.g. executing individual commands from a multi-command receipt)
-      const storedHashes = await Promise.all(
-        receipt.commands.map((cmd) => computeCommandsHash([cmd]))
-      )
-      for (const cmd of commandsToVerify) {
-        const cmdHash = await computeCommandsHash([cmd])
-        if (!storedHashes.includes(cmdHash)) {
-          return {
-            valid: false,
-            error: 'HASH_MISMATCH',
-            message: 'Supplied command is not contained in preview receipt (divergence detected)',
-          }
-        }
+    const callerHash = await computeCommandsHash(commandsToVerify)
+    if (callerHash !== receipt.hash) {
+      return {
+        valid: false,
+        error: 'HASH_MISMATCH',
+        message: 'Supplied commands do not match the reviewed preview (divergence detected)',
       }
     }
   }
@@ -324,4 +344,86 @@ export async function verifyPreviewReceipt(options: {
     valid: true,
     receipt,
   }
+}
+
+function hasSqlInsert(db: Database | undefined): db is Database {
+  return typeof (db as { insert?: unknown } | undefined)?.insert === 'function'
+}
+
+/**
+ * Atomically claims a receipt for execution. Returns false when it was
+ * already claimed (replay or concurrent execution). Throws when the durable
+ * claim cannot be recorded, so callers fail closed.
+ */
+async function claimPreviewReceipt(
+  receipt: PreviewReceiptRecord,
+  tenantId: string | undefined,
+  db: Database | undefined
+): Promise<boolean> {
+  if (claimedReceiptIds.has(receipt.receiptId)) return false
+  if (claimedReceiptIds.size >= MAX_MEMORY_RECEIPTS * 4) {
+    // Bounded per isolate; the durable ledger below stays authoritative.
+    const oldest = claimedReceiptIds.values().next().value
+    if (oldest) claimedReceiptIds.delete(oldest)
+  }
+  claimedReceiptIds.add(receipt.receiptId)
+
+  if (!hasSqlInsert(db)) return true
+
+  try {
+    const inserted = await db
+      .insert(previewReceiptRedemptions)
+      .values({
+        receiptId: receipt.receiptId,
+        tenantScope: tenantId ?? null,
+        userId: receipt.userId,
+        commandsHash: receipt.hash,
+        redeemedAt: new Date().toISOString(),
+      })
+      .onConflictDoNothing()
+      .returning({ receiptId: previewReceiptRedemptions.receiptId })
+    return inserted.length === 1
+  } catch (err) {
+    // Not recorded durably: leave the receipt unclaimed so a retry can succeed.
+    claimedReceiptIds.delete(receipt.receiptId)
+    throw err
+  }
+}
+
+/**
+ * Verifies a receipt (see verifyPreviewReceipt) and claims it for a single
+ * execution before anything runs. A receipt that passes is spent even if the
+ * execution later fails; the caller must preview again.
+ */
+export async function redeemPreviewReceipt(options: {
+  receiptId: string
+  userId: string
+  tenantId?: string
+  kv?: KVNamespace
+  db?: Database
+  commandsToVerify?: CommandEnvelope[]
+}): Promise<VerifyReceiptResult> {
+  const verification = await verifyPreviewReceipt(options)
+  if (!verification.valid || !verification.receipt) return verification
+
+  let claimed: boolean
+  try {
+    claimed = await claimPreviewReceipt(verification.receipt, options.tenantId, options.db)
+  } catch {
+    return {
+      valid: false,
+      error: 'RECEIPT_CLAIM_FAILED',
+      message: `Preview receipt '${options.receiptId}' could not be claimed; nothing was executed`,
+    }
+  }
+  if (!claimed) {
+    return {
+      valid: false,
+      error: 'RECEIPT_ALREADY_USED',
+      message: `Preview receipt '${options.receiptId}' has already been executed (replay prevented)`,
+    }
+  }
+
+  await markPreviewReceiptConsumed(options.receiptId, options.kv, options.tenantId)
+  return verification
 }

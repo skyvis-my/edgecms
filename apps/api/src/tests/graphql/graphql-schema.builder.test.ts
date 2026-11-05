@@ -20,7 +20,7 @@ const mockCollectionsRepo = {
 }
 
 const mockEntriesRepo = {
-  findAll: vi.fn(),
+  findVisibleByCollection: vi.fn(),
   findById: vi.fn(),
   findByCollectionAndSlug: vi.fn(),
 }
@@ -177,7 +177,7 @@ describe('graphql-schema.builder', () => {
 
     it('resolves singleton query for published entry', async () => {
       mockCollectionsRepo.findAll.mockResolvedValue(collections)
-      mockEntriesRepo.findAll.mockResolvedValue({
+      mockEntriesRepo.findVisibleByCollection.mockResolvedValue({
         rows: [
           {
             id: 'e-settings',
@@ -205,7 +205,7 @@ describe('graphql-schema.builder', () => {
 
     it('returns null for singleton query if entry is missing or draft', async () => {
       mockCollectionsRepo.findAll.mockResolvedValue(collections)
-      mockEntriesRepo.findAll.mockResolvedValue({ rows: [] })
+      mockEntriesRepo.findVisibleByCollection.mockResolvedValue({ rows: [] })
 
       const schema = await buildDynamicGraphQLSchema(mockDb, 'tenant-1')
       const res = await execute({
@@ -226,7 +226,7 @@ describe('graphql-schema.builder', () => {
         status: 'published',
         data: { headline: 'Breaking News', body: '<p>Content</p>' },
       }
-      mockEntriesRepo.findAll.mockResolvedValue({ rows: [mockArticle] })
+      mockEntriesRepo.findVisibleByCollection.mockResolvedValue({ rows: [mockArticle] })
       mockEntriesRepo.findByCollectionAndSlug.mockResolvedValue(mockArticle)
       mockEntriesRepo.findById.mockResolvedValue(mockArticle)
 

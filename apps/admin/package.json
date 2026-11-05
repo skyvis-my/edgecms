@@ -28,6 +28,7 @@
   },
   "dependencies": {
     "@edgecms/client": "workspace:*",
+    "@edgecms/plugin-sdk": "workspace:*",
     "@edgecms/schemas": "workspace:*",
     "@elysia/eden": "^2.0.0-beta.6",
     "@floating-ui/dom": "^1.8.0",

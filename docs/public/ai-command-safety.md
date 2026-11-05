@@ -11,7 +11,37 @@ The safe pattern is two steps:
 1. Run the command as a dry run. You get the proposed changes and a preview receipt.
 2. Show the preview to a person. If they approve, execute the receipt.
 
-Preview receipts are stored in KV, bound to the user and tenant that created them, expire after 15 minutes and can be used once.
+## Preview receipts
+
+A dry run returns a `previewReceipt` id. The receipt record is stored server-side (KV, with an in-memory fallback for local runs) and holds:
+
+- the reviewed command envelopes and a SHA-256 hash of their canonical form (command type, payload, actor and `optimisticVersion`, with object keys sorted; `timestamp` is ignored);
+- the user and tenant that created it;
+- an expiry 15 minutes after creation.
+
+Execution accepts a receipt only when all of these hold:
+
+| Check | Rejected with |
+| --- | --- |
+| The receipt exists. | `RECEIPT_NOT_FOUND` |
+| It has not expired. | `RECEIPT_EXPIRED` |
+| The caller is the user who created it. | `ACTOR_MISMATCH` |
+| The request is on the tenant it was created for. | `TENANT_MISMATCH` |
+| The commands to run hash to the reviewed hash: same commands, same order, same count. A subset, a repeat or an edited payload fails. | `HASH_MISMATCH` |
+| It has not been executed before. | `RECEIPT_ALREADY_USED` |
+| The single-use claim was recorded. | `RECEIPT_CLAIM_FAILED` |
+
+Single use is enforced in the database, not in KV. Before anything runs, execution inserts the receipt id into `preview_receipt_redemptions` (migration `0038_preview_receipt_redemptions.sql`). The primary key rejects a second insert, so a replay, two concurrent executions or a stale KV copy of the receipt cannot run the commands twice. If the claim cannot be written, nothing runs.
+
+A claimed receipt is spent even if a command then fails, for example on a version conflict. Run a new dry run and review it again.
+
+Where the error code shows up:
+
+- `POST /api/tenants/:slug/commands` (and the global commands route): `error.code` is `INVALID_PREVIEW_RECEIPT` and `error.details.reason` is the code from the table. The status is `409` for `RECEIPT_ALREADY_USED`, `403` for actor or tenant mismatches, `503` for `RECEIPT_CLAIM_FAILED` and `400` otherwise.
+- `/admin/ai/command`: `error.code` is the code from the table, with the same statuses.
+- MCP `edgecms_execute_command`: the tool result has `isError: true` and a JSON body `{ "status": "rejected", "error": { "code", "message" } }`.
+
+Receipts are not HMAC-signed tokens: the id is a random lookup key, and every check runs against the stored record.
 
 ## Command envelope
 
@@ -26,7 +56,7 @@ Envelopes are defined in `packages/schemas/src/commands.ts`:
 | `dryRun` | No | `true` previews without writing. |
 | `optimisticVersion` | No | Rejects the change if the entry's version has moved on. |
 | `previewReceipt` | No | Receipt from an earlier dry run. |
-| `idempotencyKey` | No | Replays with the same key return the first result. |
+| `idempotencyKey` | No | Replays of a real execution with the same key return the first result. Dry runs ignore it. |
 | `transactionId` | No | Groups commands in a transaction. |
 
 Unknown command types and missing required payload fields fail schema validation before anything runs.
@@ -65,10 +95,33 @@ POST /api/tenants/:slug/admin/ai/workflow
 `/ai/command` takes a `prompt` (with optional `context.collectionSlug` and `context.entryId`) or a `previewReceipt`, plus `dryRun`:
 
 - `{ "prompt": "...", "dryRun": true }` generates commands, stores a preview receipt and returns the commands and the `previewReceipt` without writing.
-- `{ "previewReceipt": "..." }` executes the reviewed commands without calling the model again.
-- `{ "prompt": "..." }` without `dryRun: true` generates and executes in one call.
+- `{ "previewReceipt": "..." }` executes the stored, reviewed commands without calling the model again. The request cannot change them.
+- `{ "previewReceipt": "...", "dryRun": true }` returns the stored commands again without spending the receipt.
+- `{ "prompt": "..." }` without `dryRun: true` is rejected with `400 PREVIEW_RECEIPT_REQUIRED`.
 
-To require review, always send `dryRun: true` first and execute only the returned receipt. The route does not force this for you. The [MCP server](mcp-server.md) does: its execute tool accepts only a preview receipt.
+The [MCP server](mcp-server.md) works the same way: `edgecms_preview_command` returns a receipt only when the dry run succeeded, and `edgecms_execute_command` accepts only a receipt. If you also pass `command`, it must match the reviewed command exactly.
+
+## AI import review
+
+AI import review is off unless the Worker sets `ENABLE_AI_IMPORT_REVIEW=true`; every route below then returns `404 AI_IMPORT_REVIEW_DISABLED`.
+
+```text
+POST  /api/tenants/:slug/admin/ai/import-batches
+POST  /api/tenants/:slug/admin/ai/import-batches/:batchId/sources
+POST  /api/tenants/:slug/admin/ai/import-batches/:batchId/analyze
+GET   /api/tenants/:slug/admin/ai/import-batches/:batchId
+PATCH /api/tenants/:slug/admin/ai/suggestions/:suggestionId
+POST  /api/tenants/:slug/admin/ai/suggestion-sets/:suggestionSetId/dry-run
+POST  /api/tenants/:slug/admin/ai/suggestion-sets/:suggestionSetId/apply
+```
+
+Everything before `apply` writes no entries. It writes only the review records (batch, source, suggestion and suggestion-set rows, tenant-scoped) and, for file sources, the uploaded file to R2 under the tenant's `ai-imports/` prefix. These records expire after 30 days, but nothing deletes them yet.
+
+- `dry-run` runs the accepted suggestions through the command engine as dry runs. When every command passes, it returns a `previewReceipt` (see [Preview receipts](#preview-receipts)) with the `dryRunHash`. No receipt is issued when a dry-run command fails.
+- `apply` takes `{ "dryRunHash": "...", "previewReceipt": "..." }`. It runs only the stored dry-run commands, and only after it redeems the receipt. A missing receipt returns `400 AI_IMPORT_APPLY_FAILED`. A rejected receipt returns `INVALID_PREVIEW_RECEIPT` with `err.reason` set to the code from the table, and the status from the table. A set that was already applied cannot be dry-run or applied again.
+- Mutating routes need a tenant owner, admin or editor role. Every command also checks `entry:<collection>` grants (PL-03).
+
+The WordPress WXR converter (`stageWordPressImportCommands`) stages `createEntry` dry-run commands from an export. It is a library function: no route accepts a WXR upload yet. It does not expand DTD entities. It rejects exports over 10,000,000 characters or 2,000 items. It keeps only `http`, `https`, `mailto` and relative link and image URLs, and it does not fetch remote media. Imported posts are staged as drafts unless the caller sets `defaultStatus: 'published'`.
 
 ## Audit rules
 

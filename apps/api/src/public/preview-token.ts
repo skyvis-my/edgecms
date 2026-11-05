@@ -18,8 +18,38 @@ function getPreviewHmacKey(secret: string): Promise<CryptoKey> {
   return cached
 }
 
+/**
+ * DL-08 preview tokens: short-lived, HMAC-signed metadata that lets an
+ * authenticated frontend confirm a preview session (tenant, issuing user,
+ * collection/entry scope). They are never read as write credentials and no
+ * public route returns draft content for them.
+ */
+
+/** Longest lifetime a preview token may have (one day). */
+export const MAX_PREVIEW_TOKEN_TTL_SECONDS = 86400
+const MIN_PREVIEW_TOKEN_TTL_SECONDS = 60
+const DEFAULT_PREVIEW_TOKEN_TTL_SECONDS = 3600
+
+/**
+ * Prefix of the HMAC input. It keeps preview signatures distinct from other
+ * HMACs computed with the same secret (BETTER_AUTH_SECRET is a fallback).
+ */
+const SIGNING_PREFIX = 'edgecms.preview.v1.'
+
+/**
+ * Signing secret: `PREVIEW_SECRET`, else `BETTER_AUTH_SECRET`. There is no
+ * built-in default; callers refuse to mint or verify when this is undefined.
+ */
+export function resolvePreviewSecret(
+  env: { PREVIEW_SECRET?: string; BETTER_AUTH_SECRET?: string } | undefined
+): string | undefined {
+  return env?.PREVIEW_SECRET || env?.BETTER_AUTH_SECRET || undefined
+}
+
 export type PreviewTokenPayload = {
   tenantSlug: string
+  /** Id of the user who minted the token. */
+  sub: string
   entrySlug?: string
   entryId?: string
   collectionSlug?: string
@@ -30,6 +60,7 @@ export type PreviewTokenPayload = {
 
 export type GeneratePreviewTokenOptions = {
   tenantSlug: string
+  issuerId: string
   entrySlug?: string
   entryId?: string
   collectionSlug?: string
@@ -87,7 +118,7 @@ function timingSafeEqual(a: string, b: string): boolean {
 
 async function hmacSha256(secret: string, data: string): Promise<string> {
   const key = await getPreviewHmacKey(secret)
-  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(data))
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(`${SIGNING_PREFIX}${data}`))
   return base64UrlEncode(new Uint8Array(signature))
 }
 
@@ -98,11 +129,18 @@ export async function generatePreviewToken(
   options: GeneratePreviewTokenOptions
 ): Promise<PreviewTokenResponse> {
   const now = Math.floor(Date.now() / 1000)
-  const ttl = Math.min(Math.max(options.ttlSeconds ?? 3600, 60), 86400 * 7)
+  const requested = Number.isFinite(options.ttlSeconds)
+    ? Math.floor(options.ttlSeconds as number)
+    : DEFAULT_PREVIEW_TOKEN_TTL_SECONDS
+  const ttl = Math.min(
+    Math.max(requested, MIN_PREVIEW_TOKEN_TTL_SECONDS),
+    MAX_PREVIEW_TOKEN_TTL_SECONDS
+  )
   const exp = now + ttl
 
   const payload: PreviewTokenPayload = {
     tenantSlug: options.tenantSlug,
+    sub: options.issuerId,
     entrySlug: options.entrySlug,
     entryId: options.entryId,
     collectionSlug: options.collectionSlug,
@@ -165,9 +203,22 @@ export async function verifyPreviewToken(
     return { valid: false, error: 'Failed to decode token payload' }
   }
 
+  if (
+    !payload ||
+    typeof payload !== 'object' ||
+    typeof payload.tenantSlug !== 'string' ||
+    typeof payload.sub !== 'string' ||
+    payload.sub.length === 0 ||
+    !Number.isFinite(payload.iat) ||
+    !Number.isFinite(payload.exp) ||
+    payload.exp - payload.iat > MAX_PREVIEW_TOKEN_TTL_SECONDS
+  ) {
+    return { valid: false, error: 'Invalid token payload' }
+  }
+
   // Verify expiration
   const currentNow = options?.nowSeconds ?? Math.floor(Date.now() / 1000)
-  if (payload.exp < currentNow) {
+  if (payload.exp <= currentNow) {
     return { valid: false, error: 'Preview token has expired' }
   }
 

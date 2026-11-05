@@ -31,7 +31,8 @@ export async function recordCommandAuditEvent(input: {
   result: CommandResult
 }): Promise<void> {
   const { envelope, result } = input
-  if (result.status === 'dry_run') return
+  // A dry run (including a failed one) executed nothing.
+  if (result.status === 'dry_run' || envelope.dryRun) return
   await auditService.recordSafely(
     getAuditDb(input.env, input.db),
     {

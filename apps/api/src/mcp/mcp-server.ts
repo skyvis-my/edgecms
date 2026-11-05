@@ -2,10 +2,10 @@ import type { CommandContext } from '@/commands/engine'
 import { executeCommand } from '@/commands/engine'
 import { collectionsRepository } from '@/collections/collections.repository'
 import { entriesRepository } from '@/entries/entries.repository'
+import { canAccessCollectionSlug, canAccessContent } from '@/auth/content-access'
 import {
   createPreviewReceipt,
-  markPreviewReceiptConsumed,
-  verifyPreviewReceipt,
+  redeemPreviewReceipt,
 } from '@/ai/preview-receipt.service'
 import { AI_DISABLED_MESSAGE, isTenantAiEnabled } from '@/ai/ai-access'
 import { ragService } from '@/ai/rag.service'
@@ -45,9 +45,7 @@ export const MCP_TOOLS: McpToolDefinition[] = [
     description: 'List all content collections in the current tenant scope (safe metadata without secrets).',
     inputSchema: {
       type: 'object',
-      properties: {
-        tenantId: { type: 'string', description: 'Optional tenant ID override' },
-      },
+      properties: {},
     },
   },
   {
@@ -58,7 +56,6 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       required: ['collectionSlug'],
       properties: {
         collectionSlug: { type: 'string', description: 'The unique slug of the collection' },
-        tenantId: { type: 'string', description: 'Optional tenant ID override' },
       },
     },
   },
@@ -73,7 +70,6 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         page: { type: 'number', description: 'Page number (default 1)' },
         perPage: { type: 'number', description: 'Items per page (default 20, max 100)' },
         status: { type: 'string', enum: ['draft', 'published', 'scheduled', 'archived'] },
-        tenantId: { type: 'string', description: 'Optional tenant ID override' },
       },
     },
   },
@@ -85,7 +81,6 @@ export const MCP_TOOLS: McpToolDefinition[] = [
       required: ['entryId'],
       properties: {
         entryId: { type: 'string', description: 'The ID of the entry' },
-        tenantId: { type: 'string', description: 'Optional tenant ID override' },
       },
     },
   },
@@ -156,7 +151,6 @@ export const MCP_TOOLS: McpToolDefinition[] = [
         query: { type: 'string', description: 'The natural language search query' },
         collectionSlug: { type: 'string', description: 'Optional collection slug filter' },
         limit: { type: 'number', description: 'Maximum number of results to return (default 5, max 20)' },
-        tenantId: { type: 'string', description: 'Optional tenant ID override' },
       },
     },
   },
@@ -167,19 +161,22 @@ export async function handleMcpToolCall(
   name: string,
   args: Record<string, unknown> = {}
 ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-  // A tenant-scoped endpoint never serves another tenant's content.
-  const requestedTenant = typeof args.tenantId === 'string' ? args.tenantId : undefined
-  if (ctx.tenantScope && requestedTenant && requestedTenant !== ctx.tenantScope) {
+  // P2: the tenant comes only from the request (the endpoint path), never from
+  // a tool argument. A `tenantId` naming any other tenant is rejected.
+  const tenantId = ctx.tenantScope
+  if (args.tenantId !== undefined && args.tenantId !== tenantId) {
     return {
       content: [
-        { type: 'text', text: 'Error: tenantId override is not allowed on a tenant-scoped MCP endpoint' },
+        {
+          type: 'text',
+          text: 'Error: tenantId override is not allowed; call the tenant MCP endpoint /api/tenants/:slug/api/mcp instead',
+        },
       ],
       isError: true,
     }
   }
-  // HS-14: the effective tenant (context or override) must have AI turned on.
-  const effectiveTenant = ctx.tenantScope ?? requestedTenant
-  if (!(await isTenantAiEnabled({ db: ctx.db, workerEnv: ctx.env, tenantId: effectiveTenant }))) {
+  // HS-14: the request tenant must have AI turned on.
+  if (!(await isTenantAiEnabled({ db: ctx.db, workerEnv: ctx.env, tenantId }))) {
     return { content: [{ type: 'text', text: `Error: ${AI_DISABLED_MESSAGE}` }], isError: true }
   }
 
@@ -197,7 +194,6 @@ export async function handleMcpToolCall(
   try {
     switch (name) {
       case 'edgecms_list_collections': {
-        const tenantId = (args.tenantId as string | undefined) ?? ctx.tenantScope
         const collections = await collectionsRepository.findAll(ctx.db, tenantId)
         const sanitized = collections.map((col) => ({
           id: col.id,
@@ -216,7 +212,6 @@ export async function handleMcpToolCall(
 
       case 'edgecms_get_schema': {
         const collectionSlug = args.collectionSlug as string
-        const tenantId = (args.tenantId as string | undefined) ?? ctx.tenantScope
         const collection = await collectionsRepository.findBySlug(ctx.db, collectionSlug, tenantId)
         if (!collection) {
           return {
@@ -231,11 +226,16 @@ export async function handleMcpToolCall(
 
       case 'edgecms_list_entries': {
         const collectionSlug = args.collectionSlug as string
-        const tenantId = (args.tenantId as string | undefined) ?? ctx.tenantScope
         const collection = await collectionsRepository.findBySlug(ctx.db, collectionSlug, tenantId)
         if (!collection) {
           return {
             content: [{ type: 'text', text: `Collection '${collectionSlug}' not found` }],
+            isError: true,
+          }
+        }
+        if (ctx.contentAccess && !canAccessCollectionSlug(ctx.contentAccess, 'read', collection.slug)) {
+          return {
+            content: [{ type: 'text', text: `Forbidden: your role cannot read '${collectionSlug}' entries` }],
             isError: true,
           }
         }
@@ -257,11 +257,21 @@ export async function handleMcpToolCall(
 
       case 'edgecms_get_entry': {
         const entryId = args.entryId as string
-        const tenantId = (args.tenantId as string | undefined) ?? ctx.tenantScope
         const entry = await entriesRepository.findById(ctx.db, entryId, tenantId)
         if (!entry) {
           return {
             content: [{ type: 'text', text: `Entry '${entryId}' not found` }],
+            isError: true,
+          }
+        }
+        if (
+          ctx.contentAccess &&
+          !(await canAccessContent(ctx.contentAccess, ctx.db, tenantId, 'read', {
+            collectionIds: [entry.collectionId],
+          }))
+        ) {
+          return {
+            content: [{ type: 'text', text: `Forbidden: your role cannot read entry '${entryId}'` }],
             isError: true,
           }
         }
@@ -290,9 +300,44 @@ export async function handleMcpToolCall(
         // Execute dry-run preview through the Command Engine
         const result = await executeCommand(ctx, envelope)
 
-        // Generate an immutable preview receipt
+        // PL-03: no receipt for a command the caller's role may not run.
+        if (result.status === 'failed' && result.error?.code === 'FORBIDDEN') {
+          return {
+            content: [{ type: 'text', text: `FORBIDDEN: ${result.error.message}` }],
+            isError: true,
+          }
+        }
+
+        // A failed preview must not mint a receipt that could later execute.
+        if (result.status !== 'dry_run') {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  { status: 'failed', commandType: type, error: result.error, data: result.data },
+                  null,
+                  2
+                ),
+              },
+            ],
+            isError: true,
+          }
+        }
+
+        // Generate an immutable preview receipt. A transaction's receipt covers
+        // its sub-commands, which edgecms_execute_command runs as one
+        // transaction and the engine verifies against the same list (CMD-03).
+        const subCommands = (payload as { commands?: unknown }).commands
+        const receiptCommands =
+          type === 'transaction' && Array.isArray(subCommands) && subCommands.length > 0
+            ? (subCommands as CommandEnvelope[]).map((cmd) => ({
+                ...cmd,
+                actor: { userId: ctx.actor.userId, source: 'ai' as const },
+              }))
+            : [envelope]
         const receipt = await createPreviewReceipt({
-          commands: [envelope],
+          commands: receiptCommands,
           userId: ctx.actor.userId,
           tenantId: ctx.tenantScope,
           kv: ctx.kv,
@@ -330,12 +375,14 @@ export async function handleMcpToolCall(
           }
         }
 
-        // Verify the immutable preview receipt
-        const verification = await verifyPreviewReceipt({
+        // AI-05: verify against the exact reviewed commands and claim the
+        // receipt for single use before anything runs.
+        const verification = await redeemPreviewReceipt({
           receiptId: previewReceiptId,
           userId: ctx.actor.userId,
           tenantId: ctx.tenantScope,
           kv: ctx.kv,
+          db: ctx.db,
           commandsToVerify: args.command ? [args.command as CommandEnvelope] : undefined,
         })
 
@@ -344,7 +391,17 @@ export async function handleMcpToolCall(
             content: [
               {
                 type: 'text',
-                text: `Preview receipt verification failed: ${verification.message ?? verification.error}`,
+                text: JSON.stringify(
+                  {
+                    status: 'rejected',
+                    error: {
+                      code: verification.error ?? 'RECEIPT_NOT_FOUND',
+                      message: `Preview receipt verification failed: ${verification.message ?? verification.error}`,
+                    },
+                  },
+                  null,
+                  2
+                ),
               },
             ],
             isError: true,
@@ -361,10 +418,11 @@ export async function handleMcpToolCall(
         const results: CommandResult[] = []
         if (verification.receipt.commands.length === 1) {
           const stagedCommand = verification.receipt.commands[0]!
+          // Already redeemed above; the engine must not redeem it again.
           const executionEnvelope: CommandEnvelope = {
             ...stagedCommand,
             dryRun: false,
-            previewReceipt: previewReceiptId,
+            previewReceipt: undefined,
             timestamp: new Date().toISOString(),
           }
 
@@ -403,7 +461,6 @@ export async function handleMcpToolCall(
               })),
             },
             dryRun: false,
-            previewReceipt: previewReceiptId,
             actor: {
               userId: ctx.actor.userId,
               source: 'ai',
@@ -435,8 +492,6 @@ export async function handleMcpToolCall(
           const subResults = (txResult.data?.subResults as CommandResult[] | undefined) ?? [txResult]
           results.push(...subResults)
         }
-
-        await markPreviewReceiptConsumed(previewReceiptId, ctx.kv, ctx.tenantScope)
 
         const finalData =
           results.length === 1
@@ -470,7 +525,6 @@ export async function handleMcpToolCall(
             isError: true,
           }
         }
-        const tenantId = (args.tenantId as string | undefined) ?? ctx.tenantScope
         const collectionSlug = args.collectionSlug as string | undefined
         const limit = Math.min(20, Math.max(1, Number(args.limit) || 5))
 

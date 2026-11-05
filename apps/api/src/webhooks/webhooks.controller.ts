@@ -3,6 +3,7 @@ import { isSuperAdminUser } from '@/auth/super-admin'
 import { betterAuthPlugin } from '@/auth/auth.middleware'
 import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import { parseAllowedWebhookHosts } from './webhook-destination-policy'
+import { MAX_BULK_REPLAY } from './webhook-replay-policy'
 import { webhooksService } from './webhooks.service'
 import { toServiceResponse } from '@/shared/utils/service-response'
 
@@ -82,8 +83,15 @@ export const webhooksController = new Elysia({ prefix: '/api/admin/webhooks' })
       success: true as const,
       data: {
         algorithm: 'HMAC-SHA256',
-        headers: ['x-edgecms-signature', 'x-webhook-signature'],
+        headers: [
+          'x-edgecms-signature-v1',
+          'x-edgecms-timestamp',
+          'x-edgecms-signature',
+          'x-webhook-signature',
+        ],
         format: 'sha256=<hex digest>',
+        timestampedFormat: 't=<unix seconds>,v1=<hex HMAC of "<t>.<raw body>">',
+        recommended: 'x-edgecms-signature-v1; reject timestamps older than 300 seconds',
         bodyEncoding: 'application/json',
       },
     }
@@ -144,14 +152,74 @@ export const webhooksController = new Elysia({ prefix: '/api/admin/webhooks' })
   /**
    * POST /:webhookId/test — Send a test delivery to the webhook.
    */
-  .post('/:webhookId/test', { auth: true }, async ({ db, params, set, tenantCtx }) => {
+  .post('/:webhookId/test', { auth: true }, async ({ db, params, set, tenantCtx, workerEnv }) => {
     const result = await webhooksService.testDelivery(
       db,
       params.webhookId,
-      tenantCtx?.tenant.id
+      tenantCtx?.tenant.id,
+      resolveWebhookDestinationPolicy(workerEnv)
     )
-    return toServiceResponse(set, result, { defaultErrorStatus: 500 })
+    return toServiceResponse(set, result, {
+      defaultErrorStatus: 500,
+      errorStatusMap: { VALIDATION_ERROR: 400 },
+    })
   })
+
+  /**
+   * POST /:webhookId/deliveries/:deliveryId/replay — Re-enqueue a failed delivery.
+   */
+  .post(
+    '/:webhookId/deliveries/:deliveryId/replay',
+    { auth: true },
+    async ({ db, params, set, tenantCtx, workerEnv }) => {
+      const queue = (workerEnv as { WEBHOOK_QUEUE?: Queue }).WEBHOOK_QUEUE
+      const result = await webhooksService.replayDelivery(
+        db,
+        queue,
+        params.webhookId,
+        params.deliveryId,
+        tenantCtx?.tenant.id
+      )
+      return toServiceResponse(set, result, {
+        successStatus: 202,
+        errorStatusMap: { QUEUE_UNAVAILABLE: 503 },
+      })
+    }
+  )
+
+  /**
+   * POST /:webhookId/deliveries/replay — Bulk re-enqueue dead/failed
+   * deliveries of one webhook (max MAX_BULK_REPLAY per call). Owner/admin
+   * only via the TenantAdminWebhooks mutation guard.
+   */
+  .post(
+    '/:webhookId/deliveries/replay',
+    {
+      auth: true,
+      body: t.Optional(
+        t.Object({
+          statuses: t.Optional(
+            t.Array(t.Union([t.Literal('failed'), t.Literal('dead')]), { minItems: 1, maxItems: 2 })
+          ),
+          limit: t.Optional(t.Integer({ minimum: 1, maximum: MAX_BULK_REPLAY })),
+        })
+      ),
+    },
+    async ({ db, params, body, set, tenantCtx, workerEnv }) => {
+      const queue = (workerEnv as { WEBHOOK_QUEUE?: Queue }).WEBHOOK_QUEUE
+      const result = await webhooksService.replayDeliveries(
+        db,
+        queue,
+        params.webhookId,
+        tenantCtx?.tenant.id,
+        { statuses: body?.statuses, limit: body?.limit }
+      )
+      return toServiceResponse(set, result, {
+        successStatus: 202,
+        errorStatusMap: { QUEUE_UNAVAILABLE: 503 },
+      })
+    }
+  )
 
   /**
    * GET /:webhookId/deliveries — List delivery logs for a webhook (paginated).

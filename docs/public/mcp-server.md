@@ -35,7 +35,7 @@ Send one of:
 - `Authorization: Bearer <access token>`, an EdgeCMS access token from `GET /api/auth/access-token?tenant=<slug>` (signed in). It acts as that user, on that tenant only, and expires after 10 minutes, so it suits scripts more than long-lived client configs.
 - A Better Auth session cookie, for agents running in a signed-in browser session.
 
-On tenant paths, users (session or access token) must be an owner, admin or editor of the tenant; other users get `403`, and calls without credentials get `401`.
+On tenant paths, users (session or access token) must be an owner, admin or editor of the tenant, or hold a custom role that can write to the tenant admin API; other users get `403`, and calls without credentials get `401`. For users, entry reads and commands are also checked per collection, as on the admin routes; a denied command returns an error and no preview receipt. A deployment key is not a user and keeps full access.
 
 Set a deployment key with:
 
@@ -137,7 +137,7 @@ Semantic search over published entries, using the `ASSET_VECTORS` Vectorize inde
 
 ### Change content in two steps
 
-1. Call `edgecms_preview_command` with a command `type` and `payload`, and optionally `optimisticVersion`. It runs the command as a dry run and returns `status: "dry_run"`, the `diff`, a `previewReceipt`, its `sha256Hash` and `expiresAt`.
+1. Call `edgecms_preview_command` with a command `type` and `payload`, and optionally `optimisticVersion`. It runs the command as a dry run and returns `status: "dry_run"`, the `diff`, a `previewReceipt`, its `sha256Hash` and `expiresAt`. A `transaction` preview returns the combined diff of its sub-commands (each entry tagged with `commandIndex` and `commandType`), and its receipt covers those sub-commands. If the dry run fails, the tool returns an error and no receipt.
 
    ```json
    {
@@ -164,7 +164,7 @@ Semantic search over published entries, using the `ASSET_VECTORS` Vectorize inde
    }
    ```
 
-   You can also pass `command`, the envelope you expect, and execution fails if it does not match the receipt. Receipts expire after 15 minutes, work once, and only for the same caller and tenant. A receipt with several commands runs as one transaction.
+   You can also pass `command`, the envelope you expect, and execution fails if it does not match the receipt. Receipts expire after 15 minutes, work once, and only for the same caller and tenant. A receipt with several commands runs as one transaction. A dry run that fails returns `isError: true` and no receipt. A rejected receipt returns `isError: true` with `{ "status": "rejected", "error": { "code", "message" } }`; the codes are listed in [AI command safety](ai-command-safety.md#preview-receipts).
 
 There is no tool that writes without a preview receipt.
 
@@ -225,5 +225,6 @@ curl -X POST https://<your-worker>/api/tenants/<slug>/api/mcp \
 - Commands accept `optimisticVersion` to reject stale edits.
 - Queries and changes are filtered by tenant in D1 and KV.
 - On tenant-scoped paths, every request gets `403` and JSON-RPC error `-32003` while the tenant's AI switch is off. Global paths have no tenant switch.
-- Tools accept an optional `tenantId` argument. On tenant-scoped paths it is rejected when it names another tenant. On global paths it is honored only when that tenant's AI switch is on, and it does not check the caller's membership in that tenant. Give global MCP paths only to deployment-level API keys.
+- The tenant comes only from the path. Tools take no `tenantId` argument; one that names a different tenant (or any tenant on a global path) is rejected with a tool error. To work on a tenant, call its `/api/tenants/:slug/api/mcp` path.
+- `POST /api/mcp` (global) needs a deployment key, or a user with the global `admin` or `editor` role (or a super-admin); other signed-in users get `403`.
 - A tenant that requires MFA blocks sessions without a second factor on its MCP routes and access tokens without the `mfa` claim. Deployment API keys are not user credentials and are not subject to tenant MFA, so keep them in a secret store and rotate them like any other Worker secret.

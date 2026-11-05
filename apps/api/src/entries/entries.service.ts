@@ -59,7 +59,7 @@ function deriveSlugFromData(data: Record<string, unknown>, defaultLocale?: strin
  * Validate that localized field data matches the collection's field definitions.
  * Ensures localizable fields store values as locale objects with valid locale keys.
  */
-function validateLocalizedFields(
+export function validateLocalizedFields(
   data: Record<string, unknown>,
   fields: Array<{ name: string; localizable: boolean }>,
   supportedLocales: string[]
@@ -228,7 +228,7 @@ function validateFieldValueType(
   }
 }
 
-function validateEntryFieldData(
+export function validateEntryFieldData(
   data: Record<string, unknown>,
   fields: FieldDefinitionValidation[],
   requireRequiredFields: boolean
@@ -845,6 +845,10 @@ export const entriesService = {
             createdBy: userId ?? null,
             createdAt: now,
           })
+          // CM-06: rollbacks before the command path wrote a row for the
+          // entry's new version. That row already holds this snapshot, so
+          // keep it instead of failing on (entryId, version).
+          .onConflictDoNothing({ target: [entryVersions.entryId, entryVersions.version] })
           .returning()
         const [updatedRows] = (await db.batch([updateBuilder, versionBuilder])) as unknown as [
           EntryRow[],
@@ -936,14 +940,20 @@ export const entriesService = {
     }
 
     // Create version snapshot of previous state only after successful update.
-    await entriesRepository.createVersion(db, {
-      id: crypto.randomUUID(),
-      entryId: id,
-      version: existing.version,
-      data: existing.data,
-      createdBy: userId ?? null,
-      createdAt: now,
-    })
+    try {
+      await entriesRepository.createVersion(db, {
+        id: crypto.randomUUID(),
+        entryId: id,
+        version: existing.version,
+        data: existing.data,
+        createdBy: userId ?? null,
+        createdAt: now,
+      })
+    } catch (err) {
+      // CM-06: a row for this version written by an older rollback already
+      // holds this snapshot (see the batch path above).
+      if (!(err instanceof Error && /unique/i.test(err.message))) throw err
+    }
 
     scheduleDeferredWork(
       undefined,
@@ -955,7 +965,11 @@ export const entriesService = {
   },
 
   /** Delete an entry by ID. */
-  async deleteById(db: Database, id: string, tenantId?: string): Promise<ServiceResult<{ id: string }>> {
+  async deleteById(
+    db: Database,
+    id: string,
+    tenantId?: string
+  ): Promise<ServiceResult<{ id: string; collectionId: string }>> {
     const existing = await entriesRepository.findById(db, id, tenantId)
     if (!existing) {
       return {
@@ -970,7 +984,9 @@ export const entriesService = {
         error: { code: 'NOT_FOUND', message: `Entry '${id}' not found` },
       }
     }
-    return { success: true, data: { id } }
+    // collectionId lets the command engine still emit collection cache tags
+    // after the row is gone (CM-04/DL-03 related-snapshot purge).
+    return { success: true, data: { id, collectionId: existing.collectionId } }
   },
 
   /** Duplicate an entry by ID. Creates a copy with draft status and new slug. */

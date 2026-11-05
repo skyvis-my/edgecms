@@ -7,6 +7,54 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Security
+- Global `/api/mcp` no longer accepts a caller-supplied `tenantId` and requires a deployment key or a global admin/editor role; entry version routes use the request tenant (P2). **Upgrade step:** deployment-key clients that passed `tenantId` must use `/api/tenants/:slug/api/mcp`.
+- Custom-role grants are enforced on content routes and commands; editors can no longer read webhook config or delivery logs (PL-03).
+- AI and MCP preview receipts are single-use, claimed atomically in D1 before execution, and must match the reviewed commands exactly (AI-05). Migration `0038`.
+- Public `populate` no longer returns related entries outside their publish window (CM-04).
+- Image uploads are checked against the tenant dimension limit from the file header; direct-upload completion only accepts the caller's own tenant key (MD-05).
+
+### Added
+- Cloudflare Cache API layer for anonymous public reads (DL-03).
+- Tenant offboarding: NDJSON export and confirmed, resumable deletion of shared-mode tenants with an audit receipt (HS-09). Migration `0039`.
+- Host admin contributions (navigation, panels, banners) through the plugin SDK (HS-10).
+- Unified entry status indicator with offline-queued state in the admin (OF-05).
+
+### Changed
+- Cached public reads no longer read KV for rate limiting or D1 for the tenant row while it is cached (DL-10).
+- A `transaction` dry run writes nothing and returns a combined diff and one receipt (CMD-03).
+
+### Security (wave 2)
+- GraphQL reads apply the public publish window; `article(id)` no longer returns entries from another collection; variable page sizes count toward query cost (DL-06).
+- Webhook deliveries carry a timestamped `x-edgecms-signature-v1`, refuse redirects, and block more private ranges (DL-09).
+- `DELETE /api/admin/tenants/:slug` returns `409 TENANT_OFFBOARDING_REQUIRED`; tenants are deleted through confirmed offboarding (HS-09). **Upgrade step.**
+
+### Added (wave 2)
+- Collection export and receipt-bound import preview (OP-06).
+- Replay of failed webhook deliveries (DL-09).
+- Per-field and per-locale review for offline sync conflicts (OF-04).
+
+### Changed (wave 2)
+- Version rollback runs as an `updateEntry` command with audit, cache purge and outbox (CM-06, P3).
+- Changing a related entry purges cached parents that populate it (CM-04).
+- The admin always sends a validated blurhash on image upload (MD-03).
+
+### Security (wave 3)
+- Preview tokens can only be minted on tenant routes by a signed-in user with read access to the content; the hard-coded fallback secret is gone (`PREVIEW_SECRET` or `BETTER_AUTH_SECRET` required), lifetime is capped at 1 day, and preview reads skip the edge cache (DL-08). **Upgrade step:** set `PREVIEW_SECRET`.
+- AI import apply requires a single-use preview receipt; the WXR parser enforces size limits, drops unsafe URLs and imports posts as drafts by default (AI-08).
+- Member role changes are guarded against privilege escalation and demoting the last owner (PL-03).
+
+### Added (wave 3)
+- `PUT /api/tenants/:slug/api/admin/users/:userId/role` assigns built-in or custom roles; admin Users dialog lists custom roles (PL-03).
+- Plugin manifests declare `edgecms` range, `dependencies` and `bindings`, checked at composition (EX-02).
+- One-minute cron (`scheduled()`) sweeps the webhook outbox and side-effect intents; webhook dead-letter queue consumer; bulk replay of dead/failed deliveries (DL-09, CMD-06). **Upgrade step:** create the `edgecms-webhook-dlq*` queues before deploying.
+- Durable `side_effect_intents` for cache purge, revalidation, RAG and FTS sync, migration `0040` (CMD-06).
+- Admin Export/Import on the collection entries page (OP-06).
+
+### Fixed (wave 3)
+- Single-command dry runs no longer reserve or replay idempotency keys (CMD-03).
+- Webhook outbox rows are marked sent/failed on D1 (a lost `this` previously swallowed the update) (DL-09).
+
 ## [0.2.0] - 2026-10-22
 
 ### Security

@@ -4,6 +4,12 @@ import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import { entriesService } from './entries.service'
 import { parsePublicFilters, buildDrizzleConditions, buildSortClause } from '@/public/query-filter'
 import { toServiceResponse, createErrorEnvelope } from '@/shared/utils/service-response'
+import { requestCanAccessContent } from '@/auth/content-access'
+
+const CONTENT_FORBIDDEN = createErrorEnvelope(
+  'FORBIDDEN',
+  'Your role cannot access entries in this collection'
+)
 
 /**
  * ElysiaJS controller for entry CRUD endpoints.
@@ -45,10 +51,20 @@ export const entriesController = new Elysia({ prefix: '/api/admin/entries' })
       'filter[createdAt][gte]': t.Optional(t.String()),
       'filter[createdAt][lte]': t.Optional(t.String()),
     }),
-  }, async ({ db, query, set, tenantCtx }) => {
+  }, async ({ db, query, request, set, tenantCtx }) => {
     if (!tenantCtx?.tenant) {
       set.status = 400
       return createErrorEnvelope('TENANT_REQUIRED', 'Tenant context is required')
+    }
+    // PL-03: a role limited to some collections must name one it can read.
+    if (
+      !(await requestCanAccessContent(request, db, tenantCtx?.tenant.id, 'read', {
+        ...(query.collectionId && { collectionIds: [query.collectionId] }),
+        ...(query.collectionSlug && { collectionSlugs: [query.collectionSlug] }),
+      }))
+    ) {
+      set.status = 403
+      return CONTENT_FORBIDDEN
     }
     // Parse filter and sort params from query string
     const allQueryParams = query as Record<string, string | undefined>
@@ -108,7 +124,7 @@ export const entriesController = new Elysia({ prefix: '/api/admin/entries' })
     query: t.Object({
       ids: t.String({ minLength: 1 }),
     }),
-  }, async ({ db, query, set, tenantCtx }) => {
+  }, async ({ db, query, request, set, tenantCtx }) => {
     if (!tenantCtx) {
       set.status = 400
       return createErrorEnvelope('TENANT_REQUIRED', 'Tenant context is required')
@@ -118,6 +134,12 @@ export const entriesController = new Elysia({ prefix: '/api/admin/entries' })
       set.status = 400
       return createErrorEnvelope('VALIDATION_ERROR', 'At least one valid ID is required')
     }
+    if (
+      !(await requestCanAccessContent(request, db, tenantCtx?.tenant.id, 'read', { entryIds: ids }))
+    ) {
+      set.status = 403
+      return CONTENT_FORBIDDEN
+    }
     const result = await entriesService.findByIds(db, ids, tenantCtx.tenant.id)
     return toServiceResponse(set, result)
   })
@@ -126,7 +148,13 @@ export const entriesController = new Elysia({ prefix: '/api/admin/entries' })
    * POST /:entryId/duplicate — Duplicate an entry by ID.
    * Creates a copy with draft status and a new slug ending in -copy.
    */
-  .post('/:entryId/duplicate', { auth: true }, async ({ db, params, user, set, tenantCtx }) => {
+  .post('/:entryId/duplicate', { auth: true }, async ({ db, params, request, user, set, tenantCtx }) => {
+    if (
+      !(await requestCanAccessContent(request, db, tenantCtx?.tenant.id, 'create', { entryIds: [params.entryId] }))
+    ) {
+      set.status = 403
+      return CONTENT_FORBIDDEN
+    }
     const result = await entriesService.duplicate(
       db,
       params.entryId,
@@ -147,10 +175,16 @@ export const entriesController = new Elysia({ prefix: '/api/admin/entries' })
       depth: t.Optional(t.String()),
       locale: t.Optional(t.String()),
     }),
-  }, async ({ db, params, query, set, tenantCtx }) => {
+  }, async ({ db, params, query, request, set, tenantCtx }) => {
     if (!tenantCtx?.tenant) {
       set.status = 400
       return createErrorEnvelope('TENANT_REQUIRED', 'Tenant context is required')
+    }
+    if (
+      !(await requestCanAccessContent(request, db, tenantCtx?.tenant.id, 'read', { entryIds: [params.entryId] }))
+    ) {
+      set.status = 403
+      return CONTENT_FORBIDDEN
     }
     return toServiceResponse(
       set,
@@ -174,7 +208,13 @@ export const entriesController = new Elysia({ prefix: '/api/admin/entries' })
       status: t.Optional(t.String()),
       data: t.Record(t.String(), t.Unknown()),
     }),
-  }, async ({ db, body, user, set, tenantCtx }) => {
+  }, async ({ db, body, request, user, set, tenantCtx }) => {
+    if (
+      !(await requestCanAccessContent(request, db, tenantCtx?.tenant.id, 'create', { collectionIds: [body.collectionId] }))
+    ) {
+      set.status = 403
+      return CONTENT_FORBIDDEN
+    }
     const result = await entriesService.create(db, body, user?.id, tenantCtx?.tenant.id)
     return toServiceResponse(set, result, { successStatus: 201 })
   })
@@ -189,7 +229,13 @@ export const entriesController = new Elysia({ prefix: '/api/admin/entries' })
       status: t.Optional(t.String()),
       data: t.Optional(t.Record(t.String(), t.Unknown())),
     }),
-  }, async ({ db, params, body, user, set, tenantCtx }) => {
+  }, async ({ db, params, body, request, user, set, tenantCtx }) => {
+    if (
+      !(await requestCanAccessContent(request, db, tenantCtx?.tenant.id, 'update', { entryIds: [params.entryId] }))
+    ) {
+      set.status = 403
+      return CONTENT_FORBIDDEN
+    }
     const result = await entriesService.update(
       db,
       params.entryId,
@@ -204,7 +250,13 @@ export const entriesController = new Elysia({ prefix: '/api/admin/entries' })
   /**
    * DELETE /:entryId — Delete an entry by ID.
    */
-  .delete('/:entryId', { auth: true }, async ({ db, params, set, tenantCtx }) => {
+  .delete('/:entryId', { auth: true }, async ({ db, params, request, set, tenantCtx }) => {
+    if (
+      !(await requestCanAccessContent(request, db, tenantCtx?.tenant.id, 'delete', { entryIds: [params.entryId] }))
+    ) {
+      set.status = 403
+      return CONTENT_FORBIDDEN
+    }
     const result = await entriesService.deleteById(db, params.entryId, tenantCtx?.tenant.id)
     return toServiceResponse(set, result, { defaultErrorStatus: 404 })
   })

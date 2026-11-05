@@ -127,4 +127,24 @@ describe('D1 Guard (Depth and Complexity Limits)', () => {
     const result = validateD1Guards(doc, { maxDepth: 3 })
     expect(result.valid).toBe(true)
   })
+  it('counts a variable-valued perPage at the maximum list cost, so aliases cannot fan out D1 reads', () => {
+    // 25 aliased list fields with perPage from a variable: each can read 100 rows.
+    const aliases = Array.from({ length: 25 }, (_, i) => `a${i}: posts(perPage: $n) { id }`).join('\n')
+    const doc = parse(`query Fanout($n: Int) { ${aliases} }`)
+    const result = validateD1Guards(doc, { maxDepth: 3, maxComplexity: 50 })
+    expect(result.valid).toBe(false)
+    expect(result.error).toContain('complexity')
+  })
+
+  it('counts a literal perPage list the same as a variable one', () => {
+    const literal = validateD1Guards(parse('{ posts(perPage: 100) { id } }'))
+    const variable = validateD1Guards(parse('query Q($n: Int) { posts(perPage: $n) { id } }'))
+    expect(variable.complexity).toBe(literal.complexity)
+  })
+
+  it('rejects many aliased list fields with literal perPage', () => {
+    const aliases = Array.from({ length: 6 }, (_, i) => `a${i}: posts(perPage: 100) { id }`).join('\n')
+    const result = validateD1Guards(parse(`{ ${aliases} }`), { maxDepth: 3, maxComplexity: 50 })
+    expect(result.valid).toBe(false)
+  })
 })

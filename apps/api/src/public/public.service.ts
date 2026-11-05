@@ -4,6 +4,7 @@ import { kvService } from '@/cache/kv.service'
 import { snapshotService } from '@/cache/snapshot.service'
 import type { CollectionRow } from '@/collections/collections.repository'
 import type { Database } from '@/database/db'
+import { createPublicVisibility, type PublicVisibility, secondsUntilTransition } from '@/entries/public-visibility'
 import { computeDynamicTTL } from '@/scheduling/ttl.service'
 import type { ParsedFilter, ParsedSort } from '@/public/query-filter'
 
@@ -22,6 +23,89 @@ type EmbeddedSnapshotTtls = {
   browserTTL: number
   cdnTTL: number
   etag?: string
+  /** Cache tags of populated related entries (or their collections), kept so hits send the same `Cache-Tag`. */
+  relatedCacheTags?: string[]
+}
+
+/**
+ * Most related entries a snapshot is tagged with one by one. Beyond this the
+ * snapshot is tagged with each related collection instead, so a change to any
+ * entry in those collections purges it (over-purge, never stale).
+ */
+export const MAX_RELATED_ENTRY_CACHE_TAGS = 50
+/**
+ * Upper bound for the `Cache-Tag` response header. Cloudflare accepts up to
+ * 16 KB of tags per response; staying at half that leaves room for proxies.
+ */
+export const MAX_CACHE_TAG_HEADER_LENGTH = 8 * 1024
+
+function relatedEntryTag(entryId: string, tenantId?: string): string {
+  return tenantId ? `t:${tenantId}:e:${entryId}` : `entry:${entryId}`
+}
+
+function relatedCollectionTag(collectionId: string, tenantId?: string): string {
+  return tenantId ? `t:${tenantId}:c:${collectionId}` : `collection:${collectionId}`
+}
+
+/**
+ * Join extra tags onto a `Cache-Tag` header value without exceeding
+ * MAX_CACHE_TAG_HEADER_LENGTH. Tags that do not fit are left off the header
+ * only; KV and edge invalidation use the D1 cache_tags rows, which keep them.
+ */
+function appendCacheTags(header: string, extra: string[]): string {
+  let out = header
+  for (const tag of extra) {
+    const next = out ? `${out},${tag}` : tag
+    if (next.length > MAX_CACHE_TAG_HEADER_LENGTH) break
+    out = next
+  }
+  return out
+}
+
+/**
+ * CM-04 / DL-03: cache tags for every related entry a populated snapshot saw
+ * (visible or not), so updating, publishing, unpublishing or deleting one of
+ * them purges this snapshot through the command engine's tag invalidation.
+ * Falls back to one tag per related collection above
+ * MAX_RELATED_ENTRY_CACHE_TAGS or when the header would get too long.
+ */
+function resolveRelatedCacheTags(
+  baseHeader: string,
+  visibility: PublicVisibility,
+  tenantId?: string,
+  ownEntryId?: string
+): string[] {
+  const related = visibility.relatedEntries
+  if (!related || related.size === 0) return []
+  const entryIds = [...related.keys()].filter((id) => id !== ownEntryId)
+  if (entryIds.length === 0) return []
+  if (entryIds.length <= MAX_RELATED_ENTRY_CACHE_TAGS) {
+    const entryTags = entryIds.map((id) => relatedEntryTag(id, tenantId))
+    const joinedLength = baseHeader.length + entryTags.reduce((n, t) => n + t.length + 1, 0)
+    if (joinedLength <= MAX_CACHE_TAG_HEADER_LENGTH) return entryTags
+  }
+  const collectionIds = new Set<string>()
+  for (const id of entryIds) {
+    const collectionId = related.get(id)
+    if (collectionId) collectionIds.add(collectionId)
+  }
+  return [...collectionIds].map((id) => relatedCollectionTag(id, tenantId))
+}
+
+/**
+ * Snapshot TTL: expire before the parent collection's next scheduled
+ * transition AND before any populated related entry (possibly in another
+ * collection) enters or leaves its publish window.
+ */
+async function computeSnapshotTTL(
+  db: Database,
+  collectionId: string,
+  visibility: PublicVisibility
+): Promise<number> {
+  const dynamicTTL = await computeDynamicTTL(db, collectionId, 3600)
+  const relatedSeconds = secondsUntilTransition(visibility)
+  // Same 60s floor as computeBoundedTTL to avoid cache thrashing.
+  return relatedSeconds === null ? dynamicTTL : Math.min(dynamicTTL, Math.max(60, relatedSeconds))
 }
 
 function toHeaderTtls(dynamicTTL: number): { browserTTL: number; cdnTTL: number } {
@@ -35,6 +119,7 @@ function readEmbeddedHeaderTtls(stored: unknown): {
   browserTTL: number
   cdnTTL: number
   etag?: string
+  relatedCacheTags?: string[]
 } {
   const cache =
     typeof stored === 'object' && stored !== null
@@ -50,6 +135,9 @@ function readEmbeddedHeaderTtls(stored: unknown): {
       browserTTL: (cache as EmbeddedSnapshotTtls).browserTTL,
       cdnTTL: (cache as EmbeddedSnapshotTtls).cdnTTL,
       etag: (cache as EmbeddedSnapshotTtls).etag,
+      relatedCacheTags: Array.isArray((cache as EmbeddedSnapshotTtls).relatedCacheTags)
+        ? (cache as EmbeddedSnapshotTtls).relatedCacheTags
+        : undefined,
     }
   }
   return { browserTTL: DEFAULT_BROWSER_TTL, cdnTTL: DEFAULT_CDN_TTL }
@@ -143,7 +231,15 @@ function buildCachedPublicResult(
   }
   // Reuse the TTLs embedded at write time so hit/miss Cache-Control headers
   // agree — no D1 recompute on the hot path.
-  const { browserTTL, cdnTTL, etag: embeddedEtag } = readEmbeddedHeaderTtls(stored)
+  const {
+    browserTTL,
+    cdnTTL,
+    etag: embeddedEtag,
+    relatedCacheTags,
+  } = readEmbeddedHeaderTtls(stored)
+  const responseCacheTag = relatedCacheTags?.length
+    ? appendCacheTags(cacheTag, relatedCacheTags)
+    : cacheTag
   const storedObj =
     typeof stored === 'object' && stored !== null ? (stored as Record<string, unknown>) : null
   const payload = stripEmbeddedTtls(stored)
@@ -170,7 +266,7 @@ function buildCachedPublicResult(
     data: {
       payload,
       cache: {
-        cacheTag,
+        cacheTag: responseCacheTag,
         browserTTL,
         cdnTTL,
         etag: etag ?? generateWeakETag(cacheTag, payload),
@@ -510,6 +606,7 @@ export const publicService = {
                     status: 416,
                     headers: {
                       'Content-Range': `bytes */${total}`,
+                      'Vary': 'Accept',
                       'Accept-Ranges': 'bytes',
                       'Cache-Control': 'public, max-age=31536000, immutable',
                       'CDN-Cache-Control': 'public, max-age=31536000',
@@ -604,6 +701,7 @@ export const publicService = {
       const extraConditions = buildDrizzleConditions(gated.filters)
       const orderByClause = buildSortClause(gated.sort)
 
+      const visibility = createPublicVisibility()
       const generatedSnapshot = await snapshotService.generateListSnapshot(
         db,
         collectionSlug,
@@ -611,14 +709,17 @@ export const publicService = {
         tenantId,
         { page, perPage },
         { extraConditions, orderByClause },
-        collection
+        collection,
+        visibility
       )
 
       if (!generatedSnapshot) {
         return { success: false, error: { status: 404, message: 'Collection not found' } }
       }
 
-      const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
+      const dynamicTTL = await computeSnapshotTTL(db, collection.id, visibility)
+      const relatedCacheTags = resolveRelatedCacheTags(cacheTag, visibility, tenantId, undefined)
+      const responseCacheTag = appendCacheTags(cacheTag, relatedCacheTags)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
       const etag = generateWeakETag(cacheTag, generatedSnapshot)
       const rawJson = JSON.stringify(generatedSnapshot)
@@ -628,7 +729,13 @@ export const publicService = {
             collectionSlug: collection.slug,
           })
         : snapshotService.generateCacheTags(collection.id, undefined, locale)
-      const embedded = withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL, etag })
+      const embedded = withEmbeddedTtls(generatedSnapshot, {
+        dynamicTTL,
+        browserTTL,
+        cdnTTL,
+        etag,
+        relatedCacheTags,
+      })
       try {
         Object.defineProperties(embedded, {
           __cleanRawJson: { value: rawJson, writable: true, configurable: true, enumerable: false },
@@ -646,7 +753,7 @@ export const publicService = {
       )
       scheduleDeferredWork(
         waitUntil,
-        Promise.resolve(snapshotService.storeCacheTags(db, versionedKey, tags)),
+        Promise.resolve(snapshotService.storeCacheTags(db, versionedKey, [...tags, ...relatedCacheTags])),
         'public_store_cache_tags'
       )
 
@@ -655,7 +762,7 @@ export const publicService = {
         data: {
           payload: generatedSnapshot,
           cache: {
-            cacheTag,
+            cacheTag: responseCacheTag,
             browserTTL,
             cdnTTL,
             etag,
@@ -725,6 +832,7 @@ export const publicService = {
     const cacheTag = buildPublicCacheTag(collection, locale, tenantId, idOrSlug)
 
     return dedupeSnapshotRequest(versionedKey, async () => {
+      const visibility = createPublicVisibility()
       const generatedSnapshot = await snapshotService.generateEntrySnapshot(
         db,
         collectionSlug,
@@ -735,7 +843,8 @@ export const publicService = {
           populate: fieldNames,
           depth: normalizedDepth,
         },
-        collection
+        collection,
+        visibility
       )
 
       if (!generatedSnapshot) {
@@ -745,7 +854,9 @@ export const publicService = {
         }
       }
 
-      const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
+      const dynamicTTL = await computeSnapshotTTL(db, collection.id, visibility)
+      const relatedCacheTags = resolveRelatedCacheTags(cacheTag, visibility, tenantId, generatedSnapshot.entry.id)
+      const responseCacheTag = appendCacheTags(cacheTag, relatedCacheTags)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
       const etag = generateWeakETag(cacheTag, generatedSnapshot)
       const rawJson = JSON.stringify(generatedSnapshot)
@@ -761,7 +872,13 @@ export const publicService = {
             generatedSnapshot.entry.id,
             locale
           )
-      const embedded = withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL, etag })
+      const embedded = withEmbeddedTtls(generatedSnapshot, {
+        dynamicTTL,
+        browserTTL,
+        cdnTTL,
+        etag,
+        relatedCacheTags,
+      })
       try {
         Object.defineProperties(embedded, {
           __cleanRawJson: { value: rawJson, writable: true, configurable: true, enumerable: false },
@@ -779,7 +896,7 @@ export const publicService = {
       )
       scheduleDeferredWork(
         waitUntil,
-        Promise.resolve(snapshotService.storeCacheTags(db, versionedKey, tags)),
+        Promise.resolve(snapshotService.storeCacheTags(db, versionedKey, [...tags, ...relatedCacheTags])),
         'public_store_cache_tags'
       )
 
@@ -788,7 +905,7 @@ export const publicService = {
         data: {
           payload: generatedSnapshot,
           cache: {
-            cacheTag,
+            cacheTag: responseCacheTag,
             browserTTL,
             cdnTTL,
             etag,
@@ -864,6 +981,7 @@ export const publicService = {
         }
       }
 
+      const visibility = createPublicVisibility()
       const generatedSnapshot = await snapshotService.generateEntrySnapshot(
         db,
         collectionSlug,
@@ -871,13 +989,16 @@ export const publicService = {
         locale,
         tenantId,
         undefined,
-        collection
+        collection,
+        visibility
       )
       if (!generatedSnapshot) {
         return { success: false, error: { status: 404, message: 'Failed to generate snapshot' } }
       }
 
-      const dynamicTTL = await computeDynamicTTL(db, collection.id, 3600)
+      const dynamicTTL = await computeSnapshotTTL(db, collection.id, visibility)
+      const relatedCacheTags = resolveRelatedCacheTags(cacheTag, visibility, tenantId, entry.id)
+      const responseCacheTag = appendCacheTags(cacheTag, relatedCacheTags)
       const { browserTTL, cdnTTL } = toHeaderTtls(dynamicTTL)
       const etag = generateWeakETag(cacheTag, generatedSnapshot)
       const rawJson = JSON.stringify(generatedSnapshot)
@@ -887,7 +1008,13 @@ export const publicService = {
             collectionSlug: collection.slug,
           })
         : snapshotService.generateCacheTags(collection.id, entry.id, locale)
-      const embedded = withEmbeddedTtls(generatedSnapshot, { dynamicTTL, browserTTL, cdnTTL, etag })
+      const embedded = withEmbeddedTtls(generatedSnapshot, {
+        dynamicTTL,
+        browserTTL,
+        cdnTTL,
+        etag,
+        relatedCacheTags,
+      })
       try {
         Object.defineProperties(embedded, {
           __cleanRawJson: { value: rawJson, writable: true, configurable: true, enumerable: false },
@@ -905,7 +1032,7 @@ export const publicService = {
       )
       scheduleDeferredWork(
         waitUntil,
-        Promise.resolve(snapshotService.storeCacheTags(db, versionedKey, tags)),
+        Promise.resolve(snapshotService.storeCacheTags(db, versionedKey, [...tags, ...relatedCacheTags])),
         'public_store_cache_tags'
       )
 
@@ -914,7 +1041,7 @@ export const publicService = {
         data: {
           payload: generatedSnapshot,
           cache: {
-            cacheTag,
+            cacheTag: responseCacheTag,
             browserTTL,
             cdnTTL,
             etag,

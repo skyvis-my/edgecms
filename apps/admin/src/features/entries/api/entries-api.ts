@@ -10,6 +10,8 @@ import {
   buildUpdateEntryCommand,
 } from '@/features/commands/command-builder'
 import { useExecuteCommand } from '@/features/commands/use-execute-command'
+import type { ConflictBase } from '@/features/sync/field-merge'
+import { attachConflictBase } from '@/features/sync/queue-command'
 import { edenGet, edenPost } from '@/lib/eden-client'
 
 /**
@@ -258,10 +260,13 @@ export function useUpdateEntry() {
       id,
       input,
       optimisticVersion,
+      base,
     }: {
       id: string
       input: UpdateEntryInput
       optimisticVersion?: number
+      /** OF-04: server state at `optimisticVersion`, kept with the command if it is queued offline. */
+      base?: ConflictBase
     }) => {
       const command = buildUpdateEntryCommand(
         id,
@@ -270,6 +275,7 @@ export function useUpdateEntry() {
         input.status,
         optimisticVersion
       )
+      if (base) attachConflictBase(command, base)
 
       const result = await executeCommand.mutateAsync(command)
       return result.data as Entry

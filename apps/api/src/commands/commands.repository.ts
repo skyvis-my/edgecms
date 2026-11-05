@@ -45,9 +45,12 @@ export const commandsRepository = {
     if (typeof (insertBuilder as unknown as { onConflictDoUpdate?: unknown }).onConflictDoUpdate === 'function') {
       // Pending->terminal guard: only allow overwriting a 'pending' reservation.
       // Drizzle sqlite onConflictDoUpdate has no WHERE support, so enforce in code:
-      // never overwrite a terminal (success/failed/dry_run) outcome with another terminal state.
+      // never overwrite a terminal (success/failed) outcome with another state.
+      // A legacy 'dry_run' row is a preview, not an outcome, so a real
+      // execution may claim its key (CMD-03).
       const existing = await this.findById(db, commandId).catch(() => null)
-      if (existing && existing.status !== 'pending' && status !== existing.status) {
+      const claimable = existing?.status === 'pending' || existing?.status === 'dry_run'
+      if (existing && !claimable && status !== existing.status) {
         // Keep the first terminal outcome (idempotent replay returns it via checkIdempotency).
         return
       }
@@ -57,6 +60,11 @@ export const commandsRepository = {
           status,
           result: result ?? null,
           executedAt,
+          // Claiming a legacy preview row takes over its identity so later
+          // replays compare against the executed envelope.
+          ...(existing?.status === 'dry_run'
+            ? { commandType: envelope.type, payload: envelope.payload, actor: envelope.actor, tenantScope }
+            : {}),
         },
       })
     } else {

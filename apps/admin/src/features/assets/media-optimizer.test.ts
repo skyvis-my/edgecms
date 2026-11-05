@@ -8,6 +8,7 @@ const ORIGINAL_DOCUMENT = globalThis.document
 let imageWidth = 4000
 let imageHeight = 2000
 let avifSupported = true
+let imageDataAvailable = true
 
 class MockFileReader {
   result: string | ArrayBuffer | null = null
@@ -43,6 +44,15 @@ function createMockCanvas(): HTMLCanvasElement {
     height: 0,
     getContext: vi.fn().mockReturnValue({
       drawImage: vi.fn(),
+      getImageData: vi.fn((_x: number, _y: number, width: number, height: number) => {
+        if (!imageDataAvailable) throw new Error('The canvas has been tainted')
+        const data = new Uint8ClampedArray(width * height * 4)
+        for (let i = 0; i < data.length; i += 4) {
+          data[i] = 255
+          data[i + 3] = 255
+        }
+        return { data, width, height }
+      }),
     }),
     toDataURL: vi.fn((format: string, quality?: number) => {
       if (format === 'image/avif' && !avifSupported) {
@@ -59,6 +69,7 @@ describe('media-optimizer', () => {
 
   beforeEach(() => {
     avifSupported = true
+    imageDataAvailable = true
     imageWidth = 4000
     imageHeight = 2000
 
@@ -209,5 +220,53 @@ describe('media-optimizer', () => {
       expect.objectContaining({ width: 1024, height: 2048 })
     )
     expect(optimized.variants.some((variant) => variant.format === 'avif')).toBe(false)
+  })
+
+  it('MD-03: always computes a blurhash from the smallest variant', async () => {
+    const file = new File(['binary-image'], 'hero-banner.jpg', { type: 'image/jpeg' })
+    const optimized = await optimizeImageForUpload({
+      file,
+      folderPath: '',
+      quality: 0.8,
+      maxDimension: 2048,
+    })
+    // Solid red thumbnail (150x75, landscape -> 4x3 components, red DC).
+    expect(optimized.blurhash).toHaveLength(28)
+    expect(optimized.blurhash?.[0]).toBe('L')
+    expect(optimized.blurhash?.slice(2, 6)).toBe('TI:j')
+
+    imageWidth = 600
+    imageHeight = 1200
+    const portrait = await optimizeImageForUpload({
+      file: new File(['binary-image'], 'p.png', { type: 'image/png' }),
+      folderPath: '',
+      quality: 0.8,
+      maxDimension: 2048,
+    })
+    // Portrait -> 3x4 components: size flag "T".
+    expect(portrait.blurhash?.[0]).toBe('T')
+    expect(portrait.blurhash).toHaveLength(4 + 2 * 12)
+  })
+
+  it('MD-03: uploads without a blurhash when pixels cannot be read', async () => {
+    imageDataAvailable = false
+    const optimized = await optimizeImageForUpload({
+      file: new File(['binary-image'], 'hero.jpg', { type: 'image/jpeg' }),
+      folderPath: '',
+      quality: 0.8,
+      maxDimension: 2048,
+    })
+    expect(optimized.blurhash).toBeUndefined()
+    expect(optimized.variants.length).toBeGreaterThan(0)
+  })
+
+  it('MD-03: does not compute a blurhash for non-image files', async () => {
+    const optimized = await optimizeImageForUpload({
+      file: new File(['%PDF-1.7'], 'menu.pdf', { type: 'application/pdf' }),
+      folderPath: 'docs',
+      quality: 0.8,
+      maxDimension: 2048,
+    })
+    expect(optimized.blurhash).toBeUndefined()
   })
 })

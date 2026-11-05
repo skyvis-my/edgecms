@@ -76,6 +76,7 @@ type AppInstance = {
 type WorkerAppInstance = AppInstance & {
   fetch: unknown
   queue: unknown
+  scheduled: unknown
 }
 
 let importCounter = 0
@@ -220,6 +221,8 @@ describe('Main API app (Elysia integration)', () => {
     expect(typeof worker.fetch).toBe('function')
     expect(typeof worker.handle).toBe('function')
     expect(typeof worker.queue).toBe('function')
+    // DL-09: cron-triggered outbox sweeper entry point.
+    expect(typeof worker.scheduled).toBe('function')
   })
 
   it('applies plugin hook timeout from EDGE_PLUGIN_HOOK_TIMEOUT_MS', async () => {

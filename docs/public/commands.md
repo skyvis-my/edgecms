@@ -13,7 +13,7 @@ POST /api/admin/commands
 
 Use the tenant route. The global route runs without a tenant scope: it acts on `global` content and its webhook events go to global webhooks.
 
-Auth: the route requires a signed-in user (`auth: true`) whose role can write to the admin API: editor, admin or owner on the tenant, or editor/admin on global routes. Viewers and members get `403`. There is no per-command permission check; any role that can write can send any command type. See [auth and access](auth-and-access.md) for sessions, CSRF and bearer tokens.
+Auth: the route requires a signed-in user (`auth: true`) whose role can write to the admin API: editor, admin or owner on the tenant, or editor/admin on global routes. Viewers and members get `403`. Each command is then checked against the caller's collection access before it runs: a custom role with `entry:<collectionSlug>` grants can only run commands on entries of those collections, for the actions it was granted. Each command inside a `transaction` and each entry in a `bulkUpdate` is checked, and a denied command fails with `403 FORBIDDEN`. Commands from AI, AI imports, MCP and sync get the same check. See [auth and access](auth-and-access.md) for sessions, CSRF and bearer tokens.
 
 ## The Envelope
 
@@ -119,15 +119,26 @@ Set `dryRun: true` to preview a command (PRD `CMD-03`). The engine computes a fi
 
 What a dry run does:
 
-- Records a `processed_commands` row with status `dry_run`.
+- Writes no `processed_commands` row and ignores any idempotency key: it neither reserves, stores nor replays one, so the real execution with the same key still runs.
 - Creates a preview receipt (stored in KV for 15 minutes) and returns its ID as `previewReceipt`.
 - Skips host limit checks and metering.
+
+A `transaction` with top-level `"dryRun": true` previews every sub-command and writes nothing: no entries, versions, audit rows, `command.executed` events, webhook outbox rows, cache purges or idempotency reservations. The result's `diff` is the combined diff of the sub-commands, and each entry carries `commandIndex` and `commandType`:
+
+```json
+[
+  { "field": "title", "after": "Second", "action": "add", "commandIndex": 0, "commandType": "createEntry" },
+  { "field": "title", "before": "Hello", "after": "Changed", "action": "update", "commandIndex": 1, "commandType": "updateEntry" }
+]
+```
+
+`data.subResults` keeps each sub-command's own diff. A successful transaction dry run returns one `previewReceipt` that covers its sub-commands; send the same transaction with that receipt to execute it. An idempotency key on a transaction dry run is ignored, so the real execution with the same key still runs. If a sub-command's diff fails, the preview stops with `TRANSACTION_FAILED` and no receipt.
 
 Limits:
 
 - Diffs are implemented for `createEntry`, `updateEntry`, `deleteEntry`, `bulkUpdate`, `updateSingleton`, `linkRelation`, `unlinkRelation`, `publishNow` and `unpublishNow`. The scheduling commands return an empty diff.
 - The diff does not run validation or lifecycle checks. A command can preview cleanly and still fail on execution.
-- The `transaction` handler does not read the top-level `dryRun`. A transaction sent with `"dryRun": true` executes its sub-commands. To preview a transaction, set `dryRun: true` on each sub-command.
+- Each sub-command's diff is computed against current data, not against the effect of earlier sub-commands in the same transaction.
 
 ### Preview receipts
 
@@ -149,11 +160,10 @@ The engine uses `idem_<key>` as the command ID and reserves it in `processed_com
 | --- | --- |
 | `success` | The stored result, without running again. |
 | `failed` | The stored error. |
-| `dry_run` | The stored diff and receipt. |
 | `pending` | `CONCURRENT_REQUEST`. |
 | Different `type` or `payload` | `IDEMPOTENCY_CONFLICT`. |
 
-Keys do not expire. A replayed success returns the stored `data`, without cache purge headers. Without a key, every request runs.
+Dry runs never use the key (see [Dry Run and Diff](#dry-run-and-diff)). A `dry_run` row written by an older version is treated as absent: the real execution claims the key. Inside a transaction the request key belongs to the transaction; a sub-command only uses a key set on its own envelope. Keys do not expire. A replayed success returns the stored `data`, without cache purge headers. Without a key, every request runs.
 
 The scheduler uses keys of the form `sched_<entryId>_<scheduledAt>_<publish|unpublish>`, so a repeated alarm does not publish twice.
 
@@ -194,9 +204,24 @@ For each executed command the engine writes (PRD `CMD-05`):
 - `audit_log` rows, one per changed entity;
 - `change_log` rows for sync clients;
 - a `webhook_outbox` row for the event, in the same D1 batch as the command row;
+- `side_effect_intents` rows for the post-commit side effects, in the same D1 batch (`CMD-06`);
 - a hash-chained audit event (`HS-12`).
 
-After the commit it invalidates KV snapshots by cache tag, purges Cloudflare cache tags, emits the webhook event and, when `FRONTEND_REVALIDATE_URL` is set, posts a revalidation request. These side effects never turn a committed command into a failure. See [webhooks](webhooks.md).
+The side-effect intents are:
+
+| Kind | Written when | Effect |
+| --- | --- | --- |
+| `kv_invalidate` | the command has cache tags and the `CACHE` KV namespace is bound | invalidates KV snapshots by tag (awaited before the response) |
+| `cdn_purge` | the command has cache tags and `CF_API_TOKEN` and `CLOUDFLARE_ZONE_ID` are set | purges Cloudflare cache tags |
+| `frontend_revalidate` | `FRONTEND_REVALIDATE_URL` is set | posts the revalidation request |
+| `rag_index` | `publishNow` | indexes the published entry for semantic search (skipped when AI is off for the tenant) |
+| `fts_sync` | `publishNow`, `unpublishNow`, `deleteEntry` | adds or removes the entry in the `entries_fts` index, from the entry's current state |
+
+After the commit the engine runs the intents and marks each row `done`. A failed call leaves the row `pending` with a backoff; after 8 attempts it is `failed`. A crash after the commit leaves rows `pending`. `relaySideEffectIntents` (in `apps/api/src/commands/side-effect-intents.ts`) retries pending rows; each command also runs it for rows older than 60 seconds, and so does the Worker's one-minute cron (`scheduled()`, up to 100 rows per run). Every side effect is idempotent, so a retry is safe. These side effects never turn a committed command into a failure.
+
+The engine also emits the webhook event. See [webhooks](webhooks.md).
+
+Limit: the intent rows are written after the handler's own entity writes, in the command-record batch. A crash between the two commits the entity change without its intents.
 
 ## Example
 
@@ -226,7 +251,7 @@ Response, `200` (diff shape from `apps/api/src/tests/commands/diff.service.test.
 {
   "success": true,
   "data": {
-    "commandId": "idem_post-42-title-v3",
+    "commandId": "<random id>",
     "type": "updateEntry",
     "status": "dry_run",
     "diff": [
@@ -238,7 +263,7 @@ Response, `200` (diff shape from `apps/api/src/tests/commands/diff.service.test.
 }
 ```
 
-Because the dry run is stored under the idempotency key, the real call needs a new key (or none). Send the same body without `dryRun`, with `"previewReceipt": "<receipt id>"` and a new `Idempotency-Key`. A stale `optimisticVersion` then returns `409 VERSION_CONFLICT`.
+The dry run ignores the idempotency key, so the real call can reuse it. Send the same body and `Idempotency-Key` without `dryRun`, with `"previewReceipt": "<receipt id>"`. It runs once and returns `idem_post-42-title-v3` as its `commandId`; a retry with the same key returns that stored result. A stale `optimisticVersion` then returns `409 VERSION_CONFLICT`.
 
 ## Direct CRUD Routes
 

@@ -4,6 +4,8 @@ import type { Env } from '@/env'
 import { withTenantBindings } from '@/tenants/with-tenant-bindings'
 import { aiImportService } from './imports.service'
 import { getRequestPathname } from '@/shared/utils/request-url'
+import { getRequestContentAccess } from '@/auth/content-access'
+import { PreviewReceiptError, previewReceiptErrorStatus } from './preview-receipt.service'
 
 export function isAiImportReviewEnabled(workerEnv: Env) {
   return workerEnv.ENABLE_AI_IMPORT_REVIEW === 'true'
@@ -242,7 +244,8 @@ export const aiImportsController = new Elysia()
           requestId: (elysiaCtx as unknown as { requestId?: string }).requestId ?? crypto.randomUUID(),
           pathname: requestPathname,
           method: request.method,
-        }
+        },
+        await getRequestContentAccess(request)
       )
       return { success: true as const, data: result }
     } catch (err) {
@@ -260,7 +263,11 @@ export const aiImportsController = new Elysia()
   .post('/suggestion-sets/:suggestionSetId/apply', {
     auth: true,
     params: t.Object({ suggestionSetId: t.String({ minLength: 1 }) }),
-    body: t.Object({ dryRunHash: t.String({ minLength: 1 }) }),
+    body: t.Object({
+      dryRunHash: t.String({ minLength: 1 }),
+      // AI-05 receipt returned by the latest dry-run; required (checked in the service).
+      previewReceipt: t.Optional(t.String()),
+    }),
   }, async (elysiaCtx) => {
     const { params, body, user, set, request, workerEnv, tenantCtx, db, kv } = elysiaCtx
     const requestPathname = getRequestPathname(request)
@@ -277,10 +284,19 @@ export const aiImportsController = new Elysia()
           requestId: (elysiaCtx as unknown as { requestId?: string }).requestId ?? crypto.randomUUID(),
           pathname: requestPathname,
           method: request.method,
-        }
+        },
+        await getRequestContentAccess(request),
+        body.previewReceipt
       )
       return { success: true as const, data: result }
     } catch (err) {
+      if (err instanceof PreviewReceiptError) {
+        set.status = previewReceiptErrorStatus(err.code)
+        return {
+          success: false as const,
+          err: { code: 'INVALID_PREVIEW_RECEIPT', reason: err.code, msg: err.message },
+        }
+      }
       set.status = 400
       return {
         success: false as const,

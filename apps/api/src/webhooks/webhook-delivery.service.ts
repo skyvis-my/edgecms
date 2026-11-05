@@ -133,6 +133,24 @@ export async function signPayload(secret: string, payload: unknown): Promise<Web
   }
 }
 
+/**
+ * Merge request headers so configured custom headers can add values but never
+ * replace protected ones (content type, user agent, signature headers).
+ * Matching is case-insensitive because HTTP header names are.
+ */
+export function buildWebhookRequestHeaders(
+  customHeaders: WebhookHeaderMap | null | undefined,
+  ...protectedGroups: WebhookHeaderMap[]
+): WebhookHeaderMap {
+  const protectedHeaders: WebhookHeaderMap = Object.assign({}, ...protectedGroups)
+  const reserved = new Set(Object.keys(protectedHeaders).map((name) => name.toLowerCase()))
+  const headers: WebhookHeaderMap = {}
+  for (const [name, value] of Object.entries(customHeaders ?? {})) {
+    if (!reserved.has(name.toLowerCase())) headers[name] = value
+  }
+  return { ...headers, ...protectedHeaders }
+}
+
 async function defaultWait(seconds: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, seconds * 1000))
 }

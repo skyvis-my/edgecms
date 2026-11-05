@@ -96,7 +96,9 @@ Every API request except health checks and `/api/docs` is rate limited per calle
 | `public_read` | GET `/public/*` | 300 |
 | `default` | Everything else | 120 |
 
-Over-limit requests get `429 RATE_LIMITED` with `Retry-After`. Counters live in isolate memory and KV without atomic increments, so under concurrent traffic across isolates the effective limit can be higher. Hosts can set per-tenant limits; see [Hosting seams](hosting-seams.md#per-tenant-rate-limits). Tests are in `apps/api/src/tests/auth/rate-limit.middleware.test.ts`.
+Over-limit requests get `429 RATE_LIMITED` with `Retry-After`. Counters live in isolate memory and KV without atomic increments, so under concurrent traffic across isolates the effective limit can be higher.
+
+Public reads (`GET`/`HEAD` under `/public/`) do not read KV for rate limiting, so a cached read waits on no storage round trip. By default each isolate counts public reads in memory, so the effective limit across isolates is higher than 300 per minute. To enforce it per Cloudflare location instead, add a rate-limiting binding named `PUBLIC_READ_RATE_LIMITER` in `wrangler.toml` (its `limit` and `period` replace the default policy; per-tenant host policies still use the isolate counter). Set `PUBLIC_READ_RATE_LIMIT_STORE=kv` to go back to the KV-backed counter. Tests are in `apps/api/src/tests/auth/public-read-rate-limit.test.ts`. Hosts can set per-tenant limits; see [Hosting seams](hosting-seams.md#per-tenant-rate-limits). Tests are in `apps/api/src/tests/auth/rate-limit.middleware.test.ts`.
 
 ## Security headers
 
@@ -137,6 +139,18 @@ There is no release calendar or bulk release publishing.
 
 While an editor works on an existing entry, the admin saves the draft in the background every 30 seconds if the form has unsaved changes, sending the version it last saw. It shows a conflict warning when the server's draft version is newer than the editor's version.
 
+If the editor has unsaved edits when a newer server version arrives, it shows a banner with **Discard Local Changes** and **Force Overwrite**. Force Overwrite asks for confirmation before it replaces the server version.
+
+### Offline sync conflicts
+
+Edits made offline are queued in the browser with the version and content they started from. When the queue syncs and the server has a newer version, the admin merges field by field, and for localized fields locale by locale:
+
+- A field or locale changed only on one side takes that side's value.
+- If no change overlaps, the merged change is queued again against the server version and synced without asking.
+- If both sides changed the same field or locale to different values, the change waits on the **Sync** page. The review lists only those fields. Each defaults to the server value; choosing your own value over a newer server value needs a second confirmation.
+
+Changes queued by older admin builds have no starting snapshot, so their review lists every field that differs from the server.
+
 ## Test fixtures
 
 Local smoke data should include:
@@ -158,4 +172,43 @@ See the [Operations guide](../operations-guide.md) for D1 Time Travel and the [D
 
 ## Data portability
 
-You can export collection schemas (Developer Export) and personal data (above), and preview an import without changing anything. There is no import that applies schema changes or deletes data. Adding one needs schema, migration, tenant isolation and rollback tests.
+You can export collection schemas as TypeScript (Developer Export in the admin), export personal data (above) and move a collection's entries between tenants with collection export and import.
+
+### Collection export and import
+
+Three tenant admin routes (PRD `OP-06`). They are content routes: owners, admins and editors can use them, members can export but not import, viewers cannot use them, and custom roles need the matching `entry:<collection>` grants.
+
+| Route | What it does |
+| --- | --- |
+| `GET /api/tenants/:tenant/api/admin/collections/:slug/export` | Returns one JSON document (`format: "edgecms.collection-export"`, `formatVersion: 1`): the schema with a `schemaHash`, every entry with its status and data (locale values stay inside `data`), and relations keyed by collection slug and entry slug. Needs `read` on the collection. |
+| `POST .../collections/:slug/import/preview` | Body `{ "document": <export>, "strategy": "skip" \| "update" }`. Writes no content. Returns a per-entry plan (`create`, `update`, `skip`, `conflict`, `invalid` with a reason), a per-relation plan, warnings, the command engine dry-run diff and a preview receipt. |
+| `POST .../collections/:slug/import/execute` | Body `{ "document", "strategy", "previewReceipt" }`. Runs exactly the previewed plan. |
+
+How an import decides what to do:
+
+- Entries are matched by slug. A new slug is created. An existing entry with the same values is skipped. An existing entry with different values is a `conflict` with `strategy: "skip"` (the default) and an `update` with `strategy: "update"`.
+- Updates are non-destructive: fields the file does not mention keep their values. The update carries the version seen at preview, so a concurrent edit fails it.
+- Every entry is validated against the target collection (unknown fields, field types, locales). Invalid entries are reported and never imported.
+- Published entries are created as drafts and then published. Archived entries stay archived. Scheduled entries become drafts; schedules are not imported. The status of an existing entry is not changed.
+- A relation is linked only when its source is imported or already exists and its target exists in this tenant. A missing target or a taken one-to-one field is a `conflict`. Existing links are skipped.
+- A schema that differs from the exported one gives a `SCHEMA_HASH_MISMATCH` warning, not an error.
+
+The preview receipt is the AI-05 receipt: bound to the user, the tenant and a hash of the whole plan, valid for 15 minutes and usable once. Execute rebuilds the plan from the file and the current content. If anything changed the plan (the file, the strategy or the content), execute returns `409 IMPORT_PLAN_CHANGED` and the receipt is not spent; preview again. Execute without a receipt returns `400 RECEIPT_REQUIRED`.
+
+Limits:
+
+- Export stops at 1,000 entries (`413 EXPORT_TOO_LARGE`). An import file holds at most 500 entries and 2,000 relations.
+- Execute runs two command transactions: entry creates and updates, then relation links and publishes. D1 has no rollback across them. If a command fails, the import stops, completed commands are kept and the route returns `207` with an outcome per entry and relation.
+- If a slug is taken by the time execute runs, the entry gets a new slug and the response warns about it.
+- Relations to collections the caller cannot read are left out of an export (`omitted.relations` counts them) and are not linked on import.
+- Media files, versions, schedules, the schema itself and other collections are not exported. Import never changes a schema or deletes entries.
+
+Use the admin screen (below) or call the routes directly.
+
+#### Admin screen
+
+The entries page of a collection has **Export** and **Import** buttons.
+
+- **Export** downloads the export document as `<slug>-export-<date>.json`.
+- **Import** opens a dialog in three steps. Choose an export file and what to do when an entry with the same slug has different values (keep the existing entry, or update it from the file). **Preview import** calls the preview route and shows the counts per action, warnings, and the plan for every entry with its reason and validation errors; problems are listed first. Nothing is written until you select **Confirm import**, which sends the preview receipt. The results show the outcome of every entry and any failed relation, and say when the import stopped partway (`207`). If execute returns `409 IMPORT_PLAN_CHANGED`, the dialog asks you to preview again.
+- The buttons show only to roles that can use the routes: owners, admins and editors see both, members see Export, viewers see neither. Custom roles see neither, because the admin cannot read their `entry:<collection>` grants; they can call the routes directly. The API checks every call either way.

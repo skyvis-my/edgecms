@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, lte, or, sql } from 'drizzle-orm'
+import { and, asc, eq, isNull, lte, min, or, sql } from 'drizzle-orm'
 import type { Database } from '@/database/db'
 import { webhookOutbox } from '@/database/schema/webhooks.schema'
 import { logger } from '@/observability/logger'
@@ -26,9 +26,18 @@ export type OutboxEntry = {
 
 export type OutboxRow = typeof webhookOutbox.$inferSelect
 
+/**
+ * True when the error (or any wrapped `cause`, e.g. Drizzle's
+ * "Failed query: ..." DrizzleQueryError) is a UNIQUE/constraint violation.
+ */
 export function isUniqueConstraintViolation(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err ?? '')
-  return /unique|SQLITE_CONSTRAINT/i.test(message)
+  let current: unknown = err
+  for (let depth = 0; depth < 5 && current != null; depth++) {
+    const message = current instanceof Error ? current.message : String(current)
+    if (/unique|SQLITE_CONSTRAINT/i.test(message)) return true
+    current = current instanceof Error ? (current as Error & { cause?: unknown }).cause : undefined
+  }
+  return false
 }
 
 export function outboxInsertValues(entry: OutboxEntry, now = new Date().toISOString()) {
@@ -77,17 +86,11 @@ export const outboxRepository = {
   async claimPending(
     db: Database,
     limit = 20,
-    opts?: { staleOnlyMs?: number }
+    opts?: { staleOnlyMs?: number; tenantScope?: string }
   ): Promise<OutboxRow[]> {
-    const now = new Date().toISOString()
-    const conditions = [
-      eq(webhookOutbox.status, 'pending'),
-      or(isNull(webhookOutbox.nextAttemptAt), lte(webhookOutbox.nextAttemptAt, now)),
-    ]
-    if (opts?.staleOnlyMs && opts.staleOnlyMs > 0) {
-      conditions.push(
-        lte(webhookOutbox.createdAt, new Date(Date.now() - opts.staleOnlyMs).toISOString())
-      )
+    const conditions = dueConditions(opts?.staleOnlyMs)
+    if (opts?.tenantScope !== undefined) {
+      conditions.push(eq(webhookOutbox.tenantScope, opts.tenantScope))
     }
     const chain = db
       .select()
@@ -127,13 +130,88 @@ export const outboxRepository = {
     })
   },
 
-  /** Leave a row pending with a +60s-style backoff after a failed relay. */
+  /** Leave a row pending with a backoff after a failed relay (attempts + 1). */
   async markFailed(db: Database, eventId: string, nextAttemptAt: string): Promise<void> {
     await applyOutboxUpdate(db, eventId, {
       status: 'pending',
       nextAttemptAt,
     })
   },
+
+  /** Terminal state after the attempt cap: never claimed again (attempts + 1). */
+  async markDead(db: Database, eventId: string): Promise<void> {
+    await applyOutboxUpdate(db, eventId, {
+      status: 'dead',
+      nextAttemptAt: null,
+    })
+  },
+
+  /**
+   * Distinct tenant scopes with due rows, oldest backlog first. The scheduled
+   * sweeper relays each scope in its own bounded batch so one noisy tenant
+   * cannot starve the others.
+   */
+  async listDueTenantScopes(
+    db: Database,
+    limit = 25,
+    opts?: { staleOnlyMs?: number }
+  ): Promise<string[]> {
+    const rows = await db
+      .select({ tenantScope: webhookOutbox.tenantScope, oldest: min(webhookOutbox.createdAt) })
+      .from(webhookOutbox)
+      .where(and(...dueConditions(opts?.staleOnlyMs)))
+      .groupBy(webhookOutbox.tenantScope)
+      .orderBy(asc(min(webhookOutbox.createdAt)))
+      .limit(limit)
+      .all()
+    return rows.map((row) => row.tenantScope)
+  },
+
+  /**
+   * Lease a claimed row before sending: a conditional UPDATE that only wins
+   * while the row is still pending and due. Overlapping relays (cron sweep,
+   * engine post-execution sweep) therefore send each row at most once per
+   * lease window. A crashed relay's lease expires and the row becomes due
+   * again. Mock drivers without RETURNING are treated as leased.
+   */
+  async lease(db: Database, eventId: string, leaseUntil: string): Promise<boolean> {
+    const updateFn = (db as unknown as { update?: unknown }).update
+    if (typeof updateFn !== 'function') return true
+    const now = new Date().toISOString()
+    const chain = (
+      updateFn as (table: typeof webhookOutbox) => {
+        set: (values: Record<string, unknown>) => unknown
+      }
+    ).call(db, webhookOutbox).set({ nextAttemptAt: leaseUntil }) as unknown as {
+      where?: (cond: unknown) => unknown
+    }
+    if (!chain || typeof chain.where !== 'function') return true
+    const filtered = chain.where(
+      and(
+        eq(webhookOutbox.eventId, eventId),
+        eq(webhookOutbox.status, 'pending'),
+        or(isNull(webhookOutbox.nextAttemptAt), lte(webhookOutbox.nextAttemptAt, now))
+      )
+    ) as { returning?: (fields: unknown) => PromiseLike<unknown[]> } & PromiseLike<unknown>
+    if (filtered && typeof filtered.returning === 'function') {
+      const rows = await filtered.returning({ eventId: webhookOutbox.eventId })
+      return Array.isArray(rows) && rows.length > 0
+    }
+    await filtered
+    return true
+  },
+}
+
+function dueConditions(staleOnlyMs?: number) {
+  const now = new Date().toISOString()
+  const conditions = [
+    eq(webhookOutbox.status, 'pending'),
+    or(isNull(webhookOutbox.nextAttemptAt), lte(webhookOutbox.nextAttemptAt, now)),
+  ]
+  if (staleOnlyMs && staleOnlyMs > 0) {
+    conditions.push(lte(webhookOutbox.createdAt, new Date(Date.now() - staleOnlyMs).toISOString()))
+  }
+  return conditions
 }
 
 async function applyOutboxUpdate(
@@ -150,7 +228,7 @@ async function applyOutboxUpdate(
     updateFn as (table: typeof webhookOutbox) => {
       set: (values: Record<string, unknown>) => unknown
     }
-  )(webhookOutbox).set({
+  ).call(db, webhookOutbox).set({
     ...patch,
     attempts: sql`${webhookOutbox.attempts} + 1`,
   }) as unknown as {

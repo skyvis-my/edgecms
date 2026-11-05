@@ -30,7 +30,7 @@ export function canMutate(role: ActorRole | undefined): boolean {
   return role === 'admin' || role === 'editor'
 }
 
-function asTenantActorRole(role: unknown): TenantActorRole | undefined {
+export function asTenantActorRole(role: unknown): TenantActorRole | undefined {
   if (
     role === 'viewer' ||
     role === 'member' ||
@@ -128,6 +128,20 @@ export async function resolveActorFromSession(request: Request): Promise<{
     actorId: details.actorId,
     actorRole: details.actorRole,
   }
+}
+
+/**
+ * The caller's membership role in a tenant as stored: a built-in tenant role
+ * or the name of a custom role.
+ */
+export async function resolveTenantMembershipRole(
+  d1: D1Database,
+  actorId: string,
+  tenantSlug: string
+): Promise<string | undefined> {
+  const db = createDb(d1)
+  const role = await tenantsRepository.findMembershipRole(db, actorId, tenantSlug)
+  return typeof role === 'string' && role.length > 0 ? role : undefined
 }
 
 export async function resolveTenantRoleForActor(

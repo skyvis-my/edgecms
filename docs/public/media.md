@@ -67,7 +67,7 @@ curl -X POST "$EDGE_CMS_URL/api/tenants/acme/api/admin/assets/upload" \
   -H "x-csrf-token: $CSRF" \
   -F "file=@hero.jpg" \
   -F "filename=blog/hero.jpg" \
-  -F "width=3000" -F "height=2000"
+  -F "width=1600" -F "height=1067"
 ```
 
 Multipart fields: `file` (required), `filename`, `mimeType`, `width`, `height`, `blurhash`, and `variants` (a JSON string). The JSON form takes the same fields with the file as `contentBase64`:
@@ -86,7 +86,9 @@ Multipart fields: `file` (required), `filename`, `mimeType`, `width`, `height`, 
 }
 ```
 
-The Worker does not resize, re-encode or decode images. It stores the original and whatever variants the caller sends. An API upload without `variants` stores only the original, and the public variant routes then serve the original (see [Public asset routes](#public-asset-routes)). `image-pipeline.ts` defines a variant plan but nothing calls it.
+`blurhash` must be a well-formed [blurhash](https://blurha.sh): base83 characters, 1 to 9 components on each axis, and a length that matches the component count in its first character (at most 166 characters). Anything else returns `400 BAD_REQUEST` and nothing is stored. An empty value counts as no blurhash.
+
+The Worker does not resize, re-encode or decode images. It does read the image header to check the tenant's dimension limit (see [Per-tenant limits](#per-tenant-limits-md-05)). It stores the original and whatever variants the caller sends. An API upload without `variants` stores only the original, and the public variant routes then serve the original (see [Public asset routes](#public-asset-routes)). `image-pipeline.ts` defines a variant plan but nothing calls it.
 
 Responses:
 
@@ -97,6 +99,8 @@ Responses:
 | `402` / `429` | host limit code | The host's limit policy refused the `media_bytes` increase (`HS-06`). |
 | `413` | `PAYLOAD_TOO_LARGE` | Original is over the tenant byte limit. |
 | `415` | `UNSUPPORTED_MEDIA_TYPE` | Type not allowed, or a blocked type or extension. Also returned for a request body that is neither JSON nor multipart. |
+| `422` | `IMAGE_DIMENSIONS_EXCEEDED` | The original or a variant is wider or taller than the tenant's max dimension. `details` holds `width`, `height` and `maxDimension`. |
+| `422` | `IMAGE_PROCESSING_FAILED` | The bytes start like PNG, JPEG, GIF, WebP, AVIF/HEIF or BMP but the header is truncated or corrupt. |
 | `503` | `ASSET_STORAGE_FAILED` | R2 write failed. |
 | `500` | `ASSET_UPLOAD_FAILED` | Anything else. |
 
@@ -117,8 +121,15 @@ Stored on the tenant row. A super-admin sets them with `POST /api/admin/tenants`
 | Limit | Default | Enforced by |
 | --- | --- | --- |
 | `mediaUploadMaxBytes` | 5 MB (5,242,880 bytes) | API: `413` on the original file. Variant bytes are not counted against it. |
-| `mediaUploadMaxDimension` | 2048 px | Admin only: the browser resizes to it. The API stores but does not check `width`/`height`. |
+| `mediaUploadMaxDimension` | 2048 px | API: `422` when the longest edge of the original or any variant is over it. The admin also resizes to it in the browser before upload. |
 | `mediaAllowedMimeTypes` | see below | API: `415`. |
+
+How the API checks dimensions:
+
+- The Worker reads width and height from the file header (PNG, JPEG, GIF, WebP, AVIF/HEIF, BMP). It does not decode the image.
+- The format is detected from the bytes, not from `mimeType` or the filename, so a PNG sent as `application/pdf` is still checked.
+- Client-sent `width` and `height` are ignored when the header can be read. For other formats (for example ICO or TIFF) they are stored as sent, and the upload is refused if they are over the limit. Such files are otherwise not checked.
+- `POST .../admin/assets/direct-upload-complete` reads the object from R2 and checks it the same way. An over-limit object is deleted. The `objectKey` must start with `<tenantId>/<assetId>/`.
 
 Default allowed types: `image/*`, `audio/*`, `video/*`, `application/pdf`, `text/plain`, `text/yaml`, `text/csv`, `application/json`, and Word, Excel and PowerPoint (`.doc`, `.docx`, `.xls`, `.xlsx`, `.ppt`, `.pptx`).
 
@@ -150,14 +161,14 @@ D1 tables `assets` and `asset_variants`:
 | `id`, `tenant_id` | UUID; tenant scope (`global` without a tenant). |
 | `filename` | May contain `/` to place the file in a folder, e.g. `blog/hero.jpg`. Renaming moves it. |
 | `mime_type`, `size` | Resolved type; original size in bytes. |
-| `width`, `height` | As sent by the uploader, or the largest variant's size. |
-| `blurhash` | Stored if the uploader sends one. |
+| `width`, `height` | Read from the file header when the format is supported; otherwise as sent by the uploader, or the largest variant's size. |
+| `blurhash` | The admin uploader computes it in the browser from the thumbnail variant and always sends it for images. API uploads store it only when the caller sends one; the Worker does not compute it. |
 | `original_key` | R2 key of the original. |
 | `created_by`, `created_at`, `updated_at`, `deleted_at` | `deleted_at` marks a soft delete. |
 
 Each `asset_variants` row has `variant`, `format`, `width`, `height`, `file_size` and `object_key`.
 
-Gaps: the admin uploader does not compute a blurhash, so `blurhash` stays empty unless an API caller provides one. The asset table has no alt text, caption, credit or focal point columns; the helpers described under [Media Metadata And Policy](public-api.md#media-metadata-and-policy) are contract-level only.
+Gaps: an API upload without a `blurhash` field is stored with no blurhash, because the Worker has no image decoder (computing one needs decoded pixels). The admin uploader also leaves it empty if the browser cannot read the canvas pixels. The asset table has no alt text, caption, credit or focal point columns; the helpers described under [Media Metadata And Policy](public-api.md#media-metadata-and-policy) are contract-level only.
 
 ## Public asset routes
 
@@ -187,13 +198,14 @@ Successful responses carry:
 ```text
 Cache-Control: public, max-age=31536000, immutable
 CDN-Cache-Control: public, max-age=31536000
+Vary: Accept
 Accept-Ranges: bytes
 x-edgecms-cache: hit
 ```
 
 `Range: bytes=start-end` returns `206` with `Content-Range`. A missing asset returns `404` with `Cache-Control: no-store`.
 
-Known issue: negotiated responses do not send `Vary: Accept`. A shared cache can hand an AVIF response to a client that asked without `image/avif`. Prefer the explicit `/:variant/:format` form behind a CDN.
+Every asset response (`200`, `206`, `304` and `416`) sends `Vary: Accept`, so a shared cache keeps the AVIF, WebP and original answers apart. When CORS headers are added, `Origin` is kept in `Vary` too.
 
 ### Resize parameters
 
@@ -219,7 +231,7 @@ When the subrequest fails (always in local dev), the stored bytes are returned u
 
 Hard deletes remove the D1 rows, then write every R2 key to the `r2_gc_outbox` table before deleting it. A key whose delete fails stays `pending` and is retried after 5 minutes. Each `gc` call also sweeps up to 50 pending keys. Nothing runs GC on a schedule: no cron trigger calls it, so call `gc` yourself (for example from an operator script).
 
-Both `gc` and permanent delete are open to any role that can mutate tenant admin routes, including `editor`.
+Both `gc` and permanent delete need a tenant owner or admin (global routes: global admin), or a custom role with a `TenantAdminAssetsHardDelete` grant. Editors get `403`; they can still soft-delete.
 
 ## Search
 

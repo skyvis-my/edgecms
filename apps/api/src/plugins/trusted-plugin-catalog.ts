@@ -115,6 +115,10 @@ function parsePreviewRevalidationDryRun(body: unknown) {
   }
 }
 
+// EX-02: the framework versions the shipped plugins are tested against. A
+// minor release in 0.x may break plugins, so widen this only after testing.
+const SHIPPED_PLUGIN_EDGECMS_RANGE = '>=0.2.0 <1.0.0'
+
 // Only plugins listed here are allowed to register runtime hooks.
 const trustedPluginCatalog: Record<string, TrustedPluginDefinition> = {
   'audit-trace': {
@@ -125,6 +129,7 @@ const trustedPluginCatalog: Record<string, TrustedPluginDefinition> = {
       category: 'operations',
       permissions: ['commands:read'],
     },
+    edgecms: SHIPPED_PLUGIN_EDGECMS_RANGE,
     hooks: {
       beforeCommand: noopHook,
       afterCommand: noopHook,
@@ -154,6 +159,7 @@ const trustedPluginCatalog: Record<string, TrustedPluginDefinition> = {
       category: 'content',
       permissions: ['entries:update'],
     },
+    edgecms: SHIPPED_PLUGIN_EDGECMS_RANGE,
     hooks: {
       beforeCommand: async (_ctx) => {
         // Auto-generate slug from title if missing on createEntry
@@ -199,6 +205,7 @@ const trustedPluginCatalog: Record<string, TrustedPluginDefinition> = {
       category: 'delivery',
       permissions: ['webhooks:send'],
     },
+    edgecms: SHIPPED_PLUGIN_EDGECMS_RANGE,
     hooks: {
       afterCommand: noopHook,
     },

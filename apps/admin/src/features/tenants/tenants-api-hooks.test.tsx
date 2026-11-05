@@ -86,12 +86,11 @@ describe('tenants api hooks', () => {
     expect(edenGet).toHaveBeenCalledWith('/admin/tenants/acme')
   })
 
-  it('create/update/delete and user membership mutations invalidate proper keys', async () => {
+  it('create/update and user membership mutations invalidate proper keys', async () => {
     const {
       tenantsKeys,
       useCreateTenant,
       useUpdateTenant,
-      useDeleteTenant,
       useAddTenantUser,
       useRemoveTenantUser,
     } = await import('./api')
@@ -112,10 +111,6 @@ describe('tenants api hooks', () => {
     const updateHook = renderHook(() => useUpdateTenant(), { wrapper })
     await updateHook.result.current.mutateAsync({ slug: 'acme', input: { name: 'Acme 2' } })
     expect(edenPut).toHaveBeenCalledWith('/admin/tenants/acme', { name: 'Acme 2' })
-
-    const deleteHook = renderHook(() => useDeleteTenant(), { wrapper })
-    await deleteHook.result.current.mutateAsync('acme')
-    expect(edenDelete).toHaveBeenCalledWith('/admin/tenants/acme')
 
     const addUserHook = renderHook(() => useAddTenantUser(), { wrapper })
     await addUserHook.result.current.mutateAsync({
@@ -165,32 +160,9 @@ describe('tenants api hooks', () => {
     expect(edenPost).not.toHaveBeenCalled()
   })
 
-  it('queues delete mutation offline for sync replay', async () => {
-    const { useDeleteTenant } = await import('./api')
-    const { wrapper } = createWrapper()
-    const { result } = renderHook(() => useDeleteTenant(), { wrapper })
-
-    const originalOnLine = navigator.onLine
-    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: false })
-
-    await result.current.mutateAsync('acme')
-
-    expect(edenDelete).not.toHaveBeenCalled()
-    expect(mockCommandQueueAdd).toHaveBeenCalledWith(
-      expect.objectContaining({
-        envelope: expect.objectContaining({
-          type: 'httpMutation',
-          payload: {
-            method: 'DELETE',
-            path: '/admin/tenants/acme',
-            body: undefined,
-          },
-        }),
-        status: 'pending',
-      })
-    )
-
-    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: originalOnLine })
+  it('has no offline-queued tenant delete (HS-09: deletion is online, request -> export -> confirm)', async () => {
+    const api = await import('./api')
+    expect('useDeleteTenant' in api).toBe(false)
   })
 
   it('sets and gets active tenant slug in storage', async () => {
